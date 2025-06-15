@@ -506,6 +506,14 @@ class Agent:
             print(f"Agent {self.agent_name}: WebCrawler tool not available: {e}")
         
         try:
+            # Register KnowledgeAgent tool
+            from python.tools.knowledge_agent_tool import KnowledgeAgentTool
+            knowledge_agent_tool = KnowledgeAgentTool(self)
+            self.add_tool(knowledge_agent_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: KnowledgeAgent tool not available: {e}")
+        
+        try:
             # Register Response tool
             from python.tools.response import ResponseTool
             response_tool = ResponseTool(self)

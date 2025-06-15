@@ -32,3 +32,43 @@ In a complete Agent Zero implementation, this would include all available tools.
 Action: web_crawler_tool
 Parameters: {"action": "crawl_site", "url": "https://example.com", "max_depth": 2, "max_pages": 50}
 ```
+
+### knowledge_agent_tool
+
+**Purpose**: Manages and queries a knowledge base using RAG (Retrieval-Augmented Generation) principles for intelligent document ingestion and retrieval.
+
+**Actions**:
+- `ingest_chunks`: Ingest pre-processed document chunks into the knowledge base
+- `query`: Query the knowledge base and generate RAG-enhanced responses
+- `raw_search`: Perform direct semantic search without response generation
+- `list_sources`: List all unique sources in the knowledge base
+
+**Parameters**:
+- `action` (required): Type of knowledge operation
+- `chunks_data`: List of chunks to ingest (for ingest_chunks) - each dict needs "text", "metadata", "id". "embedding" is optional
+- `query`: Search query or question (for query and raw_search)
+- `limit`: Maximum number of results to return (default: 5)
+- `filter_metadata`: Metadata filters for search (for raw_search)
+
+**Events**: Emits KNOWLEDGE_RESULT and PROGRESS_UPDATE events via StreamProtocol for real-time feedback.
+
+**Example for ingesting chunks**:
+```
+Action: knowledge_agent_tool
+Parameters: {
+  "action": "ingest_chunks",
+  "chunks_data": [
+    {
+      "text": "Content of chunk 1",
+      "metadata": {"source": "doc1.pdf", "source_url": "https://example.com/doc1.pdf"},
+      "id": "doc1_chunk0"
+    }
+  ]
+}
+```
+
+**Example for querying**:
+```
+Action: knowledge_agent_tool
+Parameters: {"action": "query", "query": "What is Pydantic AI?", "limit": 3}
+```

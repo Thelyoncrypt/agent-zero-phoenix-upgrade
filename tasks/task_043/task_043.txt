@@ -1,0 +1,762 @@
+## Task 43: `BrowserAgentTool` - Implement `agent_execute` (Computer Use Agent) using LLM-based Multi-Step Task Planning and Execution
+
+**Focus:**
+This task enhances the `agent_execute` action of the `BrowserAgentTool`. Building on the task decomposition implemented in Task 24 (`ComputerUsePlanner`), this task will:
+1.  Refine the sequential execution of the sub-actions planned by `ComputerUsePlanner`.
+2.  Introduce a basic mechanism for the planner to receive feedback from sub-action execution (success/failure/extracted data) and potentially re-plan or adapt if a step fails. This is a simplified version of a trueOkay, let's proceed with Task 43.
+
+## Task 43: `BrowserAgentTool` - Implement planning loop.
+3.  The goal is to enable the agent to attempt more complex, multi-step browser-based tasks specified by a single high-level instruction.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/browser_agent/ai_models.py` (`ComputerUsePlanner`):**
+    *   The `decompose Real `agent_execute` Logic (LLM-based Multi-Step Task Execution)
+
+**Focus:**
+This_task` method might need to accept the result of the previous step to allow for adaptive planning, but for this iteration, we'll keep it simple: the initial plan is generated, and the tool attempts to execute it. Re-planning will be a task transitions the `agent_execute` action of the `BrowserAgentTool` from a simple mock planner to a more functional multi-step task executor. It builds upon the `ComputerUsePlanner` (Task 24) and the now more capable sub-actions (`_navigate`, `_ai_act`, `_extract` implemented in Tasks 12 more advanced step.
+    *   The prompt `TASK_DECOMPOSITION_SYSTEM_PROMPT` is already geared towards producing a sequence.
+
+    ```python
+# python/agents/browser_agent/ai_models.py
+    # ... (imports, TASK_DECOMPOSITION_SYSTEM_PROMPT, ActionExecutor's LLM setup as before)
+
+, 41, 42).
+
+The core improvements are:
+1.  **Iterative Execution with Context Updates:** The `_agent_execute` method in `BrowserAgentTool` will now iteratively execute the plan from `ComputerUsePlanner`. After each sub-action, it will (conceptually) update the page context for the planner'    class ComputerUsePlanner:
+        # ... (__init__ as in Task 24)
+
+        async def decompose_task(self, 
+                                 high_level_goal: str, 
+                                 page_context_summary: Optional[str] = Nones next step if the plan needs dynamic adjustments (full dynamic replanning is very advanced; for now, we'll assume the initial plan is mostly followed, but sub-action results are collected).
+2.  **Result Aggregation:**,
+                                 previous_actions_summary: Optional[str] = None # New: for re-planning context
+                                 ) -> List[Dict[str, Any]]:
+            logger.info(f"ComputerUsePlanner: Decomposing task: '{high_level_goal}'. Previous actions: {bool(previous_actions_summary)}")
+            
+            context_info = f"Current Page Context:\n{page_context_summary}\n---\n" if page_context_ Collect results from each sub-action, especially from `extract` steps, to form a final answer to the high-level goal.
+3.  summary else "No current page context available.\n---\n"
+            if previous_actions_summary:
+                context_info += f"Summary of previous actions and outcomes for this goal:\n{previous_actions_summary}\n---\n"
+
+            prompt = f"""
+            {context_info}
+            User's high-level goal: "{**Error Handling and Basic Replanning (Placeholder):** If a sub-action fails, the system should log it. True dynamic replanning is complex; for this task, it might mean stopping or attempting the next step with a warning.
+4.  Thehigh_level_goal}"
+
+            Based on the current page context and previous actions (if any), break this goal down into the *next sequence* of specific browser actions.
+            If previous actions failed, adjust the plan. If the goal seems `ComputerUsePlanner.decompose_task` will now receive a more realistic `current_page_summary` from the `BrowserAgentTool`.
+
+**File Paths and Code Changes:**
+
+1.  **Refine `python/agents/browser_agent/ai_models.py` (`ComputerUsePlanner`):**
+    *   Ensure ` complete based on previous actions, you can return an empty list or a single "report_finding" action.
+            Output a JSON list of action objects.
+            """
+            # ... (LLM call logic as in Task 24decompose_task` can effectively use the `current_page_summary`. The prompt already includes it. No major changes here beyond what was done in Task 24, but its usage becomes more critical.
+
+2.  **Modify `python/tools/browser_agent_tool.py` (`BrowserAgentTool`):**
+    *   Significantly enhance the `_agent, using the enhanced prompt)
+            # ... (It should return a list of action dicts or an error action)
+            messages = [
+                {"role": "system", "content": TASK_DECOMPOSITION_SYSTEM_PROMPT}, # System prompt still relevant
+                {"role": "user", "content": prompt}
+            ]
+            # ... (LLM call and error handling as in Task 24)
+            # ...
+            try:
+                response = await asyncio.to_thread(_execute` method to manage the loop of sub-actions, pass context, and aggregate results.
+    *   The `_execute_sub_action_on_page` helper will be key.
+```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports as in Task 42)
+
+    class BrowserAgentTool
+                    self.llm_client.chat.completions.create,
+                    model=self.llm_model, messages=messages,
+                    response_format={"type": "json_object"}, temperature=0.2
+                )
+                plan_json_str = response.choices[0].message.content
+                # ... (parsing logic as in Task 24) ...
+                parsed_plan = json.loads(plan_json_str)
+                if isinstance(parsed_plan, list):
+                    logger.info(f"ComputerUsePlanner: Decomposed plan: {parsed_plan}")
+                    return parsed_plan
+                elif isinstance(parsed_plan, dict) and "plan" in parsed_plan and isinstance(parsed_plan(Tool):
+        # ... (__init__, get_browser_manager, _emit_browser_event, _get_page_robustly)
+        # ... (_navigate, _ai_act, _extract, _get_page_content, _new_page, _close_page, _close_context_session)
+        # ... (_execute_sub_action_on_page from Task 24 - this will be used heavily)
+        
+        async def _execute_sub_action_on_page(self, sub_action: Dict[str, Any], page: PWPage, session_id: str, current_page_index: int) -> ToolResponse:
+            """
+            ["plan"], list):
+                    logger.info(f"ComputerUsePlanner: Decomposed plan (from dict): {parsed_plan['plan']}")
+                    return parsed_plan["plan"]
+                else:
+                    logger.warning(f"ComputerUsePlanner: LLM returned unexpected JSON for plan: {parsed_plan}")
+                    return [{"action_type": "error", "message": "LLM returned unexpected plan structure."}]
+            # ... (Error handling as in Task 24)
+            except Exception as e:
+                 logger.error(f"ComputerUsePlanner: Error calling LLM for task decomposition: {e}", exc_info=True)
+                 return [{"action_type": "error", "messageExecutes a single sub-action dictionary on the provided page object.
+            (Refined from Task 24 - ensures it uses the passed page object directly)
+            """
+            action_type = sub_action.get("action_type")
+            logger.info(f"BrowserAgentTool: Executing sub-action ON PAGE '{page.url}': {action_type} with args {sub_action}")
+
+            # Note: _navigate, _ai_act, _extract methods in the tool already get the page from manager.
+            # To use the *passed* page object directly for sub": f"LLM error during task decomposition: {str(e)}"}]
+
+            return [{"action_type": "error", "message": "Failed to decompose task after retries."}] # Fallback
+    ```
+2.  **Modify `python/tools/browser_agent_tool.py` (`BrowserAgentTool`):**
+    *   The `_agent_execute` method will manage a loop for executing sub-actions.
+    *   It will collect results from each sub-action.
+    *   **Basic Re-planning/Adaptation (Placeholder):** If a sub-action fails, for now, the `agent_execute` will stop and report the failure. A more advanced version would feed the failure back to `ComputerUsePlanner.-actions, we would call their internal logic
+            # or pass 'page' to them if they are refactored to accept it.
+            # For this iteration, let's make _execute_sub_action_on_page call the tool's public methods,
+            # which in turn will use the page from the manager based on session_id and page_index.
+            # This keeps sub-action execution consistent with how the agent would call individual actions.
+            # If a sub-action is "navigate", it will affect the state of `page` for subsequent actions in this loop IF page object is shared.
+            #decompose_task` to get a revised plan. We'll add a comment for this future enhancement.
+    *   The loop should have a maximum number of sub-actions to prevent runaways.
+```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports and class structure as in Task 25)
+    MAX_SUB_ACTIONS = 10 # Limit for agent_execute plan steps
+
+    class BrowserAgentTool(Tool):
+        # ... (__init__, _get_browser_manager, _emit_browser_event, _get_page_robustly, _navigate, _ai_act, _extract, _get_page_content, _new_page, _close_page, _close_context_session)
+        # ... (_execute_sub_action_on_page from Task 25 However, Playwright page objects are tied to their context. After navigation, the same `page` object IS the new page.
+            
+            # To ensure sub-actions use the *potentially modified* page from the previous step in the plan:
+            # We rely on the fact that `page` object itself reflects the current state of that browser tab.
+            # If a sub-action needs a *new* tab, the plan should have a "new_page" action and then target that new page_index.
+            # For simplicity, assume sub-actions operate on the same page unless ")
+
+        async def _agent_execute(self, instructions: str, model_for_planner: str, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("agent_execute", "starting", {"goal": instructions, "planner_model": model_for_planner, "session_id": session_id})
+            
+            planner = await self.ai_provider.get_computer_use_planner() # model_for_planner could be used here
+            
+            execution_summary: List[Dict[str, Any]] = []
+            final_extracted_data_or_finding: Any = None
+            current_page_idx_for_plan = 0 # Assume operations on the first/primary page of the context
+            
+            previous_actions_feedback = "" # To accumulate feedback for re-planning
+
+            for execnavigate" changes its URL.
+
+            if action_type == "navigate":
+                return await self._navigate(sub_action.get("url", ""), session_id, current_page_index) # _navigate uses page from manager
+            elif action_type == "act": # act internally calls _ai_act
+                 return await self._ai_act(page, sub_action.get("instructions", "Default instruction if missing"), session_id, current_page_index)
+            elif action_type == "type" or action_type == "fill" or action_type == "click" or action_type == "press" or action_type == "scroll" or action_type == "select_option":
+                # Construct a natural language instruction for _ai_act from structured sub_action
+                instruction_for_act = f"{action_type} "_attempt in range(MAX_SUB_ACTIONS): # Limit total steps/re-planning attempts
+                logger.info(f"BrowserAgentTool._agent_execute: Attempt {exec_attempt + 1}/{MAX_SUB_ACTIONS} for goal: '{instructions}'")
+
+                page_for_context = await self._get_page_robustly(session_id, current_page_idx_for_plan, f"agent_execute_context_fetch_attempt_{exec_attempt}")
+                page_content_summary = "No current page context available."
+                if page_for_context:
+                    page_content_summary = await self.action_executor._get_simplified_page_content_for_llm(page_for_context)
+                else: # If page cannot be obtained, critical failure for planning
+                    error_msg = f"Cannot proceed with planning: failed to obtain page (session: {session_id}, index: {current_page_idx_for_plan
+                if sub_action.get("selector"): instruction_for_act += f"on element '{sub_action['selector']}'"
+                if sub_action.get("value"): instruction_for_act += f" with value '{sub_action['value']}'"
+                if sub_action.get("key"): instruction_for_act += f" the key '{sub_action['key']}'"
+                if sub_action.get("option_value"): instruction_for_act += f" option '{sub_action['option_value']}'"
+                if sub_action.get("scroll_direction"): instruction_for_act += f" direction '{sub_action['scroll_direction']}'"
+                return await self._ai_act(page, instruction_for_act.strip(), session_id, current_page_index)
+            elif action_type == "extract":
+                return await self._extract(page, sub_action.get("instructions", ""), sub_action.get("schema"), session_id, current_page_index)
+            elif action_type == "report_finding": # Planner signals completion with data
+                return ToolResponse(message="Planner reported a finding.", data=sub_action.get("finding"))
+            else:
+                logger.warning(f"Unsupported sub-action type in plan: {action_type}")
+                return ToolResponse(f"Unsupported sub-action type: {action_type}", error=True)
+
+
+        async def _agent_execute(self, instructions: str, model_for_planner: str, session_id: str) -> ToolResponse:
+            await})."
+                    await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                    return ToolResponse(message=error_msg, data={"completed_sub_actions": execution_summary}, error=True)
+
+                sub_actions_plan = await planner.decompose_task(instructions, page_content_summary, previous_actions_feedback)
+                previous_actions_feedback = "" # Reset feedback after planner uses it
+
+                if not sub_actions_plan:
+                    msg = "Planner returned an empty plan. Assuming task is complete or cannot proceed."
+                    logger.info(f"BrowserAgentTool._agent_execute: {msg}")
+                    await self._emit_browser_event("agent_execute", "completed_empty_plan", {"goal": instructions, "summary": execution_summary, "final_data": final_extracted_data_or_finding, "session_id": session_id})
+                    return ToolResponse(message=msg, data={"summary": execution_summary, "final_data": final_extracted_data_or_finding})
+
+                if sub_actions_plan[0].get("action_type") == "error":
+                    error_msg = sub self._emit_browser_event("agent_execute", "starting", {"goal": instructions, "planner_model": model_for_planner, "session_id": session_id})
+            
+            planner = await self.ai_provider.get_computer_use_planner() # AIModelProvider provides ComputerUsePlanner
+            
+            # Initial page for context and actions (default to page 0 of the session)
+            current_page_index = 0 
+            page = await self._get_page_robustly(session_id, current_page_index, "agent_execute_initial_page")
+            if not page:
+                return ToolResponse(f"Failed to get initial page for session {session_id}.", error=True)
+
+            page_content_summary = await self.action_executor._get_page_summary_for_llm(page)
+            sub_actions_plan = await planner.decompose_task(instructions, page_content_summary)
+
+            if not sub_actions_plan or (sub_actions_plan[0].get("action_type") == "error"):
+                # ... (error handling as in Task 24) ...
+                error_msg = sub_actions_plan[0].get("message", "Failed to decompose task.") if sub_actions_plan else "Planner returned empty plan."
+                await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True, data={"plan": sub_actions_plan})
+
+
+            await self._emit_browser_event("agent_execute", "plan_generated",_actions_plan[0].get("message", "Planner failed to decompose task.")
+                    logger.error(f"BrowserAgentTool._agent_execute: Planner error - {error_msg}")
+                    await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                    return ToolResponse(message=error_msg, data={"completed_sub_actions": execution_summary}, error=True)
+
+                await self._emit_browser_event("agent_execute", "plan_generated", {"goal": instructions, "plan_step": exec_attempt+1, "plan": sub_actions_plan, "session_id": session_id})
+
+                plan_executed_successfully_this_iteration = True
+                for i, sub_action_spec in enumerate(sub_actions_plan):
+                    step_number_overall = len(execution_summary) + 1
+                    if step_number_overall > MAX_SUB_ACTIONS:
+                        logger.warning("BrowserAgentTool._agent_execute: Exceeded maximum sub-actions limit.")
+                        await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": "Max sub-actions limit reached.", "session_id": session_id})
+                        return ToolResponse(message="Max sub-actions limit reached.", data={"summary": execution_summary}, error=True)
+
+                    await self._emit_browser_event("agent_execute_sub_action", "starting", 
+                                                   {"overall_step": step_number_overall, "plan_step_index": i, "sub_action": sub_action_spec, "session_id": session_id})
+                    
+                    page_for_sub_action = await self._get_page_robustly(session_id, current_page_idx_for_plan, f"agent_execute_sub_action_step_{step_number_overall}")
+                    if not page_for_sub_action:
+                        error_msg = f"Sub-action failed: {"goal": instructions, "plan": sub_actions_plan, "session_id": session_id})
+
+            execution_log: List[Dict[str, Any]] = []
+            final_result_data: Any = None # To store data from the last 'extract' or 'report_finding'
+
+            for i, sub_action_spec in enumerate(sub_actions_plan):
+                step_info = {"step": i + 1, "total_steps": len(sub_actions_plan), "sub_action": sub_action_spec, "session_id": session_id}
+                await self._emit_browser_event("agent_execute_sub_action", "starting", step_info)
+                
+                # Get the current page for this sub-action.
+                # If a 'navigate' action changed the URL, the 'page' object is updated in place by Playwright.
+                # If the plan involves multiple tabs, it would need to specify 'page_index' or have 'new_page' actions.
+                # For now, we assume operations on the 'current_page_index' of the 'session_id'.
+                page = await self._get_page_robustly(session_id, current_page_index, f"agent_execute_step_{i+1}")
+                if not page:
+                    error_msg = f"Sub-action {i+1} ('{sub_action_spec.get('action_type')}') failed: Could not get page."
+                    execution_log.append({"step": i + 1, "action_spec": sub_action_spec, "result_message": error_msg, "error": True})
+                    await self._emit_browser_event("agent_execute_sub_action", "error", {**step_info, "error": error_msg})
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": error_msg, "completed_steps_log": execution_log})
+                    return ToolResponse(message=error_msg, data={"execution_log": execution_log}, error=True)
+
+                # Execute Could not get page for session {session_id}, index {current_page_idx_for_plan}."
+                        execution_summary.append({"step": step_number_overall, "action_spec": sub_action_spec, "result_message": error_msg, "error": True, "data": None})
+                        # ... (emit error and return as in Task 25) ...
+                        plan_executed_successfully_this_iteration = False; break # Break from inner plan loop
+
+                    sub_action_response = await self._execute_sub_action_on_page(sub_action_spec, page_for_sub_action, session_id, current_page_idx_for_plan)
+                    
+                    current_step_summary = {
+                        "step": step_number_overall, "action_spec": sub_action_spec, 
+                        "result_message": sub_action_response.message, "error": sub_action_response.error, "data": sub_action_response.data
+                    }
+                    execution_summary.append(current_step_summary)
+                    previous_actions_feedback += f"Step {step_number_overall}: {sub_action_spec.get('action_type')} -> Result: {'Success' if not sub_action_response.error else 'Failure'}: {sub_action_response.message}\n"
+
+                    if sub_action_response.error:
+                        error_msg = f"Sub-action step {step_number_overall} ('{sub_action_spec.get('action_type')}') failed: {sub_action_response.message}"
+                        logger.warning(f"BrowserAgentTool._agent_execute: {error_msg}")
+                        await self._emit_browser_event("agent_execute_sub_action", "error", {"overall_step": step_number_overall, "error": error_msg, "session_id": session_id})
+                        # FUTURE: Instead of breaking, could feed this error back to planner for re-planning.
+                        # For now, we stop on first sub-action failure of a plan segment.
+                        plan_executed_successfully_this_iteration = False; break 
+
+                    await self._emit_browser_event("agent_execute_sub the sub-action on the current page
+                sub_action_response = await self._execute_sub_action_on_page(sub_action_spec, page, session_id, current_page_index)
+                
+                current_step_log = {
+                    "step": i + 1,
+                    "action_spec": sub_action_spec,
+                    "result_message": sub_action_response.message,
+                    "error": sub_action_response.error,
+                    "data": sub_action_response.data
+                }
+                execution_log.append(current_step_log)
+
+                if sub_action_response.error:
+                    error_msg = f"Sub-action {i+1} ('{sub_action_spec.get('action_type')}') failed: {sub_action_response.message}"
+                    logger.warning(f"AgentExecute: {error_msg}")
+                    await self._emit_browser_event("agent_execute_sub_action", "error", {**step_info, "error": error_msg})
+                    
+                    # Basic error handling: stop execution on first sub-action failure
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": error_msg, "execution_log": execution_log})
+                    return ToolResponse(message=error_msg, data={"execution_log": execution_log}, error=True)
+                
+                await self._emit_browser_event("agent_execute_sub_action", "completed", {**step_info, "result_data": sub_action_response.data})
+
+                # Capture data from 'extract' or 'report_finding' actions
+                if sub_action_spec.get("action_type") == "extract" and sub_action_response.data:
+                    final_result_data = sub_action_response.data # Overwrites with latest extraction
+                elif sub_action_spec.get("action_type") == "report_finding" and sub_action_response.data:
+                    final_result_data = sub_action_response.data # Planner explicitly reported
+                
+                # After each step, potentially update page_content_summary for the *next* planning step if replanning was implemented.
+                # For now, we execute a pre-defined plan.
+                # If_action", "completed", {"overall_step": step_number_overall, "result_data": sub_action_response.data, "session_id": session_id})
+                    
+                    if sub_action_spec.get("action_type") == "extract" and sub_action_response.data:
+                        final_extracted_data_or_finding = sub_action_response.data 
+                    if sub_action_spec.get("action_type") == "report_finding" and sub_action_response.data:
+                        final_extracted_data_or_finding = sub_action_response.data
+                        logger.info(f"BrowserAgentTool._agent_execute: Planner reported finding: {final_extracted_data_or_finding}")
+                        # If planner reports finding, assume goal is met for this simplified loop
+                        plan_executed_successfully_this_iteration = True; break # Break from inner plan loop, then outer will also break
+
+                if not plan_executed_successfully_this_iteration:
+                    # A sub-action in the current plan failed.
+                    # FUTURE: Here, we could call `planner.decompose_task` again, passing `previous_actions_feedback`
+                    # to allow the LLM to generate a new plan based on the failure.
+                    # For now, we'll just terminate and report the failure.
+                    logger.warning(f"BrowserAgentTool._agent_execute: Plan execution failed at step {len(execution_summary)}. Goal: '{instructions}'")
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": "A sub-action in the plan failed.", "completed_steps": execution_summary, "session_id": session_id})
+                    return ToolResponse(message="Agent execution failed at one of the sub-steps.", data={"summary": execution_summary, "final_data": final_extracted_data_or_finding}, error=True)
+
+                if sub_actions_plan and sub_actions_plan[-1].get("action_type") == "report_finding":
+                    logger.info("BrowserAgentTool._agent_execute: Plan completed with 'report_finding'. Goal achieved.")
+                    break # Break outer execution loop
+
+                if not sub_actions_plan: # Planner returned empty, signaling completion
+                    logger.info("BrowserAgentTool._agent_execute: Planner returned empty plan, assuming completion.")
+                    break
+
+
+            success_message = f"Agent execution for '{instructions}' processed. Steps a "navigate" action occurred, the `page` object is already updated to the new URL.
+                # If a "new_page" action were in the plan, current_page_index would need to change.
+
+            success_message = f"Agent execution for goal '{instructions}' completed through {len(execution_log)} steps."
+            if final_result_data:
+                success_message += f" Final data/finding: {json.dumps(final_result_data if isinstance(final_result_data, dict) else {'value': final_result_data})}"
+            
+            await self._emit_browser_event("agent_execute", "completed", {"goal": instructions, "execution_log": execution_log, "final_data": final_result_data, "session_id": session_id})
+            return ToolResponse(message=success_message, data={"execution_log": execution_log, "final_data": final_result_data})
+
+    ```
+
+**Key changes in `BrowserAgentTool._agent_execute`:**
+*   It now fetches an initial page summary to provide context to the `ComputerUsePlanner`.
+*   It iterates through the plan generated by `ComputerUsePlanner`.
+*   For each sub-action in the plan, it calls `_execute_sub_action_on_page` (which internally calls the tool's specific action methods like `_navigate`, `_ai_act`, `_extract`).
+*   It collects results and logs the execution of each sub-action.
+*   If a sub-action fails, the current implementation stops and reports the failure. More advanced versions could attempt replanning or alternative steps.
+*   It captures data from `extract` or `report_finding` sub-actions as the potential final result.
+*   It emits detailed `BROWSER_ACTION` events for the overall `agent_execute` lifecycle and for each sub-action.
+
+**Dependencies/Prerequisites:**
+*   Task 24 (ComputerUsePlanner), Task 41 (real `act`), Task 42 (real `extract`).
+*   `BrowserManager` provides reliable page objects.
+*   LLM for task decomposition (`ComputerUsePlanner`) is functional.
+*   LLM for `act` and `extract` sub-actions (within `ActionExecutor`) is functional.
+
+**Integration with Agent Zero:**
+*   The `agent_execute` action becomes a powerful way for the main Agent Zero agent to delegate complex, multi-step browser-based tasks.
+*   The success of this heavily relies on the quality of the plan generated by `ComputerUsePlanner` and the reliability of the individual sub-action executions.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond those already required for `BrowserAgentTool` and its LLM usage.
+*   Ensure environment variables for OpenAI are correctly configured.
+
+**Summary of Task 43:**
+This task implements a more functional version of the `agent_execute` action in `BrowserAgentTool`. It uses an LLM-based planner (`ComputerUsePlanner`) to break down a high-level goal into a sequence of browser sub-actions and then attempts to execute this plan step-by-step, calling the tool's other implemented actions (`_navigate`, `_ai_act`, `_extract`). This provides a significant enhancement to the tool's autonomy for web-based tasks. True "computer use" beyond the browser or highly dynamic replanning remains out of scope for this specific task.
+
+Please confirm to proceed.Okay, let's proceed with Task 43.
+
+## Task 43: `BrowserAgentTool` - Implement `agent_execute` (Computer Use Agent) using LLM-based Multi-Step Task Planning and Execution
+
+**Focus:**
+This task enhances the `agent_execute` action of the `BrowserAgentTool`. Building on the task decomposition implemented in Task 24 (`ComputerUsePlanner`), this task will:
+1.  Refine the sequential execution of the sub-actions planned by `ComputerUsePlanner`.
+2.  Introduce a basic mechanism for the planner to receive feedback from sub-action execution (success/failure/extracted data) and potentially re-plan or adapt if a step fails. This is a simplified version of a trueOkay, let's proceed with Task 43.
+
+## Task 43: `BrowserAgentTool` - Implement planning loop.
+3.  The goal is to enable the agent to attempt more complex, multi-step browser-based tasks specified by a single high-level instruction.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/browser_agent/ai_models.py` (`ComputerUsePlanner`):**
+    *   The `decompose Real `agent_execute` Logic (LLM-based Multi-Step Task Execution)
+
+**Focus:**
+This_task` method might need to accept the result of the previous step to allow for adaptive planning, but for this iteration, we'll keep it simple: the initial plan is generated, and the tool attempts to execute it. Re-planning will be a task transitions the `agent_execute` action of the `BrowserAgentTool` from a simple mock planner to a more functional multi-step task executor. It builds upon the `ComputerUsePlanner` (Task 24) and the now more capable sub-actions (`_navigate`, `_ai_act`, `_extract` implemented in Tasks 12 more advanced step.
+    *   The prompt `TASK_DECOMPOSITION_SYSTEM_PROMPT` is already geared towards producing a sequence.
+
+    ```python
+    # python/agents/browser_agent/ai_models.py
+    # ... (imports, TASK_DECOMPOSITION_SYSTEM_PROMPT, ActionExecutor's LLM setup as before)
+
+, 41, 42).
+
+The core improvements are:
+1.  **Iterative Execution with Context Updates:** The `_agent_execute` method in `BrowserAgentTool` will now iteratively execute the plan from `ComputerUsePlanner`. After each sub-action, it will (conceptually) update the page context for the planner'    class ComputerUsePlanner:
+        # ... (__init__ as in Task 24)
+
+        async def decompose_task(self, 
+                                 high_level_goal: str, 
+                                 page_context_summary: Optional[str] = Nones next step if the plan needs dynamic adjustments (full dynamic replanning is very advanced; for now, we'll assume the initial plan is mostly followed, but sub-action results are collected).
+2.  **Result Aggregation:**,
+                                 previous_actions_summary: Optional[str] = None # New: for re-planning context
+                                 ) -> List[Dict[str, Any]]:
+            logger.info(f"ComputerUsePlanner: Decomposing task: '{high_level_goal}'. Previous actions: {bool(previous_actions_summary)}")
+            
+            context_info = f"Current Page Context:\n{page_context_summary}\n---\n" if page_context_ Collect results from each sub-action, especially from `extract` steps, to form a final answer to the high-level goal.
+3.  summary else "No current page context available.\n---\n"
+            if previous_actions_summary:
+                context_info += f"Summary of previous actions and outcomes for this goal:\n{previous_actions_summary}\n---\n"
+
+            prompt = f"""
+            {context_info}
+            User's high-level goal: "{**Error Handling and Basic Replanning (Placeholder):** If a sub-action fails, the system should log it. True dynamic replanning is complex; for this task, it might mean stopping or attempting the next step with a warning.
+4.  Thehigh_level_goal}"
+
+            Based on the current page context and previous actions (if any), break this goal down into the *next sequence* of specific browser actions.
+            If previous actions failed, adjust the plan. If the goal seems `ComputerUsePlanner.decompose_task` will now receive a more realistic `current_page_summary` from the `BrowserAgentTool`.
+
+**File Paths and Code Changes:**
+
+1.  **Refine `python/agents/browser_agent/ai_models.py` (`ComputerUsePlanner`):**
+    *   Ensure ` complete based on previous actions, you can return an empty list or a single "report_finding" action.
+            Output a JSON list of action objects.
+            """
+            # ... (LLM call logic as in Task 24decompose_task` can effectively use the `current_page_summary`. The prompt already includes it. No major changes here beyond what was done in Task 24, but its usage becomes more critical.
+
+2.  **Modify `python/tools/browser_agent_tool.py` (`BrowserAgentTool`):**
+    *   Significantly enhance the `_agent, using the enhanced prompt)
+            # ... (It should return a list of action dicts or an error action)
+            messages = [
+                {"role": "system", "content": TASK_DECOMPOSITION_SYSTEM_PROMPT}, # System prompt still relevant
+                {"role": "user", "content": prompt}
+            ]
+            # ... (LLM call and error handling as in Task 24)
+            # ...
+            try:
+                response = await asyncio.to_thread(_execute` method to manage the loop of sub-actions, pass context, and aggregate results.
+    *   The `_execute_sub_action_on_page` helper will be key.
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports as in Task 42)
+
+    class BrowserAgentTool
+                    self.llm_client.chat.completions.create,
+                    model=self.llm_model, messages=messages,
+                    response_format={"type": "json_object"}, temperature=0.2
+                )
+                plan_json_str = response.choices[0].message.content
+                # ... (parsing logic as in Task 24) ...
+                parsed_plan = json.loads(plan_json_str)
+                if isinstance(parsed_plan, list):
+                    logger.info(f"ComputerUsePlanner: Decomposed plan: {parsed_plan}")
+                    return parsed_plan
+                elif isinstance(parsed_plan, dict) and "plan" in parsed_plan and isinstance(parsed_plan(Tool):
+        # ... (__init__, get_browser_manager, _emit_browser_event, _get_page_robustly)
+        # ... (_navigate, _ai_act, _extract, _get_page_content, _new_page, _close_page, _close_context_session)
+        # ... (_execute_sub_action_on_page from Task 24 - this will be used heavily)
+        
+        async def _execute_sub_action_on_page(self, sub_action: Dict[str, Any], page: PWPage, session_id: str, current_page_index: int) -> ToolResponse:
+            """
+            ["plan"], list):
+                    logger.info(f"ComputerUsePlanner: Decomposed plan (from dict): {parsed_plan['plan']}")
+                    return parsed_plan["plan"]
+                else:
+                    logger.warning(f"ComputerUsePlanner: LLM returned unexpected JSON for plan: {parsed_plan}")
+                    return [{"action_type": "error", "message": "LLM returned unexpected plan structure."}]
+            # ... (Error handling as in Task 24)
+            except Exception as e:
+                 logger.error(f"ComputerUsePlanner: Error calling LLM for task decomposition: {e}", exc_info=True)
+                 return [{"action_type": "error", "messageExecutes a single sub-action dictionary on the provided page object.
+            (Refined from Task 24 - ensures it uses the passed page object directly)
+            """
+            action_type = sub_action.get("action_type")
+            logger.info(f"BrowserAgentTool: Executing sub-action ON PAGE '{page.url}': {action_type} with args {sub_action}")
+
+            # Note: _navigate, _ai_act, _extract methods in the tool already get the page from manager.
+            # To use the *passed* page object directly for sub": f"LLM error during task decomposition: {str(e)}"}]
+
+            return [{"action_type": "error", "message": "Failed to decompose task after retries."}] # Fallback
+    ```
+
+2.  **Modify `python/tools/browser_agent_tool.py` (`BrowserAgentTool`):**
+    *   The `_agent_execute` method will manage a loop for executing sub-actions.
+    *   It will collect results from each sub-action.
+    *   **Basic Re-planning/Adaptation (Placeholder):** If a sub-action fails, for now, the `agent_execute` will stop and report the failure. A more advanced version would feed the failure back to `ComputerUsePlanner.-actions, we would call their internal logic
+            # or pass 'page' to them if they are refactored to accept it.
+            # For this iteration, let's make _execute_sub_action_on_page call the tool's public methods,
+            # which in turn will use the page from the manager based on session_id and page_index.
+            # This keeps sub-action execution consistent with how the agent would call individual actions.
+            # If a sub-action is "navigate", it will affect the state of `page` for subsequent actions in this loop IF page object is shared.
+            #decompose_task` to get a revised plan. We'll add a comment for this future enhancement.
+    *   The loop should have a maximum number of sub-actions to prevent runaways.
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports and class structure as in Task 25)
+    MAX_SUB_ACTIONS = 10 # Limit for agent_execute plan steps
+
+    class BrowserAgentTool(Tool):
+        # ... (__init__, _get_browser_manager, _emit_browser_event, _get_page_robustly, _navigate, _ai_act, _extract, _get_page_content, _new_page, _close_page, _close_context_session)
+        # ... (_execute_sub_action_on_page from Task 25 However, Playwright page objects are tied to their context. After navigation, the same `page` object IS the new page.
+            
+            # To ensure sub-actions use the *potentially modified* page from the previous step in the plan:
+            # We rely on the fact that `page` object itself reflects the current state of that browser tab.
+            # If a sub-action needs a *new* tab, the plan should have a "new_page" action and then target that new page_index.
+            # For simplicity, assume sub-actions operate on the same page unless ")
+
+        async def _agent_execute(self, instructions: str, model_for_planner: str, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("agent_execute", "starting", {"goal": instructions, "planner_model": model_for_planner, "session_id": session_id})
+            
+            planner = await self.ai_provider.get_computer_use_planner() # model_for_planner could be used here
+            
+            execution_summary: List[Dict[str, Any]] = []
+            final_extracted_data_or_finding: Any = None
+            current_page_idx_for_plan = 0 # Assume operations on the first/primary page of the context
+            
+            previous_actions_feedback = "" # To accumulate feedback for re-planning
+
+            for execnavigate" changes its URL.
+
+            if action_type == "navigate":
+                return await self._navigate(sub_action.get("url", ""), session_id, current_page_index) # _navigate uses page from manager
+            elif action_type == "act": # act internally calls _ai_act
+                 return await self._ai_act(page, sub_action.get("instructions", "Default instruction if missing"), session_id, current_page_index)
+            elif action_type == "type" or action_type == "fill" or action_type == "click" or action_type == "press" or action_type == "scroll" or action_type == "select_option":
+                # Construct a natural language instruction for _ai_act from structured sub_action
+                instruction_for_act = f"{action_type} "_attempt in range(MAX_SUB_ACTIONS): # Limit total steps/re-planning attempts
+                logger.info(f"BrowserAgentTool._agent_execute: Attempt {exec_attempt + 1}/{MAX_SUB_ACTIONS} for goal: '{instructions}'")
+
+                page_for_context = await self._get_page_robustly(session_id, current_page_idx_for_plan, f"agent_execute_context_fetch_attempt_{exec_attempt}")
+                page_content_summary = "No current page context available."
+                if page_for_context:
+                    page_content_summary = await self.action_executor._get_simplified_page_content_for_llm(page_for_context)
+                else: # If page cannot be obtained, critical failure for planning
+                    error_msg = f"Cannot proceed with planning: failed to obtain page (session: {session_id}, index: {current_page_idx_for_plan
+                if sub_action.get("selector"): instruction_for_act += f"on element '{sub_action['selector']}'"
+                if sub_action.get("value"): instruction_for_act += f" with value '{sub_action['value']}'"
+                if sub_action.get("key"): instruction_for_act += f" the key '{sub_action['key']}'"
+                if sub_action.get("option_value"): instruction_for_act += f" option '{sub_action['option_value']}'"
+                if sub_action.get("scroll_direction"): instruction_for_act += f" direction '{sub_action['scroll_direction']}'"
+                return await self._ai_act(page, instruction_for_act.strip(), session_id, current_page_index)
+            elif action_type == "extract":
+                return await self._extract(page, sub_action.get("instructions", ""), sub_action.get("schema"), session_id, current_page_index)
+            elif action_type == "report_finding": # Planner signals completion with data
+                return ToolResponse(message="Planner reported a finding.", data=sub_action.get("finding"))
+            else:
+                logger.warning(f"Unsupported sub-action type in plan: {action_type}")
+                return ToolResponse(f"Unsupported sub-action type: {action_type}", error=True)
+
+
+        async def _agent_execute(self, instructions: str, model_for_planner: str, session_id: str) -> ToolResponse:
+            await})."
+                    await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                    return ToolResponse(message=error_msg, data={"completed_sub_actions": execution_summary}, error=True)
+
+                sub_actions_plan = await planner.decompose_task(instructions, page_content_summary, previous_actions_feedback)
+                previous_actions_feedback = "" # Reset feedback after planner uses it
+
+                if not sub_actions_plan:
+                    msg = "Planner returned an empty plan. Assuming task is complete or cannot proceed."
+                    logger.info(f"BrowserAgentTool._agent_execute: {msg}")
+                    await self._emit_browser_event("agent_execute", "completed_empty_plan", {"goal": instructions, "summary": execution_summary, "final_data": final_extracted_data_or_finding, "session_id": session_id})
+                    return ToolResponse(message=msg, data={"summary": execution_summary, "final_data": final_extracted_data_or_finding})
+
+                if sub_actions_plan[0].get("action_type") == "error":
+                    error_msg = sub self._emit_browser_event("agent_execute", "starting", {"goal": instructions, "planner_model": model_for_planner, "session_id": session_id})
+            
+            planner = await self.ai_provider.get_computer_use_planner() # AIModelProvider provides ComputerUsePlanner
+            
+            # Initial page for context and actions (default to page 0 of the session)
+            current_page_index = 0 
+            page = await self._get_page_robustly(session_id, current_page_index, "agent_execute_initial_page")
+            if not page:
+                return ToolResponse(f"Failed to get initial page for session {session_id}.", error=True)
+
+            page_content_summary = await self.action_executor._get_page_summary_for_llm(page)
+            sub_actions_plan = await planner.decompose_task(instructions, page_content_summary)
+
+            if not sub_actions_plan or (sub_actions_plan[0].get("action_type") == "error"):
+                # ... (error handling as in Task 24) ...
+                error_msg = sub_actions_plan[0].get("message", "Failed to decompose task.") if sub_actions_plan else "Planner returned empty plan."
+                await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True, data={"plan": sub_actions_plan})
+
+
+            await self._emit_browser_event("agent_execute", "plan_generated",_actions_plan[0].get("message", "Planner failed to decompose task.")
+                    logger.error(f"BrowserAgentTool._agent_execute: Planner error - {error_msg}")
+                    await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                    return ToolResponse(message=error_msg, data={"completed_sub_actions": execution_summary}, error=True)
+
+                await self._emit_browser_event("agent_execute", "plan_generated", {"goal": instructions, "plan_step": exec_attempt+1, "plan": sub_actions_plan, "session_id": session_id})
+
+                plan_executed_successfully_this_iteration = True
+                for i, sub_action_spec in enumerate(sub_actions_plan):
+                    step_number_overall = len(execution_summary) + 1
+                    if step_number_overall > MAX_SUB_ACTIONS:
+                        logger.warning("BrowserAgentTool._agent_execute: Exceeded maximum sub-actions limit.")
+                        await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": "Max sub-actions limit reached.", "session_id": session_id})
+                        return ToolResponse(message="Max sub-actions limit reached.", data={"summary": execution_summary}, error=True)
+
+                    await self._emit_browser_event("agent_execute_sub_action", "starting", 
+                                                   {"overall_step": step_number_overall, "plan_step_index": i, "sub_action": sub_action_spec, "session_id": session_id})
+                    
+                    page_for_sub_action = await self._get_page_robustly(session_id, current_page_idx_for_plan, f"agent_execute_sub_action_step_{step_number_overall}")
+                    if not page_for_sub_action:
+                        error_msg = f"Sub-action failed: {"goal": instructions, "plan": sub_actions_plan, "session_id": session_id})
+
+            execution_log: List[Dict[str, Any]] = []
+            final_result_data: Any = None # To store data from the last 'extract' or 'report_finding'
+
+            for i, sub_action_spec in enumerate(sub_actions_plan):
+                step_info = {"step": i + 1, "total_steps": len(sub_actions_plan), "sub_action": sub_action_spec, "session_id": session_id}
+                await self._emit_browser_event("agent_execute_sub_action", "starting", step_info)
+                
+                # Get the current page for this sub-action.
+                # If a 'navigate' action changed the URL, the 'page' object is updated in place by Playwright.
+                # If the plan involves multiple tabs, it would need to specify 'page_index' or have 'new_page' actions.
+                # For now, we assume operations on the 'current_page_index' of the 'session_id'.
+                page = await self._get_page_robustly(session_id, current_page_index, f"agent_execute_step_{i+1}")
+                if not page:
+                    error_msg = f"Sub-action {i+1} ('{sub_action_spec.get('action_type')}') failed: Could not get page."
+                    execution_log.append({"step": i + 1, "action_spec": sub_action_spec, "result_message": error_msg, "error": True})
+                    await self._emit_browser_event("agent_execute_sub_action", "error", {**step_info, "error": error_msg})
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": error_msg, "completed_steps_log": execution_log})
+                    return ToolResponse(message=error_msg, data={"execution_log": execution_log}, error=True)
+
+                # Execute Could not get page for session {session_id}, index {current_page_idx_for_plan}."
+                        execution_summary.append({"step": step_number_overall, "action_spec": sub_action_spec, "result_message": error_msg, "error": True, "data": None})
+                        # ... (emit error and return as in Task 25) ...
+                        plan_executed_successfully_this_iteration = False; break # Break from inner plan loop
+
+                    sub_action_response = await self._execute_sub_action_on_page(sub_action_spec, page_for_sub_action, session_id, current_page_idx_for_plan)
+                    
+                    current_step_summary = {
+                        "step": step_number_overall, "action_spec": sub_action_spec, 
+                        "result_message": sub_action_response.message, "error": sub_action_response.error, "data": sub_action_response.data
+                    }
+                    execution_summary.append(current_step_summary)
+                    previous_actions_feedback += f"Step {step_number_overall}: {sub_action_spec.get('action_type')} -> Result: {'Success' if not sub_action_response.error else 'Failure'}: {sub_action_response.message}\n"
+
+                    if sub_action_response.error:
+                        error_msg = f"Sub-action step {step_number_overall} ('{sub_action_spec.get('action_type')}') failed: {sub_action_response.message}"
+                        logger.warning(f"BrowserAgentTool._agent_execute: {error_msg}")
+                        await self._emit_browser_event("agent_execute_sub_action", "error", {"overall_step": step_number_overall, "error": error_msg, "session_id": session_id})
+                        # FUTURE: Instead of breaking, could feed this error back to planner for re-planning.
+                        # For now, we stop on first sub-action failure of a plan segment.
+                        plan_executed_successfully_this_iteration = False; break 
+
+                    await self._emit_browser_event("agent_execute_sub the sub-action on the current page
+                sub_action_response = await self._execute_sub_action_on_page(sub_action_spec, page, session_id, current_page_index)
+                
+                current_step_log = {
+                    "step": i + 1,
+                    "action_spec": sub_action_spec,
+                    "result_message": sub_action_response.message,
+                    "error": sub_action_response.error,
+                    "data": sub_action_response.data
+                }
+                execution_log.append(current_step_log)
+
+                if sub_action_response.error:
+                    error_msg = f"Sub-action {i+1} ('{sub_action_spec.get('action_type')}') failed: {sub_action_response.message}"
+                    logger.warning(f"AgentExecute: {error_msg}")
+                    await self._emit_browser_event("agent_execute_sub_action", "error", {**step_info, "error": error_msg})
+                    
+                    # Basic error handling: stop execution on first sub-action failure
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": error_msg, "execution_log": execution_log})
+                    return ToolResponse(message=error_msg, data={"execution_log": execution_log}, error=True)
+                
+                await self._emit_browser_event("agent_execute_sub_action", "completed", {**step_info, "result_data": sub_action_response.data})
+
+                # Capture data from 'extract' or 'report_finding' actions
+                if sub_action_spec.get("action_type") == "extract" and sub_action_response.data:
+                    final_result_data = sub_action_response.data # Overwrites with latest extraction
+                elif sub_action_spec.get("action_type") == "report_finding" and sub_action_response.data:
+                    final_result_data = sub_action_response.data # Planner explicitly reported
+                
+                # After each step, potentially update page_content_summary for the *next* planning step if replanning was implemented.
+                # For now, we execute a pre-defined plan.
+                # If_action", "completed", {"overall_step": step_number_overall, "result_data": sub_action_response.data, "session_id": session_id})
+                    
+                    if sub_action_spec.get("action_type") == "extract" and sub_action_response.data:
+                        final_extracted_data_or_finding = sub_action_response.data 
+                    if sub_action_spec.get("action_type") == "report_finding" and sub_action_response.data:
+                        final_extracted_data_or_finding = sub_action_response.data
+                        logger.info(f"BrowserAgentTool._agent_execute: Planner reported finding: {final_extracted_data_or_finding}")
+                        # If planner reports finding, assume goal is met for this simplified loop
+                        plan_executed_successfully_this_iteration = True; break # Break from inner plan loop, then outer will also break
+
+                if not plan_executed_successfully_this_iteration:
+                    # A sub-action in the current plan failed.
+                    # FUTURE: Here, we could call `planner.decompose_task` again, passing `previous_actions_feedback`
+                    # to allow the LLM to generate a new plan based on the failure.
+                    # For now, we'll just terminate and report the failure.
+                    logger.warning(f"BrowserAgentTool._agent_execute: Plan execution failed at step {len(execution_summary)}. Goal: '{instructions}'")
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": "A sub-action in the plan failed.", "completed_steps": execution_summary, "session_id": session_id})
+                    return ToolResponse(message="Agent execution failed at one of the sub-steps.", data={"summary": execution_summary, "final_data": final_extracted_data_or_finding}, error=True)
+
+                if sub_actions_plan and sub_actions_plan[-1].get("action_type") == "report_finding":
+                    logger.info("BrowserAgentTool._agent_execute: Plan completed with 'report_finding'. Goal achieved.")
+                    break # Break outer execution loop
+
+                if not sub_actions_plan: # Planner returned empty, signaling completion
+                    logger.info("BrowserAgentTool._agent_execute: Planner returned empty plan, assuming completion.")
+                    break
+
+
+            success_message = f"Agent execution for '{instructions}' processed. Steps a "navigate" action occurred, the `page` object is already updated to the new URL.
+                # If a "new_page" action were in the plan, current_page_index would need to change.
+
+            success_message = f"Agent execution for goal '{instructions}' completed through {len(execution_log)} steps."
+            if final_result_data:
+                success_message += f" Final data/finding: {json.dumps(final_result_data if isinstance(final_result_data, dict) else {'value': final_result_data})}"
+            
+            await self._emit_browser_event("agent_execute", "completed", {"goal": instructions, "execution_log": execution_log, "final_data": final_result_data, "session_id": session_id})
+            return ToolResponse(message=success_message, data={"execution_log": execution_log, "final_data": final_result_data})
+
+    ```
+
+**Key changes in `BrowserAgentTool._agent_execute`:**
+*   It now fetches an initial page summary to provide context to the `ComputerUsePlanner`.
+*   It iterates through the plan generated by `ComputerUsePlanner`.
+*   For each sub-action in the plan, it calls `_execute_sub_action_on_page` (which internally calls the tool's specific action methods like `_navigate`, `_ai_act`, `_extract`).
+*   It collects results and logs the execution of each sub-action.
+*   If a sub-action fails, the current implementation stops and reports the failure. More advanced versions could attempt replanning or alternative steps.
+*   It captures data from `extract` or `report_finding` sub-actions as the potential final result.
+*   It emits detailed `BROWSER_ACTION` events for the overall `agent_execute` lifecycle and for each sub-action.
+
+**Dependencies/Prerequisites:**
+*   Task 24 (ComputerUsePlanner), Task 41 (real `act`), Task 42 (real `extract`).
+*   `BrowserManager` provides reliable page objects.
+*   LLM for task decomposition (`ComputerUsePlanner`) is functional.
+*   LLM for `act` and `extract` sub-actions (within `ActionExecutor`) is functional.
+
+**Integration with Agent Zero:**
+*   The `agent_execute` action becomes a powerful way for the main Agent Zero agent to delegate complex, multi-step browser-based tasks.
+*   The success of this heavily relies on the quality of the plan generated by `ComputerUsePlanner` and the reliability of the individual sub-action executions.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond those already required for `BrowserAgentTool` and its LLM usage.
+*   Ensure environment variables for OpenAI are correctly configured.
+
+**Summary of Task 43:**
+This task implements a more functional version of the `agent_execute` action in `BrowserAgentTool`. It uses an LLM-based planner (`ComputerUsePlanner`) to break down a high-level goal into a sequence of browser sub-actions and then attempts to execute this plan step-by-step, calling the tool's other implemented actions (`_navigate`, `_ai_act`, `_extract`). This provides a significant enhancement to the tool's autonomy for web-based tasks. True "computer use" beyond the browser or highly dynamic replanning remains out of scope for this specific task.
+
+Please confirm to proceed.
