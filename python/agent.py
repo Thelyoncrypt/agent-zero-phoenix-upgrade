@@ -498,6 +498,14 @@ class Agent:
             print(f"Agent {self.agent_name}: BrowserAgent tool not available: {e}")
         
         try:
+            # Register WebCrawler tool
+            from python.tools.web_crawler_tool import WebCrawlerTool
+            web_crawler_tool = WebCrawlerTool(self)
+            self.add_tool(web_crawler_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: WebCrawler tool not available: {e}")
+        
+        try:
             # Register Response tool
             from python.tools.response import ResponseTool
             response_tool = ResponseTool(self)

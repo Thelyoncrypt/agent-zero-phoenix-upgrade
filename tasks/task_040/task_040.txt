@@ -1,0 +1,580 @@
+## Task 40: Create and Update Prompt Templates for the New System
+
+**Focus:**
+This task involves reviewing the existing prompts in `agent zero full code.md` (under `prompts/default/`) and creating new or updating existing prompt files to accurately reflect the capabilities and usage of all newly integrated tools and system behaviors (StreamProtocol, BrowserAgent, WebCrawler, KnowledgeAgent, MemoryAgent, HybridMemory, ChatterboxTTS).
+
+**Key Prompt Files to Create/Update:**
+
+*   **`prompts/default/agent.system.main.md`**:
+    *   Update the "Environment" section if the agent's core environment or access patterns change due to new tools.
+    *   Update the "Problem Solving" section to guide the agent on when and how to use the new high-level tools (e.g., when to use `hybrid_memory_tool` vs. direct `knowledge_agent_tool` or `memory_agent_tool`, how to leverage `browser_agent` for information gathering vs. `web_crawler_tool`).
+    *   Update "General operation manual" / "Best practices" for new tools.
+*   **`prompts/default/agent.system.tools.md`**:
+    *   This is the **primary file for updates**. We've been adding tool descriptions here incrementally. This task will consolidate and ensure all new tools (`stream_protocol_tool` - though less likely to be directly called by LLM, `browser_agent_tool`, `web_crawler_tool`, `knowledge_agent_tool`, `memory_agent_tool`, `hybrid_memory_tool`, `chatterbox_tts_tool`) have clear, comprehensive, and accurate descriptions with usage examples.
+*   **New Tool-Specific Prompts (if a tool's internal LLM calls require them):**
+    *   `prompts/default/tool.browser_agent.act.system.md`: (Already created in Task 22 as `ACTION_TRANSLATION_SYSTEM_PROMPT` within `actions.py` - formalize it here).
+    *   `prompts/default/tool.browser_agent.extract.system.md`: (Already created in Task 23 as `DATA_EXTRACTION_SYSTEM_PROMPT` within `actions.py` - formalize it here).
+    *   `prompts/default/tool.browser_agent.agent_execute.system.md`: (Already created in Task 24 as `TASK_DECOMPOSITION_SYSTEM_PROMPT` within `ai_models.py` - formalize it here).
+    *   `prompts/default/tool.memory_agent.summarize.system.md`: (Already created in Task 27 within `memory.py` - formalize it here).
+    *   `prompts/default/tool.knowledge_agent.rag_generate.system.md`: (Already created in Task 17 as `RAG_GENERATION_SYSTEM_PROMPT` within `prompts.py` - formalize it here).
+*   **Framework Prompts (`fw.*.md`):**
+    *   Review if any new framework messages are needed due to the new tools or event types (e.g., specific messages for `GENERATIVE_UI` responses or detailed `CRAWL_PROGRESS` stages).
+    *   `fw.tool_result.md`: Ensure it can adequately represent the potentially complex data returned by new tools (e.g., file paths for audio, structured data from extraction). It already uses JSON, which is good.
+
+**Implementation Details:**
+
+**1. `prompts/default/agent.system.main.md` (Conceptual Additions/Modifications):**
+
+```markdown
+# Agent Zero System Manual
+
+{{ include "./agent.system.main.role.md" }} 
+# (No major changes to role, but emphasize managing complex tasks with new tools)
+
+{{ include "./agent.system.main.environment.md" }}
+# Environment
+# - You operate within a Dockerized Linux environment.
+# - You have access to a powerful suite of tools for web interaction (browser_agent, web_crawler), 
+#   knowledge management (knowledge_agent, memory_agent, hybrid_memory), and multimedia (chatterbox_tts).
+# - Your actions and thoughts are streamed to a user interface via the StreamProtocol.
+# - Be mindful of resource consumption when using web crawling or browser automation.
+
+{{ include "./agent.system.main.communication.md" }}
+# (Communication via JSON remains, but now with real-time event streaming)
+# - Your internal state changes, thoughts, and tool usage will be streamed as events.
+
+{{ include "./agent.system.main.solving.md" }}
+# Problem Solving
+# - For complex tasks requiring web interaction or information gathering:
+#   - Use `browser_agent` for targeted, interactive browsing (logins, form filling, specific element interaction).
+#   - Use `web_crawler_tool` for broader information gathering from websites, sitemaps, or specific document URLs, intending to populate the knowledge base.
+# - For knowledge and memory:
+#   - Prefer `hybrid_memory_tool` for general context retrieval, as it combines multiple memory sources.
+#   - Use `knowledge_agent_tool` if you need to query the formal RAG knowledge base directly or ingest new processed documents (usually done via `web_crawler_tool`).
+#   - Use `memory_agent_tool` for fine-grained control over intelligent/Mem0 memories, including graph operations or specific summarization tasks if `hybrid_memory_tool` isn't suitable.
+#   - Always consider if information should be stored persistently using an appropriate memory tool.
+# - For generating speech or converting voice:
+#   - Use `chatterbox_tts_tool` with appropriate parameters (text, voice prompts).
+# - When tasks are long or involve multiple steps, provide progress updates using `PROGRESS_UPDATE` events (often handled by tools, but you can emit directly if needed for your own processing).
+# - If you require specific input that a simple text message cannot capture, request a `GENERATIVE_UI` component.
+# - If you are stuck or an operation fails critically, request `HUMAN_INTERVENTION`.
+
+{{ include "./agent.system.main.tips.md" }}
+# (Add tips related to new tools, e.g., providing clear instructions for browser_agent, specifying schemas for extraction)
+```
+
+**2. `prompts/default/agent.system.tools.md` (Consolidated and Updated):**
+This file will now be quite extensive. We'll include the descriptions formulated in previous tasks.
+
+```markdown
+## Tools available:
+
+{{ include './agent.system.tool.response.md' }} 
+# (No change from original)
+
+{{ include './agent.system.tool.call_sub.md' }}
+# (No change from original)
+
+{{ include './agent.system.tool.behaviour.md' }}
+# (No change from original)
+
+# --- BrowserAgentTool ---
+### browser_agent:
+# Controls a browser for interactive tasks. All actions are performed within a session context, identified by session_id (defaults to current thread_id).
+# Pages within a session are 0-indexed.
+# Args:
+#   action: string - "navigate", "act", "extract", "agent_execute", "get_page_content", "new_page", "close_page", "close_context_session".
+#   session_id: string - (Optional) ID for the browser session/context. Defaults to current conversation thread_id.
+#   page_index: int - (Optional, default 0) Target page within the session for actions like 'act', 'extract', 'get_page_content', 'close_page'.
+# For "navigate":
+#   url: string - URL to navigate to.
+# For "act":
+#   instructions: string - Natural language instructions for interaction (e.g., "click login button", "type 'user' in username field and 'pass' in password field").
+# For "extract":
+#   instructions: string - Natural language description of what to extract.
+#   schema: dict - (Optional) JSON schema for the desired output structure.
+# For "agent_execute" (complex multi-step browser tasks):
+#   instructions: string - High-level goal for the browser automation.
+#   model: string - (Optional) Specific planner model for task decomposition.
+# For "get_page_content": No additional args beyond session_id, page_index. Returns current page URL, title, and HTML content snippet.
+# For "new_page": No additional args beyond session_id. Returns new page index and URL.
+# For "close_page": No additional args beyond session_id, page_index.
+# For "close_context_session": No additional args beyond session_id.
+# Example (navigate):
+# { "tool_name": "browser_agent", "tool_args": { "action": "navigate", "url": "https://example.com" } }
+# Example (act):
+# { "tool_name": "browser_agent", "tool_args": { "action": "act", "instructions": "Click the 'Submit' button" } }
+# Example (extract):
+# { "tool_name": "browser_agent", "tool_args": { "action": "extract", "instructions": "Get the main article title", "schema": {"type": "object", "properties": {"article_title": {"type": "string"}}} } }
+
+# --- WebCrawlerTool ---
+### web_crawler_tool:
+# Crawls websites, sitemaps, or markdown files. Content is processed, chunked, and ingested into the knowledge base.
+# Arguments:
+#   action: string - "crawl_site", "crawl_sitemap", "crawl_markdown_file_url".
+#   url: string - (Required for crawl_site, crawl_markdown_file_url) The root URL or direct file URL.
+#   sitemap_url: string - (Optional for crawl_sitemap if 'urls' is provided) URL of the sitemap.xml to parse for URLs.
+#   urls: list[string] - (Optional for crawl_sitemap if 'sitemap_url' is provided) A direct list of URLs to crawl.
+#   max_depth: int - (Optional for crawl_site, default 2) Max recursion depth.
+#   max_pages: int - (Optional for crawl_site, default 20) Max pages to crawl per site.
+#   chunk_size: int - (Optional, default 1000) Max characters per chunk for ingestion.
+# Example (crawl_site):
+# { "tool_name": "web_crawler_tool", "tool_args": { "action": "crawl_site", "url": "https://docs.example.com", "max_depth": 1 } }
+# Example (crawl_sitemap from URL):
+# { "tool_name": "web_crawler_tool", "tool_args": { "action": "crawl_sitemap", "sitemap_url": "https://example.com/sitemap.xml" } }
+
+# --- KnowledgeAgentTool ---
+### knowledge_agent_tool:
+# Manages and queries a knowledge base using RAG principles. Used for accessing already ingested documents.
+# Arguments:
+#   action: string - "query" (RAG answser), "raw_search" (vector search), "list_sources", "ingest_chunks" (advanced use).
+#   For "query" and "raw_search":
+#     query: string - The search query or question.
+#     limit: int - (Optional, default 5) Max results.
+#     filter_metadata: dict - (Optional for raw_search) Metadata to filter results by (e.g., {"source_url": "https://example.com/doc1"}).
+#   For "ingest_chunks" (typically used by web_crawler_tool):
+#     chunks_data: list[dict] - List of chunks. Each dict: {"id": str, "text": str, "metadata": dict, "embedding": Optional[list[float]]}.
+# Example (query):
+# { "tool_name": "knowledge_agent_tool", "tool_args": { "action": "query", "query": "How does Pydantic validation work?" } }
+# Example (raw_search):
+# { "tool_name": "knowledge_agent_tool", "tool_args": { "action": "raw_search", "query": "Pydantic models", "limit": 3 } }
+
+# --- MemoryAgentTool (Mem0-based) ---
+### memory_agent_tool:
+# Manages an intelligent, persistent memory system for user-specific or session-specific information.
+# Arguments:
+#   action: string - "add", "search", "update", "delete", "get_all", "add_triplets", "search_graph", "summarize_memory".
+#   user_id: string - (Optional) User context for memory operations. Defaults to current session's user.
+#   For "add":
+#     messages: list[dict] - (Optional) Conversation messages (e.g., [{"role": "user", "content": "..."}]) to extract memories from.
+#     data: any - (Optional if 'messages') Generic data to store as a memory.
+#     memory_id: string - (Optional) Specific ID for the new memory.
+#     metadata: dict - (Optional) Additional metadata for the memory.
+#   For "search" (vector search):
+#     query: string - The search query.
+#     limit: int - (Optional, default 5) Max results.
+#   For "update":
+#     memory_id: string - ID of the memory to update.
+#     data: any - The new data for the memory.
+#     metadata: dict - (Optional) Metadata to add or update.
+#   For "delete":
+#     memory_id: string - ID of the memory to delete.
+#   For "get_all": No additional args beyond optional user_id.
+#   For "add_triplets":
+#     triplets: list[dict] - KG triplets (e.g., [{"head": "A", "relation": "is_part_of", "tail": "B"}]).
+#   For "search_graph":
+#     entity: string - (Optional) Entity to search connections for.
+#     relation: string - (Optional) Relation type to filter by.
+#     target: string - (Optional) Target entity.
+#     limit: int - (Optional, default 10) Max graph results.
+#   For "summarize_memory":
+#     memory_id: string - (Optional) Specific memory ID to summarize.
+#     query_for_context: string - (Optional if memory_id) Query to find memories to summarize collectively.
+# Example (add conversation turn to memory):
+# { "tool_name": "memory_agent_tool", "tool_args": { "action": "add", "messages": [{"role": "user", "content": "I prefer blue"}], "user_id": "user123" } }
+# Example (search memory):
+# { "tool_name": "memory_agent_tool", "tool_args": { "action": "search", "query": "user's color preference", "user_id": "user123" } }
+
+# --- HybridMemoryTool ---
+### hybrid_memory_tool:
+# Unified interface to store interactions and retrieve combined context from both structured (Agent Zero native) and intelligent (Mem0-like) memories.
+# Arguments:
+#   action: string - "store_interaction", "retrieve_context".
+#   user_id: string - (Optional) User context.
+#   For "store_interaction":
+#     interaction_data: dict - Data about the interaction. Should include 'content' (string) and/or 'messages' (list of dicts).
+#       Example: {"type": "user_query", "content": "User asked about X", "messages": [{"role": "user", "content": "What about X?"}]}
+#   For "retrieve_context":
+#     query: string - The query to retrieve relevant context for.
+#     limit_per_source: int - (Optional, default 3) Max results from each underlying memory source.
+#     total_limit: int - (Optional, default 5) Overall max results after combining and ranking.
+# Example (store interaction):
+# { "tool_name": "hybrid_memory_tool", "tool_args": { "action": "store_interaction", "interaction_data": { "content": "Agent found solution Y."} } }
+# Example (retrieve context):
+# { "tool_name": "hybrid_memory_tool", "tool_args": { "action": "retrieve_context", "query": "solutions for problem X" } }
+
+# --- ChatterboxTTSTool ---
+### chatterbox_tts_tool:
+# Generates speech from text (TTS) or performs voice conversion (VC).
+# Arguments:
+#   action: string - "generate_speech" or "convert_voice".
+#   For "generate_speech":
+#     text: string - The text to synthesize.
+#     audio_prompt_path: string - (Optional) Path (relative to work_dir) to a .wav file for voice cloning.
+#     exaggeration: float - (Optional, default 0.5) Emotion/intensity control.
+#     cfg_weight: float - (Optional, default 0.5) Pacing/adherence control.
+#     temperature: float - (Optional, default 0.8) Sampling temperature.
+#   For "convert_voice":
+#     source_audio_path: string - Path (relative to work_dir) to the source .wav file.
+#     target_voice_path: string - Path (relative to work_dir) to the target voice .wav file.
+# Output: Returns a dict with 'audio_path' (relative path to generated .wav in work_dir/tmp/audio_outputs or work_dir/tmp/vc_outputs) and 'sample_rate'.
+# Example (TTS):
+# { "tool_name": "chatterbox_tts_tool", "tool_args": { "action": "generate_speech", "text": "Hello world." } }
+
+# --- StreamProtocolTool (Primarily for internal use / advanced control) ---
+# ### stream_protocol_tool:
+# # Manages AG-UI streaming. Typically used internally by the agent, but can be called for specific stream control.
+# # Arguments:
+# #   action: string - "emit_event", "start_session", "end_session", "update_state", "resume_agent_with_message", "force_resume_agent".
+# #   For "emit_event":
+# #     event_type: string - (See StreamEventType enum values, e.g., "PROGRESS_UPDATE", "CUSTOM_EVENT").
+# #     payload: dict - Data for the event.
+# #     thread_id: string - (Optional) Target thread. Defaults to current.
+# #   For "start_session":
+# #     thread_id: string - ID for the new session.
+# #     user_id: string - (Optional) User ID for the session.
+# #     initial_state: dict - (Optional) Initial state for the session.
+# #   For "end_session":
+# #     thread_id: string - Session ID to end.
+# #   For "update_state": (Agent wants to push its state delta to clients)
+# #     thread_id: string - Target thread.
+# #     state_delta: dict - The changes to the agent's state.
+# # Example (emit custom progress):
+# # { "tool_name": "stream_protocol_tool", "tool_args": { "action": "emit_event", "event_type": "PROGRESS_UPDATE", "payload": {"message": "Step 1 of 3 complete", "percentage": 33.3} } }
+
+{{ include './agent.system.tool.code_exe.md' }} 
+# (No change from original, but ensure its output logging is compatible with streaming if verbose)
+
+{{ include './agent.system.tool.input.md' }}
+# (No change from original)
+
+# Vision tools (if applicable, from original)
+# {{ include './agent.system.tools_vision.md' }}
+```
+
+**3. Tool-Specific System Prompts (Formalizing from Python code):**
+
+*   **`prompts/default/tool.browser_agent.act.system.md`:**
+    Copy content of `ACTION_TRANSLATION_SYSTEM_PROMPT` from `python/agents/browser_agent/actions.py` (Task 22).
+*   **`prompts/default/tool.browser_agent.extract.system.md`:**
+    Copy content of `DATA_EXTRACTION_SYSTEM_PROMPT` from `python/agents/browser_agent/actions.py` (Task 23).
+*   **`prompts/default/tool.browser_agent.agent_execute.system.md`:**
+    Copy content of `TASK_DECOMPOSITION_SYSTEM_PROMPT` from `python/agents/browser_agent/ai_models.py` (Task 24).
+*   **`prompts/default/tool.memory_agent.summarize.system.md`:**
+    Create based on the summarization prompt in `Mem0MemorySystem.summarize_memory_content` (Task 27).
+    ```markdown
+# You are an expert at summarizing text concisely.
+    # Given a piece of text, provide a brief summary highlighting the key information.
+    # The input text will be prefixed with "TEXT:\n\"\"\"\n" and suffixed with "\n\"\"\"\n\nSUMMARY:".
+    # Your output should only be the summary itself.
+```
+*   **`prompts/default/tool.knowledge_agent.rag_generate.system.md`:**
+    Copy content of `RAG_GENERATION_SYSTEM_PROMPT` from `python/agents/knowledge_agent/prompts.py` (Task 17).
+
+**Dependencies/Prerequisites:**
+*   All previous tasks, especially those defining the tools and their arguments.
+
+**Integration with Agent Zero:**
+*   The agent's core LLM will use these updated prompts to understand how and when to use the new and modified tools.
+*   Clearer tool descriptions and examples will improve the LLM's ability to correctly formulate tool calls.
+*   Tool-specific system prompts (for tools that internally use LLMs) are now centralized in the `prompts` directory. The Python code for those tools will need to be updated to load these prompts (e.g., using `self.agent.read_prompt(...)`).
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `chatterbox_tts_tool` description and usage examples are added to `agent.system.tools.md`.
+
+**Docker Compatibility:**
+*   All new and modified `.md` files under the `prompts/` directory must be included in the Docker image. The existing `COPY` mechanisms or `git clone` in the Docker setup should handle this if the `prompts` directory is part of the copied/cloned content.
+
+**Summary of Task 40:**
+This task is a comprehensive update of Agent Zero's prompt engineering to incorporate all the new tools and capabilities from the "Phoenix" upgrade. It involves revising the main system prompt to guide the agent on using these tools effectively and ensuring that the `agent.system.tools.md` file contains accurate, detailed, and example-rich descriptions for each tool. Additionally, system prompts used internally by tools that make their own LLM calls are formalized and moved to the `prompts` directory. This is a critical step for enabling the LLM to correctly leverage the new system's power.
+
+With this task, the definition and high-level integration of most new features are complete. The subsequent major efforts would be the deep implementation of the *actual AI and library logic* within the placeholder methods of the tools we've defined.
+
+This task, **Task 40**, significantly moves us towards the completion of the *design and structural integration* phase of the upgrade.
+
+Please confirm to proceed to the next phase, which would likely involve starting the detailed implementation of one of the tools (e.g., full Playwright actions for `BrowserAgentTool`, or real Supabase integration for `KnowledgeAgentTool`).You are absolutely right! Updating the prompts is a crucial step that ties together many of the new functionalities and tools we've been integrating. It's a very good point to address this now as it will influence how the agent understands and decides to use these new capabilities.
+
+Creating comprehensive prompt templates for the new system *will* be a significant step towards completing the "Phoenix" upgrade's core logic definition. After this, the remaining tasks would primarily involve:
+1.  Implementing the *actual* AI/LLM logic within the placeholder methods of tools like `BrowserAgentTool` (for `act`, `extract`, `agent_execute`) and `MemoryAgentTool` (for Mem0's intelligent processing, graph building from text).
+2.  Fully integrating and testing the `ChatterboxTTSTool` and `ChatterboxVCHandler` with actual models.
+3.  Refining the `HybridMemoryTool`'s ranking and merging algorithms.
+4.  Implementing robust client-side handling for `GENERATIVE_UI` and `HUMAN_INTERVENTION` if a new UI is part of the scope (though we focused on backend).
+5.  Finalizing Docker configurations, comprehensive testing, and documentation.
+
+So, yes, creating these prompt templates is a major milestone. Let's call this **Task 40**.
+
+## Task 40: Create and Update Prompt Templates for the New System
+
+**Focus:**
+This task involves reviewing the existing prompts in `agent zero full code.md` (under `prompts/default/`) and creating new or updating existing prompt files to accurately reflect the capabilities and usage of all newly integrated tools and system behaviors (StreamProtocol, BrowserAgent, WebCrawler, KnowledgeAgent, MemoryAgent, HybridMemory, ChatterboxTTS).
+
+**Key Prompt Files to Create/Update:**
+
+*   **`prompts/default/agent.system.main.md`**:
+    *   Update the "Environment" section if the agent's core environment or access patterns change due to new tools.
+    *   Update the "Problem Solving" section to guide the agent on when and how to use the new high-level tools (e.g., when to use `hybrid_memory_tool` vs. direct `knowledge_agent_tool` or `memory_agent_tool`, how to leverage `browser_agent` for information gathering vs. `web_crawler_tool`).
+    *   Update "General operation manual" / "Best practices" for new tools.
+*   **`prompts/default/agent.system.tools.md`**:
+    *   This is the **primary file for updates**. We've been adding tool descriptions here incrementally. This task will consolidate and ensure all new tools (`stream_protocol_tool` - though less likely to be directly called by LLM, `browser_agent_tool`, `web_crawler_tool`, `knowledge_agent_tool`, `memory_agent_tool`, `hybrid_memory_tool`, `chatterbox_tts_tool`) have clear, comprehensive, and accurate descriptions with usage examples.
+*   **New Tool-Specific Prompts (if a tool's internal LLM calls require them):**
+    *   `prompts/default/tool.browser_agent.act.system.md`: (Already created in Task 22 as `ACTION_TRANSLATION_SYSTEM_PROMPT` within `actions.py` - formalize it here).
+    *   `prompts/default/tool.browser_agent.extract.system.md`: (Already created in Task 23 as `DATA_EXTRACTION_SYSTEM_PROMPT` within `actions.py` - formalize it here).
+    *   `prompts/default/tool.browser_agent.agent_execute.system.md`: (Already created in Task 24 as `TASK_DECOMPOSITION_SYSTEM_PROMPT` within `ai_models.py` - formalize it here).
+    *   `prompts/default/tool.memory_agent.summarize.system.md`: (Already created in Task 27 within `memory.py` - formalize it here).
+    *   `prompts/default/tool.knowledge_agent.rag_generate.system.md`: (Already created in Task 17 as `RAG_GENERATION_SYSTEM_PROMPT` within `prompts.py` - formalize it here).
+*   **Framework Prompts (`fw.*.md`):**
+    *   Review if any new framework messages are needed due to the new tools or event types (e.g., specific messages for `GENERATIVE_UI` responses or detailed `CRAWL_PROGRESS` stages).
+    *   `fw.tool_result.md`: Ensure it can adequately represent the potentially complex data returned by new tools (e.g., file paths for audio, structured data from extraction). It already uses JSON, which is good.
+
+**Implementation Details:**
+
+**1. `prompts/default/agent.system.main.md` (Conceptual Additions/Modifications):**
+
+```markdown
+# Agent Zero System Manual
+
+{{ include "./agent.system.main.role.md" }} 
+# (No major changes to role, but emphasize managing complex tasks with new tools)
+
+{{ include "./agent.system.main.environment.md" }}
+# Environment
+# - You operate within a Dockerized Linux environment.
+# - You have access to a powerful suite of tools for web interaction (browser_agent, web_crawler), 
+#   knowledge management (knowledge_agent, memory_agent, hybrid_memory), and multimedia (chatterbox_tts).
+# - Your actions and thoughts are streamed to a user interface via the StreamProtocol.
+# - Be mindful of resource consumption when using web crawling or browser automation.
+
+{{ include "./agent.system.main.communication.md" }}
+# (Communication via JSON remains, but now with real-time event streaming)
+# - Your internal state changes, thoughts, and tool usage will be streamed as events.
+
+{{ include "./agent.system.main.solving.md" }}
+# Problem Solving
+# - For complex tasks requiring web interaction or information gathering:
+#   - Use `browser_agent` for targeted, interactive browsing (logins, form filling, specific element interaction).
+#   - Use `web_crawler_tool` for broader information gathering from websites, sitemaps, or specific document URLs, intending to populate the knowledge base.
+# - For knowledge and memory:
+#   - Prefer `hybrid_memory_tool` for general context retrieval, as it combines multiple memory sources.
+#   - Use `knowledge_agent_tool` if you need to query the formal RAG knowledge base directly or ingest new processed documents (usually done via `web_crawler_tool`).
+#   - Use `memory_agent_tool` for fine-grained control over intelligent/Mem0 memories, including graph operations or specific summarization tasks if `hybrid_memory_tool` isn't suitable.
+#   - Always consider if information should be stored persistently using an appropriate memory tool.
+# - For generating speech or converting voice:
+#   - Use `chatterbox_tts_tool` with appropriate parameters (text, voice prompts).
+# - When tasks are long or involve multiple steps, provide progress updates using `PROGRESS_UPDATE` events (often handled by tools, but you can emit directly if needed for your own processing).
+# - If you require specific input that a simple text message cannot capture, request a `GENERATIVE_UI` component.
+# - If you are stuck or an operation fails critically, request `HUMAN_INTERVENTION`.
+
+{{ include "./agent.system.main.tips.md" }}
+# (Add tips related to new tools, e.g., providing clear instructions for browser_agent, specifying schemas for extraction)
+```
+
+**2. `prompts/default/agent.system.tools.md` (Consolidated and Updated):**
+This file will now be quite extensive. We'll include the descriptions formulated in previous tasks.
+
+```markdown
+## Tools available:
+
+{{ include './agent.system.tool.response.md' }} 
+# (No change from original)
+
+{{ include './agent.system.tool.call_sub.md' }}
+# (No change from original)
+
+{{ include './agent.system.tool.behaviour.md' }}
+# (No change from original)
+
+# --- BrowserAgentTool ---
+### browser_agent:
+# Controls a browser for interactive tasks. All actions are performed within a session context, identified by session_id (defaults to current thread_id).
+# Pages within a session are 0-indexed.
+# Args:
+#   action: string - "navigate", "act", "extract", "agent_execute", "get_page_content", "new_page", "close_page", "close_context_session".
+#   session_id: string - (Optional) ID for the browser session/context. Defaults to current conversation thread_id.
+#   page_index: int - (Optional, default 0) Target page within the session for actions like 'act', 'extract', 'get_page_content', 'close_page'.
+# For "navigate":
+#   url: string - URL to navigate to.
+# For "act":
+#   instructions: string - Natural language instructions for interaction (e.g., "click login button", "type 'user' in username field and 'pass' in password field").
+# For "extract":
+#   instructions: string - Natural language description of what to extract.
+#   schema: dict - (Optional) JSON schema for the desired output structure.
+# For "agent_execute" (complex multi-step browser tasks):
+#   instructions: string - High-level goal for the browser automation.
+#   model: string - (Optional) Specific planner model for task decomposition.
+# For "get_page_content": No additional args beyond session_id, page_index. Returns current page URL, title, and HTML content snippet.
+# For "new_page": No additional args beyond session_id. Returns new page index and URL.
+# For "close_page": No additional args beyond session_id, page_index.
+# For "close_context_session": No additional args beyond session_id.
+# Example (navigate):
+# { "tool_name": "browser_agent", "tool_args": { "action": "navigate", "url": "https://example.com" } }
+# Example (act):
+# { "tool_name": "browser_agent", "tool_args": { "action": "act", "instructions": "Click the 'Submit' button" } }
+# Example (extract):
+# { "tool_name": "browser_agent", "tool_args": { "action": "extract", "instructions": "Get the main article title", "schema": {"type": "object", "properties": {"article_title": {"type": "string"}}} } }
+
+# --- WebCrawlerTool ---
+### web_crawler_tool:
+# Crawls websites, sitemaps, or markdown files. Content is processed, chunked, and ingested into the knowledge base.
+# Arguments:
+#   action: string - "crawl_site", "crawl_sitemap", "crawl_markdown_file_url".
+#   url: string - (Required for crawl_site, crawl_markdown_file_url) The root URL or direct file URL.
+#   sitemap_url: string - (Optional for crawl_sitemap if 'urls' is provided) URL of the sitemap.xml to parse for URLs.
+#   urls: list[string] - (Optional for crawl_sitemap if 'sitemap_url' is provided) A direct list of URLs to crawl.
+#   max_depth: int - (Optional for crawl_site, default 2) Max recursion depth.
+#   max_pages: int - (Optional for crawl_site, default 20) Max pages to crawl per site.
+#   chunk_size: int - (Optional, default 1000) Max characters per chunk for ingestion.
+# Example (crawl_site):
+# { "tool_name": "web_crawler_tool", "tool_args": { "action": "crawl_site", "url": "https://docs.example.com", "max_depth": 1 } }
+# Example (crawl_sitemap from URL):
+# { "tool_name": "web_crawler_tool", "tool_args": { "action": "crawl_sitemap", "sitemap_url": "https://example.com/sitemap.xml" } }
+
+# --- KnowledgeAgentTool ---
+### knowledge_agent_tool:
+# Manages and queries a knowledge base using RAG principles. Used for accessing already ingested documents.
+# Arguments:
+#   action: string - "query" (RAG answser), "raw_search" (vector search), "list_sources", "ingest_chunks" (advanced use).
+#   For "query" and "raw_search":
+#     query: string - The search query or question.
+#     limit: int - (Optional, default 5) Max results.
+#     filter_metadata: dict - (Optional for raw_search) Metadata to filter results by (e.g., {"source_url": "https://example.com/doc1"}).
+#   For "ingest_chunks" (typically used by web_crawler_tool):
+#     chunks_data: list[dict] - List of chunks. Each dict: {"id": str, "text": str, "metadata": dict, "embedding": Optional[list[float]]}.
+# Example (query):
+# { "tool_name": "knowledge_agent_tool", "tool_args": { "action": "query", "query": "How does Pydantic validation work?" } }
+# Example (raw_search):
+# { "tool_name": "knowledge_agent_tool", "tool_args": { "action": "raw_search", "query": "Pydantic models", "limit": 3 } }
+
+# --- MemoryAgentTool (Mem0-based) ---
+### memory_agent_tool:
+# Manages an intelligent, persistent memory system for user-specific or session-specific information.
+# Arguments:
+#   action: string - "add", "search", "update", "delete", "get_all", "add_triplets", "search_graph", "summarize_memory".
+#   user_id: string - (Optional) User context for memory operations. Defaults to current session's user.
+#   For "add":
+#     messages: list[dict] - (Optional) Conversation messages (e.g., [{"role": "user", "content": "..."}]) to extract memories from.
+#     data: any - (Optional if 'messages') Generic data to store as a memory.
+#     memory_id: string - (Optional) Specific ID for the new memory.
+#     metadata: dict - (Optional) Additional metadata for the memory.
+#   For "search" (vector search):
+#     query: string - The search query.
+#     limit: int - (Optional, default 5) Max results.
+#   For "update":
+#     memory_id: string - ID of the memory to update.
+#     data: any - The new data for the memory.
+#     metadata: dict - (Optional) Metadata to add or update.
+#   For "delete":
+#     memory_id: string - ID of the memory to delete.
+#   For "get_all": No additional args beyond optional user_id.
+#   For "add_triplets":
+#     triplets: list[dict] - KG triplets (e.g., [{"head": "A", "relation": "is_part_of", "tail": "B"}]).
+#   For "search_graph":
+#     entity: string - (Optional) Entity to search connections for.
+#     relation: string - (Optional) Relation type to filter by.
+#     target: string - (Optional) Target entity.
+#     limit: int - (Optional, default 10) Max graph results.
+#   For "summarize_memory":
+#     memory_id: string - (Optional) Specific memory ID to summarize.
+#     query_for_context: string - (Optional if memory_id) Query to find memories to summarize collectively.
+# Example (add conversation turn to memory):
+# { "tool_name": "memory_agent_tool", "tool_args": { "action": "add", "messages": [{"role": "user", "content": "I prefer blue"}], "user_id": "user123" } }
+# Example (search memory):
+# { "tool_name": "memory_agent_tool", "tool_args": { "action": "search", "query": "user's color preference", "user_id": "user123" } }
+
+# --- HybridMemoryTool ---
+### hybrid_memory_tool:
+# Unified interface to store interactions and retrieve combined context from both structured (Agent Zero native) and intelligent (Mem0-like) memories.
+# Arguments:
+#   action: string - "store_interaction", "retrieve_context".
+#   user_id: string - (Optional) User context.
+#   For "store_interaction":
+#     interaction_data: dict - Data about the interaction. Should include 'content' (string) and/or 'messages' (list of dicts).
+#       Example: {"type": "user_query", "content": "User asked about X", "messages": [{"role": "user", "content": "What about X?"}]}
+#   For "retrieve_context":
+#     query: string - The query to retrieve relevant context for.
+#     limit_per_source: int - (Optional, default 3) Max results from each underlying memory source.
+#     total_limit: int - (Optional, default 5) Overall max results after combining and ranking.
+# Example (store interaction):
+# { "tool_name": "hybrid_memory_tool", "tool_args": { "action": "store_interaction", "interaction_data": { "content": "Agent found solution Y."} } }
+# Example (retrieve context):
+# { "tool_name": "hybrid_memory_tool", "tool_args": { "action": "retrieve_context", "query": "solutions for problem X" } }
+
+# --- ChatterboxTTSTool ---
+### chatterbox_tts_tool:
+# Generates speech from text (TTS) or performs voice conversion (VC).
+# Arguments:
+#   action: string - "generate_speech" or "convert_voice".
+#   For "generate_speech":
+#     text: string - The text to synthesize.
+#     audio_prompt_path: string - (Optional) Path (relative to work_dir) to a .wav file for voice cloning.
+#     exaggeration: float - (Optional, default 0.5) Emotion/intensity control.
+#     cfg_weight: float - (Optional, default 0.5) Pacing/adherence control.
+#     temperature: float - (Optional, default 0.8) Sampling temperature.
+#   For "convert_voice":
+#     source_audio_path: string - Path (relative to work_dir) to the source .wav file.
+#     target_voice_path: string - Path (relative to work_dir) to the target voice .wav file.
+# Output: Returns a dict with 'audio_path' (relative path to generated .wav in work_dir/tmp/audio_outputs or work_dir/tmp/vc_outputs) and 'sample_rate'.
+# Example (TTS):
+# { "tool_name": "chatterbox_tts_tool", "tool_args": { "action": "generate_speech", "text": "Hello world." } }
+
+# --- StreamProtocolTool (Primarily for internal use / advanced control) ---
+# ### stream_protocol_tool:
+# # Manages AG-UI streaming. Typically used internally by the agent, but can be called for specific stream control.
+# # Arguments:
+# #   action: string - "emit_event", "start_session", "end_session", "update_state", "resume_agent_with_message", "force_resume_agent".
+# #   For "emit_event":
+# #     event_type: string - (See StreamEventType enum values, e.g., "PROGRESS_UPDATE", "CUSTOM_EVENT").
+# #     payload: dict - Data for the event.
+# #     thread_id: string - (Optional) Target thread. Defaults to current.
+# #   For "start_session":
+# #     thread_id: string - ID for the new session.
+# #     user_id: string - (Optional) User ID for the session.
+# #     initial_state: dict - (Optional) Initial state for the session.
+# #   For "end_session":
+# #     thread_id: string - Session ID to end.
+# #   For "update_state": (Agent wants to push its state delta to clients)
+# #     thread_id: string - Target thread.
+# #     state_delta: dict - The changes to the agent's state.
+# # Example (emit custom progress):
+# # { "tool_name": "stream_protocol_tool", "tool_args": { "action": "emit_event", "event_type": "PROGRESS_UPDATE", "payload": {"message": "Step 1 of 3 complete", "percentage": 33.3} } }
+
+{{ include './agent.system.tool.code_exe.md' }} 
+# (No change from original, but ensure its output logging is compatible with streaming if verbose)
+
+{{ include './agent.system.tool.input.md' }}
+# (No change from original)
+
+# Vision tools (if applicable, from original)
+# {{ include './agent.system.tools_vision.md' }}
+```
+
+**3. Tool-Specific System Prompts (Formalizing from Python code):**
+
+*   **`prompts/default/tool.browser_agent.act.system.md`:**
+    Copy content of `ACTION_TRANSLATION_SYSTEM_PROMPT` from `python/agents/browser_agent/actions.py` (Task 22).
+*   **`prompts/default/tool.browser_agent.extract.system.md`:**
+    Copy content of `DATA_EXTRACTION_SYSTEM_PROMPT` from `python/agents/browser_agent/actions.py` (Task 23).
+*   **`prompts/default/tool.browser_agent.agent_execute.system.md`:**
+    Copy content of `TASK_DECOMPOSITION_SYSTEM_PROMPT` from `python/agents/browser_agent/ai_models.py` (Task 24).
+*   **`prompts/default/tool.memory_agent.summarize.system.md`:**
+    Create based on the summarization prompt in `Mem0MemorySystem.summarize_memory_content` (Task 27).
+    ```markdown
+    # You are an expert at summarizing text concisely.
+    # Given a piece of text, provide a brief summary highlighting the key information.
+    # The input text will be prefixed with "TEXT:\n\"\"\"\n" and suffixed with "\n\"\"\"\n\nSUMMARY:".
+    # Your output should only be the summary itself.
+    ```
+*   **`prompts/default/tool.knowledge_agent.rag_generate.system.md`:**
+    Copy content of `RAG_GENERATION_SYSTEM_PROMPT` from `python/agents/knowledge_agent/prompts.py` (Task 17).
+
+**Dependencies/Prerequisites:**
+*   All previous tasks, especially those defining the tools and their arguments.
+
+**Integration with Agent Zero:**
+*   The agent's core LLM will use these updated prompts to understand how and when to use the new and modified tools.
+*   Clearer tool descriptions and examples will improve the LLM's ability to correctly formulate tool calls.
+*   Tool-specific system prompts (for tools that internally use LLMs) are now centralized in the `prompts` directory. The Python code for those tools will need to be updated to load these prompts (e.g., using `self.agent.read_prompt(...)`).
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `chatterbox_tts_tool` description and usage examples are added to `agent.system.tools.md`.
+
+**Docker Compatibility:**
+*   All new and modified `.md` files under the `prompts/` directory must be included in the Docker image. The existing `COPY` mechanisms or `git clone` in the Docker setup should handle this if the `prompts` directory is part of the copied/cloned content.
+
+**Summary of Task 40:**
+This task is a comprehensive update of Agent Zero's prompt engineering to incorporate all the new tools and capabilities from the "Phoenix" upgrade. It involves revising the main system prompt to guide the agent on using these tools effectively and ensuring that the `agent.system.tools.md` file contains accurate, detailed, and example-rich descriptions for each tool. Additionally, system prompts used internally by tools that make their own LLM calls are formalized and moved to the `prompts` directory. This is a critical step for enabling the LLM to correctly leverage the new system's power.
+
+With this task, the definition and high-level integration of most new features are complete. The subsequent major efforts would be the deep implementation of the *actual AI and library logic* within the placeholder methods of the tools we've defined.
+
+This task, **Task 40**, significantly moves us towards the completion of the *design and structural integration* phase of the upgrade.
+
+Please confirm to proceed to the next phase, which would likely involve starting the detailed implementation of one of the tools (e.g., full Playwright actions for `BrowserAgentTool`, or real Supabase integration for `KnowledgeAgentTool`).
