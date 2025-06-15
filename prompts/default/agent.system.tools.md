@@ -1,11 +1,56 @@
-# prompts/default/agent.system.tools.md
+# Agent Zero Tools Reference
 
 ## Available Tools
 
-This is a placeholder for the main tools configuration file.
-In a complete Agent Zero implementation, this would include all available tools.
+This document provides comprehensive descriptions of all available tools in the Agent Zero Phoenix system. Each tool includes detailed parameter specifications, usage examples, and integration notes.
 
-{{ include './agent.system.tool.browser.md' }}
+## Core Response Tools
+
+### response
+**Purpose**: Send a final response to the user and optionally end the conversation.
+
+**Parameters**:
+- `text` (required): The response text to send to the user
+
+**Usage**: Use this tool to provide final answers, conclusions, or when the task is complete.
+
+**Example**:
+```json
+{"tool_name": "response", "tool_args": {"text": "Task completed successfully. Here are the results..."}}
+```
+
+## Browser Automation Tools
+
+### browser_agent
+**Purpose**: Controls a browser for interactive tasks including navigation, element interaction, and data extraction.
+
+**Actions**:
+- `navigate`: Navigate to a specific URL
+- `act`: Perform AI-powered actions on the current page
+- `extract`: Extract structured data from the current page
+- `agent_execute`: Execute complex multi-step browser automation tasks
+- `get_page_content`: Get current page content and metadata
+- `new_page`: Open a new page in the browser session
+- `close_page`: Close a specific page
+- `close_context_session`: Close the entire browser session
+
+**Parameters**:
+- `action` (required): Type of browser operation
+- `session_id` (optional): Browser session identifier (defaults to thread_id)
+- `page_index` (optional): Target page index within session (default: 0)
+- `url`: Target URL (for navigate action)
+- `instructions`: Natural language instructions (for act and extract actions)
+- `schema`: JSON schema for structured extraction (optional, for extract action)
+- `model`: Specific model for task planning (optional, for agent_execute action)
+
+**Events**: Emits BROWSER_ACTION events for all operations with detailed progress tracking.
+
+**Examples**:
+```json
+{"tool_name": "browser_agent", "tool_args": {"action": "navigate", "url": "https://example.com"}}
+{"tool_name": "browser_agent", "tool_args": {"action": "act", "instructions": "Click the login button and fill username with 'user'"}}
+{"tool_name": "browser_agent", "tool_args": {"action": "extract", "instructions": "Get article title and author", "schema": {"type": "object", "properties": {"title": {"type": "string"}, "author": {"type": "string"}}}}}
+```
 
 ### web_crawler_tool
 

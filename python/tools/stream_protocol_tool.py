@@ -15,10 +15,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 class StreamEventType(Enum):
-    """16 standard AG-UI event types"""
+    """20 standard AG-UI event types including audio streaming"""
     TEXT_MESSAGE_CONTENT = "text_message_content"
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_END = "tool_call_end"
+    TOOL_RESULT = "tool_result"
     STATE_DELTA = "state_delta"
     AGENT_THOUGHT = "agent_thought"
     HUMAN_INTERVENTION = "human_intervention"
@@ -32,6 +33,10 @@ class StreamEventType(Enum):
     KNOWLEDGE_RESULT = "knowledge_result"
     BROWSER_ACTION = "browser_action"
     CRAWL_PROGRESS = "crawl_progress"
+    # Audio streaming events for TTS
+    AUDIO_CHUNK = "audio_chunk"
+    TTS_STREAM_START = "tts_stream_start"
+    TTS_STREAM_END = "tts_stream_end"
 
 @dataclass
 class RunAgentInput:
@@ -180,6 +185,35 @@ class StreamProtocolTool(Tool):
                 if "thread_id" not in kwargs or "state_delta" not in kwargs:
                     return self.agent_response("Missing 'thread_id' or 'state_delta' for update_state action.", error=True)
                 return await self._update_state(**kwargs)
+            elif action == "resume_agent_with_message":
+                # Explicit client action to send message and resume
+                message_content = kwargs.get("message_content")
+                attachments = kwargs.get("attachments")
+                client_state = kwargs.get("state")  # Optional state from client
+                if message_content is None:
+                    return self.agent_response("Missing 'message_content'.", error=True)
+
+                # This will call agent.process_streamed_message, which handles intervention resolution
+                await self.agent.process_streamed_message(
+                    content=message_content,
+                    role="user",  # Assuming resume implies user input
+                    attachments=attachments,
+                    incoming_state=client_state
+                )
+                return self.agent_response({"status": "agent_resumed_and_processing_message"})
+            elif action == "force_resume_agent":
+                # Client wants to unpause without new message content
+                if self.agent.context.intervention_needed:
+                    print(f"StreamProtocolTool: Forcing agent resume for context {self.agent.context.id}")
+                    self.agent.context.resolve_intervention()
+                    await self._emit_event_internal(
+                        StreamEventType.HUMAN_INTERVENTION,
+                        {"status": "resolved_by_client_force_resume", "prompt_resolved": self.agent.context.intervention_prompt},
+                        self.agent.get_thread_id(), self.agent.get_user_id()
+                    )
+                    return self.agent_response({"status": "agent_resume_forced", "message": "Agent will continue on its next processing cycle."})
+                else:
+                    return self.agent_response({"status": "agent_not_paused_for_intervention"})
             elif action == "register_middleware":
                 # Required kwargs: middleware_func (callable)
                 if "middleware_func" not in kwargs:
@@ -221,7 +255,7 @@ class StreamProtocolTool(Tool):
             if event is None:
                 return self.agent_response("Event filtered by middleware")
         
-        await self.transport.emit_event_to_thread(event)  # Uses the global transport with specific method
+        await self.transport.emit_event(event)  # Uses the global transport
         
         return self.agent_response({
             "success": True,
@@ -240,36 +274,60 @@ class StreamProtocolTool(Tool):
                 user_id=input_data.get("userId"),
                 metadata=input_data.get("metadata", {})
             )
+
+            # Check for UI response data
+            ui_response_payload = input_data.get("uiResponse")  # Custom field for UI responses
             
             # Update agent's context with thread_id and user_id from the input
             self.agent.set_thread_id(run_input.thread_id)
             if run_input.user_id:  # user_id is optional
                 self.agent.set_user_id(run_input.user_id)
-            
-            # Update agent's persistent state for this thread
-            if run_input.state:
-                self.agent.update_agent_state(run_input.state)  # Agent manages its own state
+
+            if ui_response_payload and isinstance(ui_response_payload, dict):
+                print(f"StreamProtocolTool: Detected uiResponse in input_data: {ui_response_payload}")
+                # Process this as a UI response, content might be empty if data is purely structured
+                await self.agent.process_streamed_message(
+                    content=json.dumps(ui_response_payload.get("data", {})),  # Represent data as string for content
+                    role="ui_response",  # Custom role to distinguish
+                    attachments=None,
+                    incoming_state=run_input.state,  # Client might send state with UI response
+                    ui_response_data=ui_response_payload  # Pass the structured UI response
+                )
+                # If there were also regular messages in this RunAgentInput, process them too
+                # For now, let's assume they are mutually exclusive or uiResponse takes precedence for this input.
+
+            elif run_input.messages:  # Process regular messages
+                for i, message_data in enumerate(run_input.messages):
+                    state_to_pass = run_input.state if i == 0 and not ui_response_payload else None
+                    await self.agent.process_streamed_message(
+                        content=message_data.get("content", ""),
+                        role=message_data.get("role", "user").lower(),
+                        attachments=message_data.get("attachments"),
+                        incoming_state=state_to_pass,
+                        ui_response_data=None  # Not a UI response if in messages list like this
+                    )
+            elif run_input.state and not ui_response_payload:  # Only state update, no messages
+                await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push_no_message")
 
             if run_input.thread_id not in self.active_threads:
                 # This tool's tracking of active_threads is for *its own* session concept, distinct from agent's state.
-                await self._emit_event_internal( 
+                await self._emit_event_internal(
                     StreamEventType.SESSION_START,
-                    {"threadId": run_input.thread_id, "userId": run_input.user_id, "initialState": run_input.state},
+                    {"threadId": run_input.thread_id, "userId": run_input.user_id, "initialState": self.agent.context.get_agent_state()},
                     run_input.thread_id, run_input.user_id
                 )
                 self.active_threads[run_input.thread_id] = {
                     "user_id": run_input.user_id,
-                    "state_from_tool_perspective": run_input.state or {},  # Tool's view of state
+                    "state_from_tool_perspective": self.agent.context.get_agent_state(),
                     "created_at": datetime.utcnow()
                 }
-            
-            for message_data in run_input.messages:
-                await self._process_message(message_data, run_input.thread_id, run_input.user_id)
             
             return self.agent_response({
                 "success": True,
                 "thread_id": run_input.thread_id,
-                "messages_processed": len(run_input.messages)
+                "messages_processed": len(run_input.messages),
+                "ui_response_processed": bool(ui_response_payload),
+                "state_applied": bool(run_input.state)
             })
             
         except Exception as e:
@@ -297,8 +355,8 @@ class StreamProtocolTool(Tool):
         )
         
         if role == "user":
-            # Call the agent's new method to process this message
-            await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+            # This is now handled directly in _handle_input
+            print(f"StreamProtocolTool: User message processed via _handle_input")
         else:
             print(f"StreamProtocolTool: Received non-user message (role: {role}). Not triggering full agent processing.")
 
@@ -312,7 +370,7 @@ class StreamProtocolTool(Tool):
             thread_id=thread_id,
             user_id=user_id
         )
-        await self.transport.emit_event_to_thread(event)  # Uses the global transport with specific method
+        await self.transport.emit_event(event)  # Uses the global transport
 
     # Placeholder for methods that will depend on agent modifications
     async def _update_agent_context(self, run_input: RunAgentInput):
@@ -363,32 +421,25 @@ class StreamProtocolTool(Tool):
         })
 
     async def _update_state(self, thread_id: str, state_delta: Dict[str, Any]):
-        """Updates state from the perspective of this tool's session tracking AND the agent's context."""
-        if thread_id not in self.active_threads:
-            # If session not active for tool, perhaps it's a direct state update for agent
-            # Or we can choose to error out if the tool expects an active session.
-            # For now, let's assume it's an update to an existing or new session context.
-            print(f"StreamProtocolTool: Updating state for potentially new/untracked session {thread_id}")
-            self.active_threads[thread_id] = {  # Initialize if not present
-                 "user_id": self.agent.get_user_id(), 
-                 "state_from_tool_perspective": {},
-                 "created_at": datetime.utcnow()
-            }
+        """
+        This action is if the AGENT wants to explicitly update its own state and broadcast.
+        Client-pushed state updates are handled via _handle_input.
+        """
+        if thread_id not in self.active_threads:  # Tool's session tracking
+            print(f"StreamProtocolTool: Warning - _update_state called for untracked thread {thread_id}. Will proceed with agent state update.")
+            # Ensure agent context is aligned, this might create/get agent context
+            self.agent.set_thread_id(thread_id)
+            # It's possible user_id is not known here if session wasn't started via tool.
 
-        # Update tool's view of state
-        tool_session_state = self.active_threads[thread_id]["state_from_tool_perspective"]
-        tool_session_state.update(state_delta)
-        
-        # Update agent's actual state
-        self.agent.update_agent_state(state_delta)
+        # The agent updates its own state and broadcasts
+        await self.agent.update_and_broadcast_agent_state(state_delta, source_of_change="tool_direct_update_state")
 
-        await self._emit_event_internal(
-            StreamEventType.STATE_DELTA,
-            {"delta": state_delta, "fullState": self.agent.context.agent_state},  # Emit agent's full state
-            thread_id, self.agent.get_user_id()
-        )
+        # Update this tool's local cache of the state if needed (though agent_state is the source of truth)
+        if thread_id in self.active_threads:
+             self.active_threads[thread_id]["state_from_tool_perspective"].update(state_delta)
+
         return self.agent_response({
-            "success": True, "thread_id": thread_id, "updated_agent_state": self.agent.context.agent_state
+            "success": True, "thread_id": thread_id, "updated_agent_state_snapshot": self.agent.context.get_agent_state()
         })
 
     async def _register_middleware(self, middleware_func: callable):

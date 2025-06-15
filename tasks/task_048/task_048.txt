@@ -1,0 +1,1127 @@
+## Task 48: `MemoryAgentTool` - Full `mem0` Library Integration for Core Add/Search/Get Operations
+
+**Focus:**
+This task replaces the remaining placeholder logic and basic in-memory store within `Mem0MemorySystem` (in `python/agents/memory_agent/memory.py`) with actual calls to the `mem0` Python library for core operations:
+1.  **Adding memories:** Using `mem0.MemoryOkay, let's proceed with Task 48.
+
+## Task 48: `MemoryAgentTool` - Full().add()` for both message lists and generic data. This will leverage `mem0`'s internal LLM for processing and its internal vector store for embedding and storage.
+2.  **Searching memories:** Using `mem0.Memory `mem0` Library Integration (Core `add`, `search` via `Mem0Client`)
+
+**Focus:**
+This task replaces().search()` for semantic search.
+3.  **Getting specific memories:** Using `mem0.Memory().get()`.
+4.  **Getting all memories:** Using `mem0.Memory().get_all()`.
+5.  **Updating memories:** Using `mem0.Memory().update()`.
+6.  **Deleting memories:** Using `mem0. the remaining placeholder aspects of `Mem0MemorySystem` with actual calls to the `mem0.Memory` client (referred to as `Mem0Client` in our wrapper). This means that the `add` (especially `add_messages`)Memory().delete()`.
+
+Graph-specific methods (`add_knowledge_graph_triplets`, `search_knowledge_graph`) will remain as placeholders for now (Task 49 will address them if `mem0` directly supports them or if we need a separate graph DB). We'll assume `mem0` handles its own persistence as configured (e.g., in-memory by and `search` methods will now leverage `mem0`'s internal machinery, which likely includes its own embedding generation, vector storage (defaulting to in-memory Faiss or HNSWLib), and potentially LLM-based processing for memory default, or to a configured path/DB). Our wrapper's JSON/pickle persistence (Task 28) can be removed or kept as a secondary backup if `mem0`'s persistence is not fully trusted or for specific needs. For now, let's remove our wrapper's persistence to rely on `mem0`.
+
+**File Paths and Code Changes:** structuring.
+
+**Assumptions:**
+*   The `mem0` Python library is installed and works with default settings when an `OPENAI_API_KEY` is available (for its internal LLM and embedding needs if not configured otherwise).
+*   `mem0`'s `add` method can handle lists of messages (as per its documentation) and generic string/dict data.
+*   `
+
+1.  **Ensure `mem0` is in `requirements.txt` and installed (as per Task 18).**
+2.  **Ensure `.env` is configured for `mem0`'s needs (e.g., `OPENAI_API_KEY`, and any `mem0`-specific env vars for LLM, embedding model, or persistence).**
+    *   The `MEM0_CONFIG_JSON` env var can be used to pass a configurationmem0`'s `search` method performs semantic search using its internal vector store.
+*   We are still using our wrapper `Mem0MemorySystem` to interface with `Mem0Client`, allowing us to adapt its API if needed and manage our conceptual `agent_id` scoping.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure dictionary to `mem0.Memory(config=...)`.
+
+3.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Refactor `Mem0MemorySystem` to directly use `mem0.Memory` for its operations.
+    *   Remove the internal `self.store`, `self.graph_store`, `self.embedding_generator` (as `mem0` handles embeddings), and file-based persistence methods. `mem0` will manage its own storage.
+
+    ```python
+# python/agents/memory_agent/memory.py
+    import asyncio
+ `mem0` is in `requirements.txt` and installed (as per Task 18).**
+    *   Also ensure its dependencies like `openai`, `numpy`, a vector search library (`faiss-cpu`, `hnswlib`) are correctly installed. `pip install mem0` should handle these.
+
+2.  **Modify `python/agents/memory_agent/memory.py` (`Mem0MemorySystem`):**
+    *   The `__init__` method already    from typing import List, Dict, Any, Optional
+    import uuid # For fallback IDs if mem0 doesn't return them or for logging
+    import json # For pretty printing dicts
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from mem0 import Memory as Mem0Client
+        # from mem0.configs import MemoryConfig # If specific config objects are needed
+        MEM0_AVAILABLE = True
+        print("Mem0MemorySystem: Successfully imported mem0 library.")
+    except ImportError:
+        print("Mem0MemorySystem: mem0 library not found. Memory attempts to initialize the real `Mem0Client`.
+    *   The methods `add_messages`, `add_generic_memory`, and `search` will now directly call the corresponding methods on `self._mem0_client`.
+    *   The local in-memory `self.store` will be removed as `mem0` handles its own storage. Persistence will now rely entirely on `mem0`'s capabilities (which might be configured via the `config` dict passed to `Mem0Client` orAgentTool will use limited placeholders.")
+        MEM0_AVAILABLE = False
+        # Define a placeholder if mem0 is not available
+        class Mem0Client: # type: ignore
+            def __init__(self, *args, **kwargs): logger.warning("Mem0Client (Placeholder): mem0 library not installed.")
+            async def add(self, data, user_id=None, memory_id=None, metadata=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): add called with data: {str(data)[:50]}")
+ environment variables specific to `mem0`). The local file persistence we added in Task 28 for our mock becomes less relevant if `mem0` has its own robust persistence, or it could serve as a secondary backup if `mem0` is configured for in-memory only for some reason. For this task, we will remove our custom file persistence for `vector_store` and `graph_store` from `Mem0MemorySystem`, assuming `mem0` handles it.
+```python
+    #                return [{"id": memory_id or str(uuid.uuid4()), "status": "placeholder_add_success"}]
+            async def search(self, query, user_id=None, limit=5, metadata_filter=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): search called with query: {query}")
+                return [{"id": str(uuid.uuid4()), "text": f"placeholder_search_result_for_{query}", "score": 0.1, "metadata": metadata_filter or {}}]
+            async def update(self, memory_id, user_id=None, data=None, metadata=None, **kwargs): 
+                logger.info(f" python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+    import uuid
+    import json # For logging/debug output
+    # import numpy as np # No longer needed for cosine_similarity here
+    # import pickle # No longer needed for graph persistence here
+    from pathlib import Path
+    import os
+    from dotenv import load_dotenv
+
+    project_root = Path(__file__).resolve().parents[2]
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    logger = logging.getLogger(__name__) # Assuming logger is set up
+
+    try:
+        fromMem0Client (Placeholder): update called for id: {memory_id}")
+                return {"id": memory_id, "status": "placeholder_update_success"}
+            async def delete(self, memory_id, user_id=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): delete called for id: {memory_id}")
+                return {"id": memory_id, "status": "placeholder_delete_success"}
+            async def get(self, memory_id, user_id=None, **kwargs):
+                logger.info(f"Mem0Client (Placeholder): get called for id: {memory_id}")
+                return {"id": memory_id, "text": "placeholder_get_memory_data", "metadata": {}}
+            async def get_all(self, user_id=None, limit=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): get_all called for user: {user_id}")
+                return [{"id": str(uuid.uuid4()), "text": "placeholder_ mem0 import Memory as Mem0Client # The actual mem0 library
+        MEM0_AVAILABLE = True
+        logger.info("mem0 library successfully imported.")
+    except ImportError:
+        logger.warning("mem0 library not found. MemoryAgentTool will use a limited placeholder.")
+        MEM0_AVAILABLE = False
+        class Mem0Client: # type: ignore
+            def __init__(self, *args, **kwargs): logger.info("Mem0Client (Placeholder): mem0 library not installed.")
+            async def add(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) add called with: {kwargs}") ; return [{"id": str(uuid.uuid4()), "status": "placeholder_add_success"}]
+            async def search(self, *args, **kwargs): logger.debug(f"Mem0Client (all_memory_item"}]
+            # Graph methods for placeholder
+            async def add_graph_triplets(self, triplets, user_id=None, **kwargs): return {"status": "placeholder_graph_add", "count": len(triplets)}
+            async def search_graph(self, entity=None, relation=None, target=None, user_id=None, limit=5, **kwargs): return [{"head": entity or "mock_h", "relation": relation or "mock_r", "tail": target or "mock_t"}]
+
+
+    class Mem0MemorySystem:
+        """
+        Wrapper around the mem0.Memory client.
+        Manages its own instance of the mem0 client.
+        """
+        def __init__(self, agent_id: str = "default_agent_zero_user", config_json_str: Optional[str] = None):
+            self.agent_id = agent_id # ThisPlaceholder) search called with: {kwargs}"); return [{"id": str(uuid.uuid4()), "text": "placeholder_search_result", "score": 0.0, "metadata":{}}]
+            async def update(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) update called with: {kwargs}"); return {"id": kwargs.get("memory_id"), "status": "placeholder_update_success"}
+            async def delete(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) delete called with: {kwargs}"); return {"id": kwargs.get("memory_id"), "status": "placeholder_delete_success"}
+            async def get_all(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) get_all called with: {kwargs}"); return [{"id": str(uuid.uuid4()), "text": "placeholder_all_memories"}]
+            # For graph placeholders if needed by other parts (though this task focuses on add/search)
+            async def add_graph_triplets(self, *args, **kwargs): return {"status": "placeholder_graph_add", "count": 0}
+             will be the default user_id for mem0 operations
+            self.mem0_config = None
+
+            if config_json_str:
+                try:
+                    self.mem0_config = json.loads(config_json_str)
+                    logger.info(f"Mem0MemorySystem: Parsed mem0 config: {self.mem0_config}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Mem0MemorySystem: Invalid JSON in MEM0_CONFIG_JSON: {e}. Using mem0 defaults.")
+                    self.mem0_config = None # Fallback to mem0 defaults
+            
+            if not MEM0_AVAILABLE:
+                logger.warning(f"Mem0MemorySystem: mem0 library not available for agent_id: {self.agent_id}. Operations will be NOPs or use placeholders.")
+                self._mem0_client = Mem0Client() # Placeholder instance
+            else:
+                try:
+                    # Initialize mem0.Memory client
+                    # It handles its own LLM and embedding model initializations based on its config or defaults (oftenasync def search_graph(self, *args, **kwargs): return []
+
+
+    # Remove networkx related code if its persistence is tied to the old mock store
+    # If mem0 supports graph and networkx is a way to interact, it might be different.
+    # For now, graph related methods in this class will become more direct passthroughs or remain conceptual.
+
+    class Mem0MemorySystem:
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None):
+            self.agent_id = agent_id # This will be the user_id for mem0 operations
+            
+            # mem0 specific configuration might be passed via `config`
+            # Example: config = {"vector_store": {" OpenAI).
+                    # It also handles its own persistence.
+                    logger.info(f"Mem0MemorySystem: Initializing real mem0.Memory client with config: {self.mem0_config} for agent_id scope: {self.agent_id}")
+                    self._mem0_client = Mem0Client(config=self.mem0_config)
+                    logger.info(f"Mem0MemorySystem: Real mem0.Memory client initialized for agent_id: {self.agent_id}")
+                except Exception as e:
+                    logger.error(f"Mem0MemorySystem: Error initializing real mem0.Memory client: {e}. Falling back to placeholder.", exc_info=True)
+                    self._mem0_client = Mem0Client() # Placeholder on critical error
+
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id_override: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Adding {len(messages)} messages for user '{target_user_id}'. Metadata: {metadata}")
+            # mem0 expects `data` to be a list of messages or a string.
+            # Itprovider": "chroma", "config": {"path": f"./mem0_db/{agent_id}"}}}
+            # Example: config = {"llm": {"model": "gpt-4o-mini"}}
+            # If config is None, mem0 uses its defaults (often OpenAI for LLM/Embeddings, in-memory Faiss)
+            
+            if not MEM0_AVAILABLE:
+                self._mem0_client = Mem0Client() # Placeholder if library not found
+                self._llm_client_for_summary = None # Not used if mem0 handles its own summary
+                logger.warning(f"Mem0MemorySystem for '{agent_id}': mem0 library not available. Using placeholders.")
+            else:
+                try:
+                    effective_config = config or {}
+                    # Ensure llm and embedder use API key if not specified in config
+                    if 'llm' not in effective_config or 'embedder' not in effective_config:
+                         if os.getenv("OPENAI_API_KEY"):
+                            if might process these messages to extract structured memories.
+            # The `user_id` scopes the memory.
+            try:
+                # Ensure messages are in the format mem0 might expect (e.g., {"role": ..., "content": ...})
+                # The `add` method in mem0 is versatile.
+                results = await self._mem0_client.add(data=messages, user_id=target_user_id, metadata=metadata)
+                stored_ids = [res.get("id") for res in results if res and res.get("id")]
+                logger.info(f"Mem0MemorySystem: Added {len(stored_ids)} memories from messages for user '{target_user_id}'. IDs: {stored_ids}")
+                return stored_ids
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error adding messages via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        async def add_generic_memory(self, data: Any, memory_id_hint: Optional[str] = None, user_id_override: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Adding generic memory for user '{target_user_id 'llm' not in effective_config:
+                                effective_config.setdefault('llm', {})
+                                effective_config['llm'].setdefault('provider', 'openai')
+                                effective_config['llm'].setdefault('config', {})
+                                effective_config['llm']['config'].setdefault('api_key', os.getenv("OPENAI_API_KEY"))
+                                if os.getenv("OPENAI_MODEL"):
+                                     effective_config['llm']['config'].setdefault('model', os.getenv("OPENAI_MODEL"))
+                            if 'embedder' not in effective_config:
+                                effective_config.setdefault('embedder', {})
+                                effective_config['embedder'].setdefault('provider', 'openai')
+                                effective_config['embedder'].setdefault('config', {})
+                                effective_config['embedder']['config'].setdefault('api_key', os.getenv("OPENAI_API_KEY"))
+                                if os.getenv("EMBEDDING_MODEL"):
+                                     effective_config['embedder']['config'].setdefault('model', os.getenv("EMBEDDING_MODEL"))
+                    
+                    logger.info(f"Mem0MemorySystem: Initializing mem0.Memory client for agent_id '{self.agent_id}' with config: {effective_config}")
+                    self._mem0_client = Mem0Client(config=effective_config)
+                    # LLM for summarization is now assumed to be handled by mem0 itself if it has such a feature,
+                    # or via a}'. Data type: {type(data)}, ID hint: {memory_id_hint}, Metadata: {metadata}")
+            # mem0's add can take a string or a dict. Convert complex data to string if necessary.
+            data_to_store = data if isinstance(data, (str, dict, list)) else str(data)
+            try:
+                # mem0's `memory_id` in add is for *updating* an existing memory. To add new with a hint,
+                # it's often better to put the hint in metadata if mem0 doesn't support client-side ID generation for new entries.
+                # Let's assume mem0 generates its own ID.
+                effective_metadata = metadata or {}
+                if memory_id_hint: effective_metadata["client_provided_id_hint"] = memory_id_hint
+
+                results = await self._mem0_client.add(data=data_to_store, user_id=target_user_id, metadata=effective_metadata)
+                stored_id = results[0].get("id") if results and results[0] else f"fallback_id_{uuid.uuid4()}"
+                logger.info(f"Mem0MemorySystem: Added generic memory for user '{target_user_id}'. Mem0 ID: {stored_id}")
+                return stored_id
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error adding generic memory via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return f"error_id_{uuid.uuid4()}"
+
+
+        async def search(self, query: str, user_ separate LLM call if mem0 exposes raw text that needs summarization.
+                    self._llm_client_for_summary = None # Remove direct LLM client for summary here, rely on mem0 features
+                    logger.info(f"Mem0MemorySystem: Successfully initialized mem0.Memory client for agent_id '{self.agent_id}'.")
+                except Exception as e:
+                    logger.error(f"Mem0MemorySystem: Error initializing real mem0.Memory client for '{self.agent_id}': {e}. Falling back to placeholder.", exc_info=True)
+                    self._mem0_client = Mem0Client() # Fallback
+                    self._llm_client_for_summary = None
+
+            # Graph store placeholders (if mem0 doesn't handle graph directly via main client or if we want a separate one)
+            # For this task, we assume mem0 client might have graph methods or we keep our mock graph for now.
+            # Our local file persistence for vector_store and graph_store is removed, assuming mem0 handles persistence.
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> List[str]:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Adding memories from {len(messages)} messages for user '{target_user_id}' via mem0.")
+            try:
+                # `mem0.add()`id_override: Optional[str] = None, limit: int = 5, metadata_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Searching memories for user '{target_user_id}'. Query: '{query}', Limit: {limit}, Filter: {metadata_filter}")
+            try:
+                # mem0 search likely takes query string, user_id, limit, and possibly a filter.
+                results = await self._mem0_client.search(query=query, user_id=target_user_id, limit=limit, metadata_filter=metadata_filter)
+                logger.info(f"Mem0MemorySystem: Search for user '{target_user_id}' returned {len(results)} memories.")
+                return results # Expected: list of dicts, each with "id", "text", "score", "metadata" etc.
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error searching memory via mem0 for user '{target_user_id}', query '{query}': {e}", exc_info=True)
+                return []
+
+        async def update(self, memory_id: str, new_data: Optional[Any] = None, user_id_override: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Updating memory '{memory_id}' for user '{target_user_id}'. New data: {str(new_data)[:50]}..., New metadata: {new_metadata}")
+            try:
+                # mem0 update should take memory_id and the fields to update (data and/or metadata).
+                # The expects `data` which can be a string, list of strings, or list of message dicts.
+                # It also takes `user_id` and `metadata`.
+                # `metadata` here is top-level for the batch. Per-message metadata might need different handling by mem0.
+                results = await self._mem0_client.add(data=messages, user_id=target_user_id, metadata={"batch_source": "chat_messages"})
+                stored_ids = [res.get("id") for res in results if isinstance(res, dict) and res.get("id")]
+                logger.info(f"Mem0MemorySystem: mem0 processed messages, stored {len(stored_ids)} memory IDs.")
+                return stored_ids
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during add_messages with mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        async def add_generic_memory(self, data: Any, memory_id_hint: Optional[str] = None, 
+                                     user_id_override: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Adding generic memory for user '{target_user_id}'. ID hint: {memory_id_hint}.")
+            
+            # mem0 expects string or list of strings, or messages for `data`.
+            # If `data` is complex, convert to string or ensure mem0 handles it.
+            data_to_send = data if isinstance(data, (str, list)) else str(data)
+            
+            effective_metadata = metadata or {}
+            if memory_id_hint: effective_metadata["client_provided_id_hint"] = memory_id_hint
+
+            try:
+                results = await self._mem0_client.add(data structure of data might need to match what was originally stored or how mem0 expects updates.
+                update_payload = {}
+                if new_data is not None: update_payload["data"] = new_data if isinstance(new_data, (str, dict, list)) else str(new_data)
+                if new_metadata is not None: update_payload["metadata"] = new_metadata
+                
+                if not update_payload:
+                    logger.warning("Mem0MemorySystem: Update called with no new_data or new_metadata.")
+                    return False
+
+                result = await self._mem0_client.update(memory_id=memory_id, user_id=target_user_id, **update_payload)
+                # Assuming result is a dict with a status or success field
+                success = result and (result.get("status") == "Memory updated successfully" or result.get("success") == True)
+                logger.info(f"Mem0MemorySystem: Update for memory '{memory_id}', user '{target_user_id}' status: {success}")
+                return success
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error updating memory '{memory_id}' via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return False
+
+        async def delete(self, memory_id: str, user_id_override: Optional[str] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Deleting memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                result = await self._mem0_client.delete(memory_id=memory_id, user_id=target_user_id)
+                success = result and (result.get("status") == "Memory deleted successfully" or result.get("success") == True)
+                logger.info(f"Mem0MemorySystem: Delete for memory '{memory_id}', user '{target_user_id}' status: {success}")
+                return success
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error deleting memory '{memory_id}' via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return False
+
+        async def get(self, memory_id: str, user_id_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Getting memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                memory_item = await self._mem0_client.get(memory_id=memory_id, user_id=target_user_id)
+                logger.info(f"Mem0MemorySystem: Get memory '{memory_id}' for user '{target_user_id}' result: {bool(memory_item)}")
+                return memory_item # Expected: dict or None
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error getting memory=data_to_send, user_id=target_user_id, metadata=effective_metadata)
+                stored_id = results[0].get("id") if results and isinstance(results, list) and results[0] and isinstance(results[0], dict) else f"fallback_id_{uuid.uuid4()}"
+                logger.info(f"Mem0MemorySystem: mem0 stored generic memory with resulting ID: {stored_id}")
+                return stored_id
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during add_generic_memory with mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return f"error_id_{uuid.uuid4()}"
+
+        async def search(self, query: str, user_id_override: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Searching mem0 memories with query '{query}' for user '{target_user_id}', limit {limit}.")
+            try:
+                search_results = await self._mem0_client.search(query=query, user_id=target_user_id, limit=limit)
+                # Ensure results are dicts as expected by the tool
+                if not isinstance(search_results, list) or not all(isinstance(item, dict) for item in search_results):
+                    logger.warning(f"Mem0MemorySystem: mem0 search returned unexpected format: {type(search_results)}. Adjusting.")
+                    return [{"id":"error", "text":"Unexpected search result format from mem0.", "score":0.0, "metadata":{}}] if search_results else []
+
+                logger.info(f"Mem0MemorySystem: mem0 search returned {len(search_results)} results.")
+                # mem0 results typically include: 'id', 'text', 'score', 'metadata'
+                return search_results
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during search with mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        # Update, Delete, Get_all, Graph, Summarize methods would now also call self._mem0_client
+        # For now, let's keep their mock/placeholder nature from Task 26/27 if mem0 doesn't directly map
+        # or if their implementation is more complex than a direct passthrough.
+        # This task focuses on core add/search.
+        
+         '{memory_id}' via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return None
+                
+        async def get_all(self, user_id_override: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Getting all memories for user '{target_user_id}', limit: {limit}.")
+            try:
+                all_memories = await self._mem0_client.get_all(user_id=target_user_id, limit=limit)
+                logger.info(f"Mem0MemorySystem: Get_all for user '{target_user_id}' returned {len(all_memories)} memories.")
+                return all_memories
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error getting all memories via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        # Graph methods remain conceptual placeholders, as mem0's Python API for graph is not detailed here.
+        # If mem0 has direct graph APIs, they would be called here. Otherwise, these would use the separate graph store.
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            # If mem0 has a graph API:
+            # target_user_id = user_id_override or self.agent_id
+            # return await self._mem0_client.add_graph_triplets(triplets=triplets, user_id=target_user_id)
+            logger.warning("Mem0MemorySystem: add_knowledge_graph_triplets called but relies on placeholder or separate graph store.")
+            # Fallback to previous networkx/list based mock for now
+            # ... (Task 26 graph store logic) ...
+            return {"status": "graph_placeholder", "triplets_processed": len(triplets)}
+
+        async def search_knowledge_graph(self, query_entity: Optional[str] = None, 
+                                         relation_type: Optional[str] = None, 
+                                         target_entity: Optional[str] = None,
+                                         user_id_override: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+            # If mem0 has a graph API:
+            # target_user_id = user_id_override or self.agent_id
+            # return await self._mem0_client.search_graph(entity=query_entity, relation=relation_type, target=target_entity, user_id=target_user_id, limit=limit)
+            logger.warning("Mem0MemorySystem: search_knowledge_graph called but relies on placeholder or separate graph store.")
+            # Fall# Example for update (needs to align with mem0's actual update API)
+        async def update(self, memory_id: str, new_data: Any, user_id_override: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Updating mem0 memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                # mem0's update might take data (text content) and/or metadata
+                update_payload = {"data": str(new_data)} # Ensure data is string if mem0 expects that for text content
+                if new_metadata:
+                    update_payload["metadata"] = new_metadata
+                
+                result = await self._mem0_client.update(memory_id=memory_id, user_id=target_user_id, **update_payload)
+                success = isinstance(result, dict) and result.get("status") and "success" in result.get("status", "").lower()
+                logger.info(f"Mem0MemorySystem: mem0 update for '{memory_id}' status: {success}")
+                return success
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during update with mem0: {e}", exc_info=True)
+                return False
+        
+        # delete and get_all would similarly be adapted
+        async def delete(self, memory_id: str, user_id_override: Optional[str] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Deleting mem0 memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                result = await self._mem0_client.delete(memory_id=memory_id, user_id=target_user_id)
+                success = isinstance(result, dict) and result.get("status") and "success" in result.get("status", "").lower()
+                return success
+            except Exception: return False
+
+        async def get_all(self, user_id_override: Optional[str] = None) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Getting all mem0 memories for user '{target_user_id}'.")
+            try:
+                return await self._mem0_client.get_all(user_id=target_user_id)
+            except Exception: return []
+
+        # Graph and Summarize methods remain placeholders for now, unless mem0 client offers direct APIs
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            logger.warning("Mem0MemorySystem: add_knowledge_graph_triplets using placeholder/mock graph store.")
+            #back to previous networkx/list based mock for now
+            # ... (Task 26 graph search logic) ...
+            return [{"placeholder_graph_result": "No real mem0 graph search"}]
+        
+        async def summarize_memory_content(self, memory_id: Optional[str] = None, query_for_context: Optional[str] = None, user_id_override: Optional[str] = None) -> Optional[str]:
+            # This method already uses self._llm_client_for_summary (OpenAI) and self.search (which now uses mem0).
+            # The text to summarize comes from mem0's search results or get method.
+            # The core logic from Task 27 remains valid.
+            # ... (Task 27 summarize_memory_content logic) ...
+             target_user_id = user_id_override or self.agent_id
+             # ... (rest of the summarization logic from Task 27, using self.get and self.search) ...
+             pass # Placeholder for brevity, actual logic from Task 27
+             return "Summary placeholder - to be completed with Task 27 logic using real mem0 search/get."
+
+    ```
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   The `__init__` method now passes the `mem0_config_json` string from `agent.config` to `Mem0MemorySystem`.
+    *   The calls to `self.memory_system` methods should align with any slight API changes in the real `Mem0MemorySystem` (e.g., parameter names like `user_id_override`).
+```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports)
+    from agents.memory_agent.memory import Mem0MemorySystem # Now the real one
+
+    class MemoryAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool", ...)
+            
+            agent_id_for_mem0 = self ... (existing mock graph logic from Task 26, or call self._mem0_client.add_graph_triplets if it exists)
+            return {"status": "placeholder", "triplets_added": 0}
+
+        async def search_knowledge_graph(self, query_entity: Optional[str] = None, ...) -> List[Dict[str, Any]]:
+            logger.warning("Mem0MemorySystem: search_knowledge_graph using placeholder/mock graph store.")
+            # ... (existing mock graph logic from Task 26, or call self._mem0_client.search_graph if it exists)
+            return []
+        
+        async def summarize_memory_content(self, ...) -> Optional[str]:
+            logger.warning("Mem0MemorySystem: summarize_memory_content using placeholder LLM call.")
+            # ... (existing LLM summarization logic from Task 27, or if mem0 has own summary call self._mem0_client.summarize(...))
+            return "Placeholder summary from Mem0MemorySystem."
+
+    ```
+3.  **Verify `python/tools/memory_agent_tool.py`:**
+    *   The `__init__` method already creates `Mem0MemorySystem`.
+    *   The `execute` and its helper methods (`_add_from_messages`, `_search_memory`, etc.) should correctly call the corresponding methods of the real `Mem0MemorySystem` instance. The argument passing should align with what `Mem0MemorySystem` now expects for its passthrough to `Mem0Client`.
+```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports as in Task 27)
+    # No major changes needed here if the interface of Mem0MemorySystem methods called
+    # by the tool's helpers (_add_from_messages, _search_memory etc.) remains compatible.
+    # The key is that self.memory_system is now a real Mem0-backed system.
+    
+    # Example: _search_memory in MemoryAgentTool
+    # async def _search_memory(self, query: str, user_id_for_op: Optional[str], limit: int) -> ToolResponse:
+    #     # ... (emit starting event)
+    #     # This call now goes to the real Mem0Memory.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user"
+            mem0_tool_config = self.agent.config.get("mem0_tool", {})
+            
+            config_json_str = mem0_tool_config.get("client_config_json") # This might be a stringified JSON
+            
+            self.memory_system = Mem0MemorySystem(
+                agent_id=agent_id_for_mem0, 
+                config_json_str=config_json_str # Pass the JSON string for mem0 config
+            )
+            logger.info(f"MemoryAgentTool initialized for agent {agent.agent_name} with real Mem0MemorySystem (agent_id_scope: {self.memory_system.agent_id}).")
+
+        # ... (execute method and its private helpers _add_from_messages, _search_memory, etc. from Task 27)
+        # Ensure that user_id_override is passed correctly to memory_system methods.
+        # For example, in _add_from_messages:
+        # async def _add_from_messages(self, messages: List[Dict[str, Any]], user_id_for_op: Optional[str]) -> ToolResponse:
+        #     # ...
+        #     stored_ids = await self.memory_system.add_messages(messages, user_id_override=user_id_for_op, metadata=...)
+        #     # ...
+        
+        # In _add_generic_memory:
+        # async def _add_generic_memory(self, data: Any, memory_id_hint: Optional[str], user_id_for_op: Optional[str], metadata: Optional[Dict[str,Any]]) -> ToolResponse:
+        #     # ...
+        #     stored_id = await self.memory_system.add_generic_memory(data, memory_id_hint=memory_id_hint, user_id_override=user_id_for_op, metadata=metadata)
+        #     # ...
+
+        # Other methods (_search_memory, _update_memory, _delete_memory, _get_all_memories) should similarly pass `user_id_override`.
+        System.search
+    #     results = await self.memory_system.search(query, user_id_override=user_id_for_op, limit=limit)
+    #     # ... (emit completed event and return ToolResponse)
+    #     # Ensure the `results` (which are List[Dict]) are properly JSON serialized for ToolResponse.message
+    #     return ToolResponse(message=json.dumps(results), data=results) 
+    ```
+**Dependencies/Prerequisites:**
+*   Tasks 1-47 completed.
+*   `mem0` library and its dependencies (OpenAI, vector store libs) installed.
+*   `OPENAI_API_KEY` (and other `mem0`-specific env vars if any) configured in `.env`.
+
+**Integration with Agent Zero:**
+*   `MemoryAgentTool` now uses the actual `mem0` library for core memory operations (add, search).
+*   This provides Agent Zero with a more sophisticated, potentially LLM-enhanced, and self-organizing memory system than the basic vector store used by `memory_load`/`memory_save`.
+*   Persistence of these memories now depends on `mem0`'s configuration (e.g., if it's set up to use a persistent vector DB or local file storage). The custom JSON/pickle persistence in our `Mem0MemorySystem` wrapper is removed.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `mem0` to `requirements.txt`. This will pull in its dependencies.
+*   Ensure any system libraries# Graph methods (_add_triplets, _search_graph) will still use the placeholder graph logic inside Mem0MemorySystem for now.
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-47 completed.
+*   `mem0` library installed and its dependencies (OpenAI client, vector store libs like `hnswlib` or `faiss-cpu`, etc.) are present.
+*   Environment variables for `mem0` (e.g., `OPENAI_API_KEY`, and any specific `mem0` config vars or `MEM0_CONFIG_JSON`) are set.
+
+**Integration with Agent Zero:**
+*   `MemoryAgentTool` now leverages the actual `mem0` library for its core functionalities, replacing the more basic in-memory mock with `mem0`'s potentially more advanced storage, retrieval, and LLM-powered processing.
+*   Persistence is now handled by `mem0` itself according to its configuration (which could be in-memory, local files, or a dedicated DB). Our wrapper's file persistence is removed.
+*   Graph memory features are still conceptual placeholders within our wrapper, awaiting direct `mem0` API support for graph or integration with a separate graph DB.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `mem0` and all required by `mem0`'s dependencies (e.g., for `faiss-cpu` or `hnswlib`) are present in the Docker base image.
+*   Environment variables for `mem0` (like `OPENAI_API_KEY`, and any `mem0`-specific ones like database paths or API keys for other services it might use) must be available to the Docker container.
+*   If `mem0` is configured for local file persistence, ensure the persistence path is mapped to a Docker volume.
+
+**Summary of Task 48:**
+This task integrates the core `add` and `search` functionalities of the actual `mem0` library into the `MemoryAgentTool` via the `Mem0MemorySystem` wrapper. This replaces the previous mock logic with real intelligent memory operations, including `mem0`'s internal use of embeddings and LLMs for processing memories. Graph and advanced summarization features remain conceptual or use the placeholders from previous tasks, pending deeper investigation into `mem0`'s specific APIs for those if they are separate. Persistence now relies on `mem0`'s configured backend.
+
+Please confirm to proceed.Okay, let's proceed with Task 48.
+
+## Task 48: `MemoryAgentTool` - Full `mem0` Library Integration for Core Add/Search/Get Operations
+
+**Focus:**
+This task replaces the remaining placeholder logic and basic in-memory store within `Mem0MemorySystem` (in `python/agents/memory_agent/memory.py`) with actual calls to the `mem0` Python library for core operations:
+1.  **Adding memories:** Using `mem0.MemoryOkay, let's proceed with Task 48.
+
+## Task 48: `MemoryAgentTool` - Full().add()` for both message lists and generic data. This will leverage `mem0`'s internal LLM for processing and its internal vector store for embedding and storage.
+2.  **Searching memories:** Using `mem0.Memory `mem0` Library Integration (Core `add`, `search` via `Mem0Client`)
+
+**Focus:**
+This task replaces().search()` for semantic search.
+3.  **Getting specific memories:** Using `mem0.Memory().get()`.
+4.  **Getting all memories:** Using `mem0.Memory().get_all()`.
+5.  **Updating memories:** Using `mem0.Memory().update()`.
+6.  **Deleting memories:** Using `mem0. the remaining placeholder aspects of `Mem0MemorySystem` with actual calls to the `mem0.Memory` client (referred to as `Mem0Client` in our wrapper). This means that the `add` (especially `add_messages`)Memory().delete()`.
+
+Graph-specific methods (`add_knowledge_graph_triplets`, `search_knowledge_graph`) will remain as placeholders for now (Task 49 will address them if `mem0` directly supports them or if we need a separate graph DB). We'll assume `mem0` handles its own persistence as configured (e.g., in-memory by and `search` methods will now leverage `mem0`'s internal machinery, which likely includes its own embedding generation, vector storage (defaulting to in-memory Faiss or HNSWLib), and potentially LLM-based processing for memory default, or to a configured path/DB). Our wrapper's JSON/pickle persistence (Task 28) can be removed or kept as a secondary backup if `mem0`'s persistence is not fully trusted or for specific needs. For now, let's remove our wrapper's persistence to rely on `mem0`.
+
+**File Paths and Code Changes:** structuring.
+
+**Assumptions:**
+*   The `mem0` Python library is installed and works with default settings when an `OPENAI_API_KEY` is available (for its internal LLM and embedding needs if not configured otherwise).
+*   `mem0`'s `add` method can handle lists of messages (as per its documentation) and generic string/dict data.
+*   `
+
+1.  **Ensure `mem0` is in `requirements.txt` and installed (as per Task 18).**
+2.  **Ensure `.env` is configured for `mem0`'s needs (e.g., `OPENAI_API_KEY`, and any `mem0`-specific env vars for LLM, embedding model, or persistence).**
+    *   The `MEM0_CONFIG_JSON` env var can be used to pass a configurationmem0`'s `search` method performs semantic search using its internal vector store.
+*   We are still using our wrapper `Mem0MemorySystem` to interface with `Mem0Client`, allowing us to adapt its API if needed and manage our conceptual `agent_id` scoping.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure dictionary to `mem0.Memory(config=...)`.
+
+3.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Refactor `Mem0MemorySystem` to directly use `mem0.Memory` for its operations.
+    *   Remove the internal `self.store`, `self.graph_store`, `self.embedding_generator` (as `mem0` handles embeddings), and file-based persistence methods. `mem0` will manage its own storage.
+
+    ```python
+    # python/agents/memory_agent/memory.py
+    import asyncio
+ `mem0` is in `requirements.txt` and installed (as per Task 18).**
+    *   Also ensure its dependencies like `openai`, `numpy`, a vector search library (`faiss-cpu`, `hnswlib`) are correctly installed. `pip install mem0` should handle these.
+
+2.  **Modify `python/agents/memory_agent/memory.py` (`Mem0MemorySystem`):**
+    *   The `__init__` method already    from typing import List, Dict, Any, Optional
+    import uuid # For fallback IDs if mem0 doesn't return them or for logging
+    import json # For pretty printing dicts
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from mem0 import Memory as Mem0Client
+        # from mem0.configs import MemoryConfig # If specific config objects are needed
+        MEM0_AVAILABLE = True
+        print("Mem0MemorySystem: Successfully imported mem0 library.")
+    except ImportError:
+        print("Mem0MemorySystem: mem0 library not found. Memory attempts to initialize the real `Mem0Client`.
+    *   The methods `add_messages`, `add_generic_memory`, and `search` will now directly call the corresponding methods on `self._mem0_client`.
+    *   The local in-memory `self.store` will be removed as `mem0` handles its own storage. Persistence will now rely entirely on `mem0`'s capabilities (which might be configured via the `config` dict passed to `Mem0Client` orAgentTool will use limited placeholders.")
+        MEM0_AVAILABLE = False
+        # Define a placeholder if mem0 is not available
+        class Mem0Client: # type: ignore
+            def __init__(self, *args, **kwargs): logger.warning("Mem0Client (Placeholder): mem0 library not installed.")
+            async def add(self, data, user_id=None, memory_id=None, metadata=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): add called with data: {str(data)[:50]}")
+ environment variables specific to `mem0`). The local file persistence we added in Task 28 for our mock becomes less relevant if `mem0` has its own robust persistence, or it could serve as a secondary backup if `mem0` is configured for in-memory only for some reason. For this task, we will remove our custom file persistence for `vector_store` and `graph_store` from `Mem0MemorySystem`, assuming `mem0` handles it.
+
+    ```python
+    #                return [{"id": memory_id or str(uuid.uuid4()), "status": "placeholder_add_success"}]
+            async def search(self, query, user_id=None, limit=5, metadata_filter=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): search called with query: {query}")
+                return [{"id": str(uuid.uuid4()), "text": f"placeholder_search_result_for_{query}", "score": 0.1, "metadata": metadata_filter or {}}]
+            async def update(self, memory_id, user_id=None, data=None, metadata=None, **kwargs): 
+                logger.info(f" python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+    import uuid
+    import json # For logging/debug output
+    # import numpy as np # No longer needed for cosine_similarity here
+    # import pickle # No longer needed for graph persistence here
+    from pathlib import Path
+    import os
+    from dotenv import load_dotenv
+
+    project_root = Path(__file__).resolve().parents[2]
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    logger = logging.getLogger(__name__) # Assuming logger is set up
+
+    try:
+        fromMem0Client (Placeholder): update called for id: {memory_id}")
+                return {"id": memory_id, "status": "placeholder_update_success"}
+            async def delete(self, memory_id, user_id=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): delete called for id: {memory_id}")
+                return {"id": memory_id, "status": "placeholder_delete_success"}
+            async def get(self, memory_id, user_id=None, **kwargs):
+                logger.info(f"Mem0Client (Placeholder): get called for id: {memory_id}")
+                return {"id": memory_id, "text": "placeholder_get_memory_data", "metadata": {}}
+            async def get_all(self, user_id=None, limit=None, **kwargs): 
+                logger.info(f"Mem0Client (Placeholder): get_all called for user: {user_id}")
+                return [{"id": str(uuid.uuid4()), "text": "placeholder_ mem0 import Memory as Mem0Client # The actual mem0 library
+        MEM0_AVAILABLE = True
+        logger.info("mem0 library successfully imported.")
+    except ImportError:
+        logger.warning("mem0 library not found. MemoryAgentTool will use a limited placeholder.")
+        MEM0_AVAILABLE = False
+        class Mem0Client: # type: ignore
+            def __init__(self, *args, **kwargs): logger.info("Mem0Client (Placeholder): mem0 library not installed.")
+            async def add(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) add called with: {kwargs}") ; return [{"id": str(uuid.uuid4()), "status": "placeholder_add_success"}]
+            async def search(self, *args, **kwargs): logger.debug(f"Mem0Client (all_memory_item"}]
+            # Graph methods for placeholder
+            async def add_graph_triplets(self, triplets, user_id=None, **kwargs): return {"status": "placeholder_graph_add", "count": len(triplets)}
+            async def search_graph(self, entity=None, relation=None, target=None, user_id=None, limit=5, **kwargs): return [{"head": entity or "mock_h", "relation": relation or "mock_r", "tail": target or "mock_t"}]
+
+
+    class Mem0MemorySystem:
+        """
+        Wrapper around the mem0.Memory client.
+        Manages its own instance of the mem0 client.
+        """
+        def __init__(self, agent_id: str = "default_agent_zero_user", config_json_str: Optional[str] = None):
+            self.agent_id = agent_id # ThisPlaceholder) search called with: {kwargs}"); return [{"id": str(uuid.uuid4()), "text": "placeholder_search_result", "score": 0.0, "metadata":{}}]
+            async def update(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) update called with: {kwargs}"); return {"id": kwargs.get("memory_id"), "status": "placeholder_update_success"}
+            async def delete(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) delete called with: {kwargs}"); return {"id": kwargs.get("memory_id"), "status": "placeholder_delete_success"}
+            async def get_all(self, *args, **kwargs): logger.debug(f"Mem0Client (Placeholder) get_all called with: {kwargs}"); return [{"id": str(uuid.uuid4()), "text": "placeholder_all_memories"}]
+            # For graph placeholders if needed by other parts (though this task focuses on add/search)
+            async def add_graph_triplets(self, *args, **kwargs): return {"status": "placeholder_graph_add", "count": 0}
+             will be the default user_id for mem0 operations
+            self.mem0_config = None
+
+            if config_json_str:
+                try:
+                    self.mem0_config = json.loads(config_json_str)
+                    logger.info(f"Mem0MemorySystem: Parsed mem0 config: {self.mem0_config}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Mem0MemorySystem: Invalid JSON in MEM0_CONFIG_JSON: {e}. Using mem0 defaults.")
+                    self.mem0_config = None # Fallback to mem0 defaults
+            
+            if not MEM0_AVAILABLE:
+                logger.warning(f"Mem0MemorySystem: mem0 library not available for agent_id: {self.agent_id}. Operations will be NOPs or use placeholders.")
+                self._mem0_client = Mem0Client() # Placeholder instance
+            else:
+                try:
+                    # Initialize mem0.Memory client
+                    # It handles its own LLM and embedding model initializations based on its config or defaults (oftenasync def search_graph(self, *args, **kwargs): return []
+
+
+    # Remove networkx related code if its persistence is tied to the old mock store
+    # If mem0 supports graph and networkx is a way to interact, it might be different.
+    # For now, graph related methods in this class will become more direct passthroughs or remain conceptual.
+
+    class Mem0MemorySystem:
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None):
+            self.agent_id = agent_id # This will be the user_id for mem0 operations
+            
+            # mem0 specific configuration might be passed via `config`
+            # Example: config = {"vector_store": {" OpenAI).
+                    # It also handles its own persistence.
+                    logger.info(f"Mem0MemorySystem: Initializing real mem0.Memory client with config: {self.mem0_config} for agent_id scope: {self.agent_id}")
+                    self._mem0_client = Mem0Client(config=self.mem0_config)
+                    logger.info(f"Mem0MemorySystem: Real mem0.Memory client initialized for agent_id: {self.agent_id}")
+                except Exception as e:
+                    logger.error(f"Mem0MemorySystem: Error initializing real mem0.Memory client: {e}. Falling back to placeholder.", exc_info=True)
+                    self._mem0_client = Mem0Client() # Placeholder on critical error
+
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id_override: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Adding {len(messages)} messages for user '{target_user_id}'. Metadata: {metadata}")
+            # mem0 expects `data` to be a list of messages or a string.
+            # Itprovider": "chroma", "config": {"path": f"./mem0_db/{agent_id}"}}}
+            # Example: config = {"llm": {"model": "gpt-4o-mini"}}
+            # If config is None, mem0 uses its defaults (often OpenAI for LLM/Embeddings, in-memory Faiss)
+            
+            if not MEM0_AVAILABLE:
+                self._mem0_client = Mem0Client() # Placeholder if library not found
+                self._llm_client_for_summary = None # Not used if mem0 handles its own summary
+                logger.warning(f"Mem0MemorySystem for '{agent_id}': mem0 library not available. Using placeholders.")
+            else:
+                try:
+                    effective_config = config or {}
+                    # Ensure llm and embedder use API key if not specified in config
+                    if 'llm' not in effective_config or 'embedder' not in effective_config:
+                         if os.getenv("OPENAI_API_KEY"):
+                            if might process these messages to extract structured memories.
+            # The `user_id` scopes the memory.
+            try:
+                # Ensure messages are in the format mem0 might expect (e.g., {"role": ..., "content": ...})
+                # The `add` method in mem0 is versatile.
+                results = await self._mem0_client.add(data=messages, user_id=target_user_id, metadata=metadata)
+                stored_ids = [res.get("id") for res in results if res and res.get("id")]
+                logger.info(f"Mem0MemorySystem: Added {len(stored_ids)} memories from messages for user '{target_user_id}'. IDs: {stored_ids}")
+                return stored_ids
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error adding messages via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        async def add_generic_memory(self, data: Any, memory_id_hint: Optional[str] = None, user_id_override: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Adding generic memory for user '{target_user_id 'llm' not in effective_config:
+                                effective_config.setdefault('llm', {})
+                                effective_config['llm'].setdefault('provider', 'openai')
+                                effective_config['llm'].setdefault('config', {})
+                                effective_config['llm']['config'].setdefault('api_key', os.getenv("OPENAI_API_KEY"))
+                                if os.getenv("OPENAI_MODEL"):
+                                     effective_config['llm']['config'].setdefault('model', os.getenv("OPENAI_MODEL"))
+                            if 'embedder' not in effective_config:
+                                effective_config.setdefault('embedder', {})
+                                effective_config['embedder'].setdefault('provider', 'openai')
+                                effective_config['embedder'].setdefault('config', {})
+                                effective_config['embedder']['config'].setdefault('api_key', os.getenv("OPENAI_API_KEY"))
+                                if os.getenv("EMBEDDING_MODEL"):
+                                     effective_config['embedder']['config'].setdefault('model', os.getenv("EMBEDDING_MODEL"))
+                    
+                    logger.info(f"Mem0MemorySystem: Initializing mem0.Memory client for agent_id '{self.agent_id}' with config: {effective_config}")
+                    self._mem0_client = Mem0Client(config=effective_config)
+                    # LLM for summarization is now assumed to be handled by mem0 itself if it has such a feature,
+                    # or via a}'. Data type: {type(data)}, ID hint: {memory_id_hint}, Metadata: {metadata}")
+            # mem0's add can take a string or a dict. Convert complex data to string if necessary.
+            data_to_store = data if isinstance(data, (str, dict, list)) else str(data)
+            try:
+                # mem0's `memory_id` in add is for *updating* an existing memory. To add new with a hint,
+                # it's often better to put the hint in metadata if mem0 doesn't support client-side ID generation for new entries.
+                # Let's assume mem0 generates its own ID.
+                effective_metadata = metadata or {}
+                if memory_id_hint: effective_metadata["client_provided_id_hint"] = memory_id_hint
+
+                results = await self._mem0_client.add(data=data_to_store, user_id=target_user_id, metadata=effective_metadata)
+                stored_id = results[0].get("id") if results and results[0] else f"fallback_id_{uuid.uuid4()}"
+                logger.info(f"Mem0MemorySystem: Added generic memory for user '{target_user_id}'. Mem0 ID: {stored_id}")
+                return stored_id
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error adding generic memory via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return f"error_id_{uuid.uuid4()}"
+
+
+        async def search(self, query: str, user_ separate LLM call if mem0 exposes raw text that needs summarization.
+                    self._llm_client_for_summary = None # Remove direct LLM client for summary here, rely on mem0 features
+                    logger.info(f"Mem0MemorySystem: Successfully initialized mem0.Memory client for agent_id '{self.agent_id}'.")
+                except Exception as e:
+                    logger.error(f"Mem0MemorySystem: Error initializing real mem0.Memory client for '{self.agent_id}': {e}. Falling back to placeholder.", exc_info=True)
+                    self._mem0_client = Mem0Client() # Fallback
+                    self._llm_client_for_summary = None
+
+            # Graph store placeholders (if mem0 doesn't handle graph directly via main client or if we want a separate one)
+            # For this task, we assume mem0 client might have graph methods or we keep our mock graph for now.
+            # Our local file persistence for vector_store and graph_store is removed, assuming mem0 handles persistence.
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> List[str]:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Adding memories from {len(messages)} messages for user '{target_user_id}' via mem0.")
+            try:
+                # `mem0.add()`id_override: Optional[str] = None, limit: int = 5, metadata_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Searching memories for user '{target_user_id}'. Query: '{query}', Limit: {limit}, Filter: {metadata_filter}")
+            try:
+                # mem0 search likely takes query string, user_id, limit, and possibly a filter.
+                results = await self._mem0_client.search(query=query, user_id=target_user_id, limit=limit, metadata_filter=metadata_filter)
+                logger.info(f"Mem0MemorySystem: Search for user '{target_user_id}' returned {len(results)} memories.")
+                return results # Expected: list of dicts, each with "id", "text", "score", "metadata" etc.
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error searching memory via mem0 for user '{target_user_id}', query '{query}': {e}", exc_info=True)
+                return []
+
+        async def update(self, memory_id: str, new_data: Optional[Any] = None, user_id_override: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Updating memory '{memory_id}' for user '{target_user_id}'. New data: {str(new_data)[:50]}..., New metadata: {new_metadata}")
+            try:
+                # mem0 update should take memory_id and the fields to update (data and/or metadata).
+                # The expects `data` which can be a string, list of strings, or list of message dicts.
+                # It also takes `user_id` and `metadata`.
+                # `metadata` here is top-level for the batch. Per-message metadata might need different handling by mem0.
+                results = await self._mem0_client.add(data=messages, user_id=target_user_id, metadata={"batch_source": "chat_messages"})
+                stored_ids = [res.get("id") for res in results if isinstance(res, dict) and res.get("id")]
+                logger.info(f"Mem0MemorySystem: mem0 processed messages, stored {len(stored_ids)} memory IDs.")
+                return stored_ids
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during add_messages with mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        async def add_generic_memory(self, data: Any, memory_id_hint: Optional[str] = None, 
+                                     user_id_override: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Adding generic memory for user '{target_user_id}'. ID hint: {memory_id_hint}.")
+            
+            # mem0 expects string or list of strings, or messages for `data`.
+            # If `data` is complex, convert to string or ensure mem0 handles it.
+            data_to_send = data if isinstance(data, (str, list)) else str(data)
+            
+            effective_metadata = metadata or {}
+            if memory_id_hint: effective_metadata["client_provided_id_hint"] = memory_id_hint
+
+            try:
+                results = await self._mem0_client.add(data structure of data might need to match what was originally stored or how mem0 expects updates.
+                update_payload = {}
+                if new_data is not None: update_payload["data"] = new_data if isinstance(new_data, (str, dict, list)) else str(new_data)
+                if new_metadata is not None: update_payload["metadata"] = new_metadata
+                
+                if not update_payload:
+                    logger.warning("Mem0MemorySystem: Update called with no new_data or new_metadata.")
+                    return False
+
+                result = await self._mem0_client.update(memory_id=memory_id, user_id=target_user_id, **update_payload)
+                # Assuming result is a dict with a status or success field
+                success = result and (result.get("status") == "Memory updated successfully" or result.get("success") == True)
+                logger.info(f"Mem0MemorySystem: Update for memory '{memory_id}', user '{target_user_id}' status: {success}")
+                return success
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error updating memory '{memory_id}' via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return False
+
+        async def delete(self, memory_id: str, user_id_override: Optional[str] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Deleting memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                result = await self._mem0_client.delete(memory_id=memory_id, user_id=target_user_id)
+                success = result and (result.get("status") == "Memory deleted successfully" or result.get("success") == True)
+                logger.info(f"Mem0MemorySystem: Delete for memory '{memory_id}', user '{target_user_id}' status: {success}")
+                return success
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error deleting memory '{memory_id}' via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return False
+
+        async def get(self, memory_id: str, user_id_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Getting memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                memory_item = await self._mem0_client.get(memory_id=memory_id, user_id=target_user_id)
+                logger.info(f"Mem0MemorySystem: Get memory '{memory_id}' for user '{target_user_id}' result: {bool(memory_item)}")
+                return memory_item # Expected: dict or None
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error getting memory=data_to_send, user_id=target_user_id, metadata=effective_metadata)
+                stored_id = results[0].get("id") if results and isinstance(results, list) and results[0] and isinstance(results[0], dict) else f"fallback_id_{uuid.uuid4()}"
+                logger.info(f"Mem0MemorySystem: mem0 stored generic memory with resulting ID: {stored_id}")
+                return stored_id
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during add_generic_memory with mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return f"error_id_{uuid.uuid4()}"
+
+        async def search(self, query: str, user_id_override: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Searching mem0 memories with query '{query}' for user '{target_user_id}', limit {limit}.")
+            try:
+                search_results = await self._mem0_client.search(query=query, user_id=target_user_id, limit=limit)
+                # Ensure results are dicts as expected by the tool
+                if not isinstance(search_results, list) or not all(isinstance(item, dict) for item in search_results):
+                    logger.warning(f"Mem0MemorySystem: mem0 search returned unexpected format: {type(search_results)}. Adjusting.")
+                    return [{"id":"error", "text":"Unexpected search result format from mem0.", "score":0.0, "metadata":{}}] if search_results else []
+
+                logger.info(f"Mem0MemorySystem: mem0 search returned {len(search_results)} results.")
+                # mem0 results typically include: 'id', 'text', 'score', 'metadata'
+                return search_results
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during search with mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        # Update, Delete, Get_all, Graph, Summarize methods would now also call self._mem0_client
+        # For now, let's keep their mock/placeholder nature from Task 26/27 if mem0 doesn't directly map
+        # or if their implementation is more complex than a direct passthrough.
+        # This task focuses on core add/search.
+        
+         '{memory_id}' via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return None
+                
+        async def get_all(self, user_id_override: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.debug(f"Mem0MemorySystem: Getting all memories for user '{target_user_id}', limit: {limit}.")
+            try:
+                all_memories = await self._mem0_client.get_all(user_id=target_user_id, limit=limit)
+                logger.info(f"Mem0MemorySystem: Get_all for user '{target_user_id}' returned {len(all_memories)} memories.")
+                return all_memories
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error getting all memories via mem0 for user '{target_user_id}': {e}", exc_info=True)
+                return []
+
+        # Graph methods remain conceptual placeholders, as mem0's Python API for graph is not detailed here.
+        # If mem0 has direct graph APIs, they would be called here. Otherwise, these would use the separate graph store.
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            # If mem0 has a graph API:
+            # target_user_id = user_id_override or self.agent_id
+            # return await self._mem0_client.add_graph_triplets(triplets=triplets, user_id=target_user_id)
+            logger.warning("Mem0MemorySystem: add_knowledge_graph_triplets called but relies on placeholder or separate graph store.")
+            # Fallback to previous networkx/list based mock for now
+            # ... (Task 26 graph store logic) ...
+            return {"status": "graph_placeholder", "triplets_processed": len(triplets)}
+
+        async def search_knowledge_graph(self, query_entity: Optional[str] = None, 
+                                         relation_type: Optional[str] = None, 
+                                         target_entity: Optional[str] = None,
+                                         user_id_override: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+            # If mem0 has a graph API:
+            # target_user_id = user_id_override or self.agent_id
+            # return await self._mem0_client.search_graph(entity=query_entity, relation=relation_type, target=target_entity, user_id=target_user_id, limit=limit)
+            logger.warning("Mem0MemorySystem: search_knowledge_graph called but relies on placeholder or separate graph store.")
+            # Fall# Example for update (needs to align with mem0's actual update API)
+        async def update(self, memory_id: str, new_data: Any, user_id_override: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Updating mem0 memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                # mem0's update might take data (text content) and/or metadata
+                update_payload = {"data": str(new_data)} # Ensure data is string if mem0 expects that for text content
+                if new_metadata:
+                    update_payload["metadata"] = new_metadata
+                
+                result = await self._mem0_client.update(memory_id=memory_id, user_id=target_user_id, **update_payload)
+                success = isinstance(result, dict) and result.get("status") and "success" in result.get("status", "").lower()
+                logger.info(f"Mem0MemorySystem: mem0 update for '{memory_id}' status: {success}")
+                return success
+            except Exception as e:
+                logger.error(f"Mem0MemorySystem: Error during update with mem0: {e}", exc_info=True)
+                return False
+        
+        # delete and get_all would similarly be adapted
+        async def delete(self, memory_id: str, user_id_override: Optional[str] = None) -> bool:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Deleting mem0 memory '{memory_id}' for user '{target_user_id}'.")
+            try:
+                result = await self._mem0_client.delete(memory_id=memory_id, user_id=target_user_id)
+                success = isinstance(result, dict) and result.get("status") and "success" in result.get("status", "").lower()
+                return success
+            except Exception: return False
+
+        async def get_all(self, user_id_override: Optional[str] = None) -> List[Dict[str, Any]]:
+            target_user_id = user_id_override or self.agent_id
+            logger.info(f"Mem0MemorySystem: Getting all mem0 memories for user '{target_user_id}'.")
+            try:
+                return await self._mem0_client.get_all(user_id=target_user_id)
+            except Exception: return []
+
+        # Graph and Summarize methods remain placeholders for now, unless mem0 client offers direct APIs
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            logger.warning("Mem0MemorySystem: add_knowledge_graph_triplets using placeholder/mock graph store.")
+            #back to previous networkx/list based mock for now
+            # ... (Task 26 graph search logic) ...
+            return [{"placeholder_graph_result": "No real mem0 graph search"}]
+        
+        async def summarize_memory_content(self, memory_id: Optional[str] = None, query_for_context: Optional[str] = None, user_id_override: Optional[str] = None) -> Optional[str]:
+            # This method already uses self._llm_client_for_summary (OpenAI) and self.search (which now uses mem0).
+            # The text to summarize comes from mem0's search results or get method.
+            # The core logic from Task 27 remains valid.
+            # ... (Task 27 summarize_memory_content logic) ...
+             target_user_id = user_id_override or self.agent_id
+             # ... (rest of the summarization logic from Task 27, using self.get and self.search) ...
+             pass # Placeholder for brevity, actual logic from Task 27
+             return "Summary placeholder - to be completed with Task 27 logic using real mem0 search/get."
+
+    ```
+
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   The `__init__` method now passes the `mem0_config_json` string from `agent.config` to `Mem0MemorySystem`.
+    *   The calls to `self.memory_system` methods should align with any slight API changes in the real `Mem0MemorySystem` (e.g., parameter names like `user_id_override`).
+
+    ```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports)
+    from agents.memory_agent.memory import Mem0MemorySystem # Now the real one
+
+    class MemoryAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool", ...)
+            
+            agent_id_for_mem0 = self ... (existing mock graph logic from Task 26, or call self._mem0_client.add_graph_triplets if it exists)
+            return {"status": "placeholder", "triplets_added": 0}
+
+        async def search_knowledge_graph(self, query_entity: Optional[str] = None, ...) -> List[Dict[str, Any]]:
+            logger.warning("Mem0MemorySystem: search_knowledge_graph using placeholder/mock graph store.")
+            # ... (existing mock graph logic from Task 26, or call self._mem0_client.search_graph if it exists)
+            return []
+        
+        async def summarize_memory_content(self, ...) -> Optional[str]:
+            logger.warning("Mem0MemorySystem: summarize_memory_content using placeholder LLM call.")
+            # ... (existing LLM summarization logic from Task 27, or if mem0 has own summary call self._mem0_client.summarize(...))
+            return "Placeholder summary from Mem0MemorySystem."
+
+    ```
+
+3.  **Verify `python/tools/memory_agent_tool.py`:**
+    *   The `__init__` method already creates `Mem0MemorySystem`.
+    *   The `execute` and its helper methods (`_add_from_messages`, `_search_memory`, etc.) should correctly call the corresponding methods of the real `Mem0MemorySystem` instance. The argument passing should align with what `Mem0MemorySystem` now expects for its passthrough to `Mem0Client`.
+
+    ```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports as in Task 27)
+    # No major changes needed here if the interface of Mem0MemorySystem methods called
+    # by the tool's helpers (_add_from_messages, _search_memory etc.) remains compatible.
+    # The key is that self.memory_system is now a real Mem0-backed system.
+    
+    # Example: _search_memory in MemoryAgentTool
+    # async def _search_memory(self, query: str, user_id_for_op: Optional[str], limit: int) -> ToolResponse:
+    #     # ... (emit starting event)
+    #     # This call now goes to the real Mem0Memory.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user"
+            mem0_tool_config = self.agent.config.get("mem0_tool", {})
+            
+            config_json_str = mem0_tool_config.get("client_config_json") # This might be a stringified JSON
+            
+            self.memory_system = Mem0MemorySystem(
+                agent_id=agent_id_for_mem0, 
+                config_json_str=config_json_str # Pass the JSON string for mem0 config
+            )
+            logger.info(f"MemoryAgentTool initialized for agent {agent.agent_name} with real Mem0MemorySystem (agent_id_scope: {self.memory_system.agent_id}).")
+
+        # ... (execute method and its private helpers _add_from_messages, _search_memory, etc. from Task 27)
+        # Ensure that user_id_override is passed correctly to memory_system methods.
+        # For example, in _add_from_messages:
+        # async def _add_from_messages(self, messages: List[Dict[str, Any]], user_id_for_op: Optional[str]) -> ToolResponse:
+        #     # ...
+        #     stored_ids = await self.memory_system.add_messages(messages, user_id_override=user_id_for_op, metadata=...)
+        #     # ...
+        
+        # In _add_generic_memory:
+        # async def _add_generic_memory(self, data: Any, memory_id_hint: Optional[str], user_id_for_op: Optional[str], metadata: Optional[Dict[str,Any]]) -> ToolResponse:
+        #     # ...
+        #     stored_id = await self.memory_system.add_generic_memory(data, memory_id_hint=memory_id_hint, user_id_override=user_id_for_op, metadata=metadata)
+        #     # ...
+
+        # Other methods (_search_memory, _update_memory, _delete_memory, _get_all_memories) should similarly pass `user_id_override`.
+        System.search
+    #     results = await self.memory_system.search(query, user_id_override=user_id_for_op, limit=limit)
+    #     # ... (emit completed event and return ToolResponse)
+    #     # Ensure the `results` (which are List[Dict]) are properly JSON serialized for ToolResponse.message
+    #     return ToolResponse(message=json.dumps(results), data=results) 
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-47 completed.
+*   `mem0` library and its dependencies (OpenAI, vector store libs) installed.
+*   `OPENAI_API_KEY` (and other `mem0`-specific env vars if any) configured in `.env`.
+
+**Integration with Agent Zero:**
+*   `MemoryAgentTool` now uses the actual `mem0` library for core memory operations (add, search).
+*   This provides Agent Zero with a more sophisticated, potentially LLM-enhanced, and self-organizing memory system than the basic vector store used by `memory_load`/`memory_save`.
+*   Persistence of these memories now depends on `mem0`'s configuration (e.g., if it's set up to use a persistent vector DB or local file storage). The custom JSON/pickle persistence in our `Mem0MemorySystem` wrapper is removed.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `mem0` to `requirements.txt`. This will pull in its dependencies.
+*   Ensure any system libraries# Graph methods (_add_triplets, _search_graph) will still use the placeholder graph logic inside Mem0MemorySystem for now.
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-47 completed.
+*   `mem0` library installed and its dependencies (OpenAI client, vector store libs like `hnswlib` or `faiss-cpu`, etc.) are present.
+*   Environment variables for `mem0` (e.g., `OPENAI_API_KEY`, and any specific `mem0` config vars or `MEM0_CONFIG_JSON`) are set.
+
+**Integration with Agent Zero:**
+*   `MemoryAgentTool` now leverages the actual `mem0` library for its core functionalities, replacing the more basic in-memory mock with `mem0`'s potentially more advanced storage, retrieval, and LLM-powered processing.
+*   Persistence is now handled by `mem0` itself according to its configuration (which could be in-memory, local files, or a dedicated DB). Our wrapper's file persistence is removed.
+*   Graph memory features are still conceptual placeholders within our wrapper, awaiting direct `mem0` API support for graph or integration with a separate graph DB.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `mem0` and all required by `mem0`'s dependencies (e.g., for `faiss-cpu` or `hnswlib`) are present in the Docker base image.
+*   Environment variables for `mem0` (like `OPENAI_API_KEY`, and any `mem0`-specific ones like database paths or API keys for other services it might use) must be available to the Docker container.
+*   If `mem0` is configured for local file persistence, ensure the persistence path is mapped to a Docker volume.
+
+**Summary of Task 48:**
+This task integrates the core `add` and `search` functionalities of the actual `mem0` library into the `MemoryAgentTool` via the `Mem0MemorySystem` wrapper. This replaces the previous mock logic with real intelligent memory operations, including `mem0`'s internal use of embeddings and LLMs for processing memories. Graph and advanced summarization features remain conceptual or use the placeholders from previous tasks, pending deeper investigation into `mem0`'s specific APIs for those if they are separate. Persistence now relies on `mem0`'s configured backend.
+
+Please confirm to proceed.

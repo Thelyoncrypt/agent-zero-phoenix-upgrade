@@ -1,0 +1,106 @@
+
+## Task 55: End-to-End Testing of New Features and Integrations
+
+**Focus:**
+This task involves performing comprehensive end-to-end (E2E) testing of the Agent Zero "Phoenix" upgrade. This means testing workflows that utilize the newly integrated tools and capabilities in combination, simulating realistic user interactions from start to finish. The goal is to identify integration issues, bugs, unexpected behaviors, and areas for refinement.
+
+**Key Scenarios for E2E Testing:**
+
+1.  **Full RAG Pipeline Test:**
+    *   **Action:** User asks `WebCrawlerTool` to crawl a specific documentation page (e.g., a Pydantic or Supabase doc page not in the base knowledge).
+    *   **Verification:**
+        *   `CRAWL_PROGRESS` events are emitted.
+        *   `DocumentProcessor` correctly converts HTML to Markdown.
+        *   `HierarchicalChunker` splits the markdown.
+        *   `KnowledgeAgentTool.ingest_chunks` is called, embeddings are generated (check OpenAI API usage if monitoring), and data is stored in Supabase (verify in Supabase dashboard or via a DB query tool).
+        *   `KNOWLEDGE_RESULT` or `PROGRESS_UPDATE` events are emitted for ingestion.
+    *   **Follow-up Action:** User asks a question that can only be answered by the newly ingested document.
+    *   **Verification:**
+        *   `HybridMemoryTool` (or direct `KnowledgeAgentTool`) retrieves the relevant chunks from Supabase.
+        *   `KnowledgeRAGAgent` uses the LLM to generate an answer based on the retrieved context.
+        *   `TEXT_MESSAGE_CONTENT` (assistant) event contains the correct answer, possibly citing the new source.
+
+2.  **Browser Interaction and Data Extraction Test:**
+    *   **Action:** User asks `BrowserAgentTool` to navigate to a specific e-commerce product page, then extract its price and name using the `extract` action with a schema.
+    *   **Verification:**
+        *   `BROWSER_ACTION` (navigate) events are emitted. Playwright navigates correctly.
+        *   `BROWSER_ACTION` (extract) events are emitted. `ActionExecutor`'s LLM call for extraction is made.
+        *   The extracted data (price, name) is returned in the `ToolResponse` and visible in a `TOOL_CALL_END` event.
+    *   **Follow-up Action:** User asks the agent to add the extracted product name and price to `MemoryAgentTool` (Mem0).
+    *   **Verification:**
+        *   `MEMORY_UPDATE` (add) events are emitted. `mem0` stores the information.
+        *   A subsequent `MemoryAgentTool` search for the product name retrieves the stored price.
+
+3.  **Multi-Step Browser Task (`agent_execute`) and Memory Test:**
+    *   **Action:** User gives `BrowserAgentTool.agent_execute` a high-level goal like: "Find the current weather in London, UK, and remember the temperature."
+    *   **Verification:**
+        *   `ComputerUsePlanner` decomposes the task (e.g., navigate to weather site, type "London", click search, extract temperature).
+        *   Sequence of `BROWSER_ACTION` sub-events (navigate, act, extract) are emitted.
+        *   The final extracted temperature is available.
+        *   The agent then successfully calls `MemoryAgentTool` (or `HybridMemoryTool`) to store "Weather in London: [temp]".
+        *   A later query to memory for "London weather" retrieves the stored temperature.
+
+4.  **TTS Generation from Agent Response Test:**
+    *   **Action:** User asks a general knowledge question. The agent generates a textual response.
+    *   **Follow-up Action:** User (or agent, if programmed) requests the last textual response to be synthesized into speech using `ChatterboxTTSTool`.
+    *   **Verification:**
+        *   `PROGRESS_UPDATE` (TTS starting) events are emitted.
+        *   If streaming: `TTS_STREAM_START`, `AUDIO_CHUNK`s, `TTS_STREAM_END` events occur.
+        *   If file-based: A `.wav` file is created in the configured output directory.
+        *   The `ToolResponse` contains the `audio_path` or `stream_id`.
+        *   (Manual) Verify the audio quality and content.
+
+5.  **Human Intervention and Generative UI Flow Test (Conceptual Backend):**
+    *   **Action:** Craft a scenario where the agent (e.g., via `BrowserAgentTool`'s `act` action's LLM) determines it needs clarification for a vague instruction.
+    *   **Verification:**
+        *   Agent emits `GENERATIVE_UI` requesting a clarification form (e.g., component_name: "clarification_form_example", props: {question: "Which button should I click?"}).
+        *   Agent emits `HUMAN_INTERVENTION` (required) and pauses.
+    *   **Follow-up Action (Simulated Client Response):** Send an input to the agent (via `StreamProtocolTool.handle_input` or its API endpoint) that includes `uiResponse` data, e.g., `{"ui_request_id": "the_id_from_event", "data": {"selected_button": "submit_button"}}`.
+    *   **Verification:**
+        *   Agent's `process_streamed_message` receives the `ui_response_data`.
+        *   `HUMAN_INTERVENTION` is resolved (agent unpauses).
+        *   `CONTEXT_UPDATE` (ui_response_consumed/added_to_history) is emitted.
+        *   Agent's next monologue iteration uses the `ui_response_data` in its reasoning/next LLM call.
+
+6.  **Error Handling and Resilience Test:**
+    *   **Action:** Intentionally cause tool errors:
+        *   `BrowserAgentTool`: Navigate to a non-existent URL or try to interact with a non-existent element.
+        *   `KnowledgeAgentTool`: Query with malformed embedding (harder to test without direct access), or simulate DB connection error if possible.
+        *   `ChatterboxTTSTool`: Provide excessively long text or invalid audio prompt path.
+    *   **Verification:**
+        *   Appropriate `ERROR_EVENT`s are emitted by the tools/agent with clear messages.
+        *   The agent handles the `ToolResponse(error=True)` gracefully (e.g., informs the user, tries an alternative, or requests human intervention).
+
+7.  **Session Management and Context Test (`thread_id`, `user_id`):**
+    *   **Action:** Interact with the agent using two different `thread_id`s concurrently (e.g., via two separate WebSocket connections or API clients simulating this).
+    *   **Verification:**
+        *   Memories stored via `MemoryAgentTool` for `user_A` in `thread_1` are not accessible by `user_B` or in `thread_2` (if `mem0` is correctly scoping by `user_id`).
+        *   Agent state (`AgentContext.agent_state`) is isolated per `thread_id` (or `AgentContext` instance).
+        *   Events are correctly routed to the client associated with the `thread_id`.
+
+8.  **Configuration Test:**
+    *   **Action:** Modify settings in `.env` (e.g., `BROWSER_AGENT_HEADLESS=false`, `CHATTERBOX_DEVICE` if multiple options, `RAG_LLM_MODEL`).
+    *   **Verification:** Restart Agent Zero and confirm the new settings are applied (e.g., browser window appears, TTS uses the specified device, LLM for RAG changes).
+
+**Testing Methodology:**
+
+*   **Manual CLI/API Calls:** Use `run_cli.py` (if updated to support new tool args) or an API client (like Postman or a simple Python script using `requests` or `websockets`) to send commands and observe responses/events.
+*   **Log Monitoring:** Closely monitor Agent Zero's console output for logs from each component, error messages, and emitted event payloads (especially since `StreamTransport` currently prints events).
+*   **Database/File System Inspection:**
+    *   Check Supabase data directly to verify `KnowledgeAgentTool` ingestion.
+    *   Check `mem0` persistence location (if configured and known) or its behavior for memory operations.
+    *   Verify audio files created by `ChatterboxTTSTool` in the designated output directory.
+*   **Mocking External Services (Optional but Recommended for some tests):**
+    *   For specific tests (e.g., LLM failure modes), temporarily mock `openai.ChatCompletion.create` to simulate errors or specific responses.
+*   **No UI for now:** Since a full AG-UI client is not part of these tasks, testing client-side rendering of `GENERATIVE_UI` or interactive intervention resolution is limited to checking if the backend emits the correct events and processes simulated client responses.
+
+**Expected Outcome of Task 55:**
+*   A list of successful E2E scenarios.
+*   A list of identified bugs, integration issues, or unexpected behaviors.
+*   Performance observations (e.g., time taken for crawling, RAG queries, TTS generation).
+*   Confirmation that configurations are working as expected.
+*   Identification of areas needing further refinement in error handling, logging, or event payloads.
+
+This task is less about writing new code and more about rigorously using the system we've built to ensure its components work together as intended. It will likely reveal areas that need further attention in subsequent tasks (like Task 57: Code Cleanup and Refactoring).
+
+Please confirm to proceed with the understanding that this is a testing and validation phase. I will describe how I would approach testing one or two key scenarios.

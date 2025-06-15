@@ -4,7 +4,7 @@
 This task evolves the `BrowserAgentTool`'s `act` functionality by implementing the LLM call within `ActionExecutor` to translate natural language instructions into specific, simple Playwright actions. We will refine the interaction with the LLM and the execution of the parsed actions. The goal is to reliably perform basic actions like clicking identified elements and typing/filling input fields based on reasonably clear natural language.
 
 **Assumptions:**
-*   The LLM (e.g., "gpt-4o-mini") is capable of understanding the `ACTION_TRANSLATION_SYSTEM_PROMPT` and returning a JSON object with `action_type`, `selector`, and `value`/`key` as defined in Task 22.
+*   The LLM (e.g., "gpt-4.1") is capable of understanding the `ACTION_TRANSLATION_SYSTEM_PROMPT` and returning a JSON object with `action_type`, `selector`, and `value`/`key` as defined in Task 22.
 *   Playwright is set up and `BrowserManager` can provide a valid `Page` object.
 
 **File Paths and Code Changes:**

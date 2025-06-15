@@ -1,0 +1,655 @@
+## Task 52: `HybridMemoryTool` - Advanced Context Combination/Ranking (LLM-based Re-ranking/Synthesis Conceptual)
+
+**Focus:**
+This task significantly enhances the `HybridMemoryTool._retrieve_context` method by introducing more advanced techniques for combining and ranking search results from Agent Zero's native memory and the `MemoryAgentTool` (Mem0). The key change is to **conceptually introduce an LLM call for re-ranking and synthesizing the combined context,** moving beyond simple score-based sorting and basic deduplication.
+
+**Actual LLM call for re-ranking/synthesis can be complex and costly. For this task, we will:**
+1.  Implement the *structure* for an LLM-based re-ranking/synthesis step.
+2.  The LLM call itself will be a placeholder or a very simplified version (e.g., asking the LLM to pick the top N most relevant items from a combined list of text snippets, or to write a short synthesis).
+3.  Refine scoring, recency, and source weighting.
+4.  Improve deduplication.
+
+**File Paths and Code Changes:**
+
+1.  **Create `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md` (New Prompt):**
+    This prompt will guide the LLM in re-ranking and/or synthesizing context.
+
+    ```markdown
+# prompts/default/tool.hybrid_memory.rerank_synthesize.system.md
+    You are an expert AI assistant specializing in information synthesis and relevance ranking.
+    You will be provided with a user's original query and a list of retrieved text chunks from multiple memory sources. Each chunk will have an initial relevance score and source information.
+
+    Your tasks are:
+    1.  **Re-rank:** Evaluate each chunk's relevance to the original user query. Assign a new relevance score from 0.0 (not relevant) to 1.0 (highly relevant).
+    2.  **Select Top N:** Identify the top N (e.g., 3 to 5) most relevant and distinct chunks that best help answer the user's query. Prioritize diversity of information if multiple chunks cover similar aspects.
+    3.  **Synthesize (Optional but Preferred):** If possible, write a brief, synthesized paragraph that combines the key information from the selected top N chunks as it relates to the user's query. This synthesis should be a coherent piece of text, not just a list of summaries. If synthesis is not feasible due to disparate topics, clearly state that and list the key points from the top chunks.
+    4.  **Output Format:** Respond with a JSON object containing:
+        {
+          "user_query": "The original user query",
+          "ranked_and_selected_chunks": [
+            {
+              "original_id": "ID of the chunk from its source system",
+              "source_type": "e.g., agent_zero_structured, mem0_intelligent",
+              "content": "The full text content of the chunk",
+              "llm_relevance_score": YOUR_NEW_RELEVANCE_SCORE_FLOAT, // 0.0 to 1.0
+              "reason_for_selection": "Brief reason why this chunk is important for the query"
+            }
+            // ... up to N selected chunks
+          ],
+          "synthesized_context": "Your synthesized paragraph or a statement if synthesis was not possible.",
+          "overall_confidence_in_context": YOUR_CONFIDENCE_FLOAT // 0.0 to 1.0, how well the selected context addresses the query
+        }
+    
+    Focus on providing the most useful and non-redundant information to help answer the user's query.
+    The provided chunks might already have initial scores; use them as a guide but apply your own judgment for the final re-ranking.
+```
+
+2.  **Modify `python/tools/hybrid_memory_tool.py`:**
+    *   Update `_retrieve_context` to include the LLM-based re-ranking/synthesis step.
+    *   Refine scoring and deduplication logic before feeding to the re-ranking LLM.
+
+    ```python
+# python/tools/hybrid_memory_tool.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+    from datetime import datetime, timezone
+    import hashlib
+    # from difflib import SequenceMatcher # For advanced deduplication
+
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from python.helpers.call_llm import call_llm # Assuming a utility for LLM calls
+    import models # For getting LLM instance
+
+    logger = logging.getLogger(__name__)
+
+
+    # SOURCE_WEIGHTS and RECENCY_WEIGHT_FACTOR from Task 39
+    SOURCE_WEIGHTS = {"agent_zero_structured": 1.0, "mem0_intelligent": 1.2}
+    RECENCY_WEIGHT_FACTOR = 0.1
+    DEDUPLICATION_PREFIX_LENGTH = 200 # Characters for prefix hashing
+    MAX_CHUNKS_FOR_LLM_RERANK = 10 # Limit input to re-ranking LLM
+    MAX_CONTEXT_CHARS_FOR_LLM_RERANK = 6000 # Approx token limit for re-ranker prompt
+
+    class HybridMemoryTool(Tool):
+        # ... (__init__, _emit_hybrid_memory_event, execute, _store_interaction as before)
+
+        # ... (_normalize_score, _calculate_recency_boost as in Task 39)
+        
+        def _is_duplicate_refined(self, current_item: Dict[str, Any], selected_items: List[Dict[str, Any]], 
+                                  prefix_threshold: float = 0.9, # For future SequenceMatcher
+                                  use_hash_prefix_only: bool = True) -> bool:
+            current_content = current_item.get("content", "")
+            if not current_content: return False
+
+            current_prefix = current_content[:DEDUPLICATION_PREFIX_LENGTH]
+            current_hash = hashlib.md5(current_prefix.encode()).hexdigest()
+
+            for selected_item in selected_items:
+                selected_content = selected_item.get("content", "")
+                if not selected_content: continue
+                
+                selected_prefix = selected_content[:DEDUPLICATION_PREFIX_LENGTH]
+                selected_hash = hashlib.md5(selected_prefix.encode()).hexdigest()
+
+                if current_hash == selected_hash: # Prefixes match, likely duplicate
+                    # If not using hash only, could do a more expensive check here:
+                    # if not use_hash_prefix_only:
+                    #     ratio = SequenceMatcher(None, current_content, selected_content).ratio()
+                    #     if ratio > prefix_threshold:
+                    #         logger.debug(f"HybridMemoryTool: Deduplication - SequenceMatcher ratio {ratio:.2f} > {prefix_threshold} for hash match.")
+                    #         return True
+                    # else: # Hash match is enough
+                    logger.debug(f"HybridMemoryTool: Deduplication - Prefix hash match.")
+                    return True
+            return False
+
+        async def _call_rerank_synthesis_llm(self, query: str, candidate_chunks: List[Dict[str,Any]], top_n_final: int) -> Dict[str, Any]:
+            """
+            Uses an LLM to re-rank candidate chunks and optionally synthesize a combined context.
+            """
+            if not candidate_chunks:
+                return {
+                    "ranked_and_selected_chunks": [], 
+                    "synthesized_context": "No candidate chunks provided for re-ranking.",
+                    "overall_confidence_in_context": 0.0
+                }
+
+            # Prepare input for LLM: format candidate chunks
+            llm_input_chunks_str_parts = []
+            for i, chunk_data in enumerate(candidate_chunks):
+                llm_input_chunks_str_parts.append(
+                    f"Chunk {i+1} (ID: {chunk_data.get('metadata', {}).get('id', 'N/A')}, Source: {chunk_data.get('source_type')}, Initial Score: {chunk_data.get('weighted_score', 0.0):.2f}):\n"
+                    f"{chunk_data.get('content', '')}"
+                )
+            
+            llm_input_chunks_str = "\n\n---\n\n".join(llm_input_chunks_str_parts)
+
+            # Truncate if combined context is too long for the re-ranking LLM
+            if len(llm_input_chunks_str) > MAX_CONTEXT_CHARS_FOR_LLM_RERANK:
+                llm_input_chunks_str = llm_input_chunks_str[:MAX_CONTEXT_CHARS_FOR_LLM_RERANK] + "\n... (candidate chunks truncated)"
+                logger.warning("HybridMemoryTool: Truncated combined candidate chunks for LLM re-ranking prompt.")
+
+            user_prompt_for_rerank = f"""
+            Original User Query: "{query}"
+
+            Candidate Chunks from Memory Systems (initially ranked by score):
+            --- BEGIN CANDIDATE CHUNKS ---
+            {llm_input_chunks_str}
+            --- END CANDIDATE CHUNKS ---
+
+            Your task is to re-rank these chunks based on their relevance to the original query, select the top {top_n_final} most relevant and distinct ones,
+            and provide a brief synthesis if possible. Follow the JSON output format specified in your system prompt.
+            """
+
+            system_prompt = self.agent.read_prompt("tool.hybrid_memory.rerank_synthesize.system.md")
+            
+            # Use a utility LLM for this, similar to other tools
+            # For now, using agent's utility_model. A dedicated model might be better.
+            if not hasattr(self.agent, 'call_utility_model_direct'): # Check if agent has a direct LLM call method
+                logger.error("HybridMemoryTool: Agent does not have 'call_utility_model_direct'. Cannot perform LLM re-ranking.")
+                # Fallback: return top N based on initial scoring without LLM re-rank
+                return {
+                    "user_query": query,
+                    "ranked_and_selected_chunks": candidate_chunks[:top_n_final], # Simple slice
+                    "synthesized_context": "LLM re-ranking/synthesis skipped. Using initial top chunks.",
+                    "overall_confidence_in_context": 0.5 # Neutral confidence
+                }
+
+            try:
+                # Assuming call_utility_model_direct can handle JSON mode if model supports it
+                # Otherwise, we'd need to parse JSON from string response
+                llm_response_str = await self.agent.call_utility_model_direct(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt_for_rerank,
+                    json_mode=True # Request JSON output if supported
+                )
+                # If not JSON mode, LLM would need to be prompted to ONLY output JSON string
+                # llm_response_str = await self.agent.call_utility_model_direct(system_prompt, user_prompt_for_rerank)
+                
+                parsed_response = json.loads(llm_response_str)
+                logger.info(f"HybridMemoryTool: LLM re-ranking/synthesis response received: {parsed_response}")
+                return parsed_response
+            except json.JSONDecodeError:
+                logger.error(f"HybridMemoryTool: LLM re-ranking failed to produce valid JSON. Raw: {llm_response_str[:500]}")
+            except Exception as e:
+                logger.error(f"HybridMemoryTool: Error during LLM re-ranking call: {e}", exc_info=True)
+            
+            # Fallback if LLM re-ranking fails
+            return {
+                "user_query": query,
+                "ranked_and_selected_chunks": candidate_chunks[:top_n_final],
+                "synthesized_context": "LLM re-ranking/synthesis failed. Using initial top chunks.",
+                "overall_confidence_in_context": 0.4 
+            }
+
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], 
+                                    limit_per_source: int = 5, total_final_limit: int = 5, # Renamed total_limit
+                                    az_mem_threshold: float = 0.65,
+                                    mem0_search_limit_factor: int = 2
+                                    ) -> ToolResponse:
+            effective_user_id = user_id or self.agent_id_for_memory
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": effective_user_id})
+            
+            candidate_items: List[Dict[str, Any]] = [] # Will store items with 'weighted_score'
+
+            # 1. Retrieve from Agent Zero's structured memory
+            # ... (logic from Task 39 to fetch and score az_results_raw, append to candidate_items with weighted_score)
+            try:
+                az_mem_response_obj = await self.agent.call_tool("memory_load", {"query": query, "limit": limit_per_source * 2, "threshold": az_mem_threshold})
+                if az_mem_response_obj and not az_mem_response_obj.error and az_mem_response_obj.message:
+                    # ... (parsing az_mem_response_obj.message to az_results_raw as in Task 39)
+                    # ... (loop, calculate weighted_score, append to candidate_items)
+                    pass # For brevity, assume Task 39's logic is here
+            except Exception as e: logger.error(f"HybridMem: Error AZ retrieve: {e}")
+
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (Mem0)
+            # ... (logic from Task 39 to fetch and score mem0_results, append to candidate_items with weighted_score)
+            try:
+                mem0_response_obj = await self.agent.call_tool("memory_agent_tool", {"action": "search", "query": query, "user_id": effective_user_id, "limit": limit_per_source * mem0_search_limit_factor})
+                if mem0_response_obj and not mem0_response_obj.error and mem0_response_obj.data:
+                    # ... (loop through mem0_response_obj.data, calculate weighted_score, append to candidate_items)
+                    pass # For brevity, assume Task 39's logic is here
+            except Exception as e: logger.error(f"HybridMem: Error Mem0 retrieve: {e}")
+
+
+            # 3. Initial Sort and Deduplication of Candidates before LLM re-ranking
+            candidate_items.sort(key=lambda x: x.get("weighted_score", 0.0), reverse=True)
+            
+            deduplicated_candidates: List[Dict[str, Any]] = []
+            for item in candidate_items:
+                if len(deduplicated_candidates) >= MAX_CHUNKS_FOR_LLM_RERANK: # Limit input to LLM
+                    break
+                if not self._is_duplicate_refined(item, deduplicated_candidates):
+                    deduplicated_candidates.append(item)
+            
+            logger.info(f"HybridMemoryTool: Prepared {len(deduplicated_candidates)} distinct candidates for LLM re-ranking.")
+
+            # 4. LLM-based Re-ranking and Synthesis
+            if not deduplicated_candidates:
+                final_context_str = "No relevant information found in hybrid memory for your query."
+                final_selected_details = []
+            else:
+                llm_processed_result = await self._call_rerank_synthesis_llm(query, deduplicated_candidates, total_final_limit)
+                
+                final_context_str = llm_processed_result.get("synthesized_context", "LLM failed to provide a synthesized context. Using top ranked chunks directly.")
+                final_selected_details = llm_processed_result.get("ranked_and_selected_chunks", [])
+
+                # If LLM re-ranking provided a good synthesis, that might be the primary context.
+                # If not, or if we always want to include raw chunks:
+                if "Using initial top chunks" in final_context_str or not final_selected_details: # Fallback if LLM failed
+                    logger.warning("HybridMemoryTool: LLM re-ranking fallback triggered.")
+                    final_selected_details = deduplicated_candidates[:total_final_limit] # Use our previously ranked/deduplicated
+                    context_parts = [
+                        f"Source: {item['source_type']} (ID: {item.get('metadata', {}).get('id', 'N/A')}, Score: {item.get('weighted_score', 0.0):.2f})\n"
+                        f"Content: {item['content']}" for item in final_selected_details
+                    ]
+                    final_context_str = "\n\n---\n[END OF SOURCE]\n---\n\n".join(context_parts)
+                else: # LLM provided a good re-ranked list and possibly synthesis
+                     logger.info("HybridMemoryTool: Using LLM re-ranked/synthesized context.")
+                     # If we want to append raw re-ranked chunks to the synthesis:
+                     # re_ranked_chunks_text = "\n\n---\n[SUPPORTING DETAILS FROM RE-RANKED CHUNKS]\n---\n\n".join(
+                     #    [f"Source: {item['source_type']} (LLM Score: {item.get('llm_relevance_score', 0.0):.2f})\nContent: {item['content']}" for item in final_selected_details]
+                     # )
+                     # final_context_str = f"Synthesized Summary:\n{final_context_str}\n\n{re_ranked_chunks_text}"
+                     pass # For now, assume `final_context_str` from LLM is sufficient if it synthesized.
+            
+            # Truncate final context string if necessary
+            max_final_context_len = 8000 # For the agent's main LLM
+            if len(final_context_str) > max_final_context_len:
+                final_context_str = final_context_str[:max_final_context_len] + "\n... (final context truncated)"
+                logger.warning(f"HybridMemoryTool: Final combined context string truncated to {max_final_context_len} chars.")
+
+            response_data = {
+                "query": query, "user_id": effective_user_id,
+                "combined_context_text": final_context_str, # This is what the agent's main LLM will use
+                "retrieved_item_details": final_selected_details # For UI/debugging, shows LLM re-ranked items
+            }
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", 
+                                                 {"query": query, "final_selected_count": len(final_selected_details), "user_id": effective_user_id})
+            return ToolResponse(message="Context retrieved, re-ranked, and synthesized from hybrid memory.", data=response_data)
+```
+
+3.  **Update `python/helpers/call_llm.py` or ensure `Agent.call_utility_model_direct` exists:**
+    The `_call_rerank_synthesis_llm` method assumes the agent has a way to make direct LLM calls, possibly configured for JSON mode. If `Agent.call_utility_model_direct` doesn't exist, it needs to be created, or `call_llm` helper adapted.
+
+    ```python
+# agent.py (ensure this or similar exists)
+    # class Agent:
+    #     ...
+    #     async def call_utility_model_direct(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
+    #         # Uses self.config.utility_model or a specific model for this
+    #         # ... (actual LLM call logic, similar to self._get_response but with custom prompts)
+    #         # Example using OpenAI client directly:
+    #         client = OpenAI(api_key=self.config.api_key_openai) # Assuming API key is in agent config
+    #         model_name = self.config.utility_model.name # e.g. "gpt-4o-mini"
+    #         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    #         response_format_arg = {"type": "json_object"} if json_mode else None
+    #         try:
+    #             completion = await asyncio.to_thread(
+    #                 client.chat.completions.create,
+    #                 model=model_name,
+    #                 messages=messages,
+    #                 response_format=response_format_arg,
+    #                 temperature=0.1
+    #             )
+    #             return completion.choices[0].message.content
+    #         except Exception as e:
+    #             logger.error(f"call_utility_model_direct failed: {e}")
+    #             return json.dumps({"error": str(e)}) # Return JSON error string
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-51 completed.
+*   `HybridMemoryTool` fetches from both memory sources (Task 39).
+*   An LLM is available for the re-ranking/synthesis step (e.g., configured as `agent.config.utility_model` or a specific model).
+*   A new prompt file `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md` is created.
+
+**Integration with Agent Zero:**
+*   The `HybridMemoryTool` now employs an LLM to process the combined search results. This LLM re-ranks the candidate chunks for relevance to the query and (optionally/preferably) synthesizes them into a coherent paragraph.
+*   This significantly improves the quality of the context provided to the main agent, making it more focused, less redundant, and easier to consume.
+*   The number of chunks sent to the re-ranking LLM is limited (`MAX_CHUNKS_FOR_LLM_RERANK`) to manage token usage and cost.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies specifically for this task beyond what's needed for LLM calls (e.g., `openai`).
+*   Ensure the new prompt file is included in the Docker image.
+
+**Summary of Task 52:**
+This task implements a more advanced context combination and ranking strategy for the `HybridMemoryTool`. By introducing an LLM-call for re-ranking and synthesizing the initially retrieved memory chunks, the tool can now provide a higher-quality, more focused, and potentially synthesized context to the main agent. This makes the agent's RAG capabilities more powerful and its responses more coherent when drawing from multiple memory sources. The actual quality will depend on the LLM's capabilities and the prompt engineering for the re-ranking/synthesis step.
+
+Please confirm to proceed.Okay, let's proceed with Task 52.
+
+## Task 52: `HybridMemoryTool` - Advanced Context Combination/Ranking (LLM-based Re-ranking/Synthesis Conceptual)
+
+**Focus:**
+This task significantly enhances the `HybridMemoryTool._retrieve_context` method by introducing more advanced techniques for combining and ranking search results from Agent Zero's native memory and the `MemoryAgentTool` (Mem0). The key change is to **conceptually introduce an LLM call for re-ranking and synthesizing the combined context,** moving beyond simple score-based sorting and basic deduplication.
+
+**Actual LLM call for re-ranking/synthesis can be complex and costly. For this task, we will:**
+1.  Implement the *structure* for an LLM-based re-ranking/synthesis step.
+2.  The LLM call itself will be a placeholder or a very simplified version (e.g., asking the LLM to pick the top N most relevant items from a combined list of text snippets, or to write a short synthesis).
+3.  Refine scoring, recency, and source weighting.
+4.  Improve deduplication.
+
+**File Paths and Code Changes:**
+
+1.  **Create `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md` (New Prompt):**
+    This prompt will guide the LLM in re-ranking and/or synthesizing context.
+
+    ```markdown
+    # prompts/default/tool.hybrid_memory.rerank_synthesize.system.md
+    You are an expert AI assistant specializing in information synthesis and relevance ranking.
+    You will be provided with a user's original query and a list of retrieved text chunks from multiple memory sources. Each chunk will have an initial relevance score and source information.
+
+    Your tasks are:
+    1.  **Re-rank:** Evaluate each chunk's relevance to the original user query. Assign a new relevance score from 0.0 (not relevant) to 1.0 (highly relevant).
+    2.  **Select Top N:** Identify the top N (e.g., 3 to 5) most relevant and distinct chunks that best help answer the user's query. Prioritize diversity of information if multiple chunks cover similar aspects.
+    3.  **Synthesize (Optional but Preferred):** If possible, write a brief, synthesized paragraph that combines the key information from the selected top N chunks as it relates to the user's query. This synthesis should be a coherent piece of text, not just a list of summaries. If synthesis is not feasible due to disparate topics, clearly state that and list the key points from the top chunks.
+    4.  **Output Format:** Respond with a JSON object containing:
+        {
+          "user_query": "The original user query",
+          "ranked_and_selected_chunks": [
+            {
+              "original_id": "ID of the chunk from its source system",
+              "source_type": "e.g., agent_zero_structured, mem0_intelligent",
+              "content": "The full text content of the chunk",
+              "llm_relevance_score": YOUR_NEW_RELEVANCE_SCORE_FLOAT, // 0.0 to 1.0
+              "reason_for_selection": "Brief reason why this chunk is important for the query"
+            }
+            // ... up to N selected chunks
+          ],
+          "synthesized_context": "Your synthesized paragraph or a statement if synthesis was not possible.",
+          "overall_confidence_in_context": YOUR_CONFIDENCE_FLOAT // 0.0 to 1.0, how well the selected context addresses the query
+        }
+    
+    Focus on providing the most useful and non-redundant information to help answer the user's query.
+    The provided chunks might already have initial scores; use them as a guide but apply your own judgment for the final re-ranking.
+    ```
+
+2.  **Modify `python/tools/hybrid_memory_tool.py`:**
+    *   Update `_retrieve_context` to include the LLM-based re-ranking/synthesis step.
+    *   Refine scoring and deduplication logic before feeding to the re-ranking LLM.
+
+    ```python
+    # python/tools/hybrid_memory_tool.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+    from datetime import datetime, timezone
+    import hashlib
+    # from difflib import SequenceMatcher # For advanced deduplication
+
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from python.helpers.call_llm import call_llm # Assuming a utility for LLM calls
+    import models # For getting LLM instance
+
+    logger = logging.getLogger(__name__)
+
+
+    # SOURCE_WEIGHTS and RECENCY_WEIGHT_FACTOR from Task 39
+    SOURCE_WEIGHTS = {"agent_zero_structured": 1.0, "mem0_intelligent": 1.2}
+    RECENCY_WEIGHT_FACTOR = 0.1
+    DEDUPLICATION_PREFIX_LENGTH = 200 # Characters for prefix hashing
+    MAX_CHUNKS_FOR_LLM_RERANK = 10 # Limit input to re-ranking LLM
+    MAX_CONTEXT_CHARS_FOR_LLM_RERANK = 6000 # Approx token limit for re-ranker prompt
+
+    class HybridMemoryTool(Tool):
+        # ... (__init__, _emit_hybrid_memory_event, execute, _store_interaction as before)
+
+        # ... (_normalize_score, _calculate_recency_boost as in Task 39)
+        
+        def _is_duplicate_refined(self, current_item: Dict[str, Any], selected_items: List[Dict[str, Any]], 
+                                  prefix_threshold: float = 0.9, # For future SequenceMatcher
+                                  use_hash_prefix_only: bool = True) -> bool:
+            current_content = current_item.get("content", "")
+            if not current_content: return False
+
+            current_prefix = current_content[:DEDUPLICATION_PREFIX_LENGTH]
+            current_hash = hashlib.md5(current_prefix.encode()).hexdigest()
+
+            for selected_item in selected_items:
+                selected_content = selected_item.get("content", "")
+                if not selected_content: continue
+                
+                selected_prefix = selected_content[:DEDUPLICATION_PREFIX_LENGTH]
+                selected_hash = hashlib.md5(selected_prefix.encode()).hexdigest()
+
+                if current_hash == selected_hash: # Prefixes match, likely duplicate
+                    # If not using hash only, could do a more expensive check here:
+                    # if not use_hash_prefix_only:
+                    #     ratio = SequenceMatcher(None, current_content, selected_content).ratio()
+                    #     if ratio > prefix_threshold:
+                    #         logger.debug(f"HybridMemoryTool: Deduplication - SequenceMatcher ratio {ratio:.2f} > {prefix_threshold} for hash match.")
+                    #         return True
+                    # else: # Hash match is enough
+                    logger.debug(f"HybridMemoryTool: Deduplication - Prefix hash match.")
+                    return True
+            return False
+
+        async def _call_rerank_synthesis_llm(self, query: str, candidate_chunks: List[Dict[str,Any]], top_n_final: int) -> Dict[str, Any]:
+            """
+            Uses an LLM to re-rank candidate chunks and optionally synthesize a combined context.
+            """
+            if not candidate_chunks:
+                return {
+                    "ranked_and_selected_chunks": [], 
+                    "synthesized_context": "No candidate chunks provided for re-ranking.",
+                    "overall_confidence_in_context": 0.0
+                }
+
+            # Prepare input for LLM: format candidate chunks
+            llm_input_chunks_str_parts = []
+            for i, chunk_data in enumerate(candidate_chunks):
+                llm_input_chunks_str_parts.append(
+                    f"Chunk {i+1} (ID: {chunk_data.get('metadata', {}).get('id', 'N/A')}, Source: {chunk_data.get('source_type')}, Initial Score: {chunk_data.get('weighted_score', 0.0):.2f}):\n"
+                    f"{chunk_data.get('content', '')}"
+                )
+            
+            llm_input_chunks_str = "\n\n---\n\n".join(llm_input_chunks_str_parts)
+
+            # Truncate if combined context is too long for the re-ranking LLM
+            if len(llm_input_chunks_str) > MAX_CONTEXT_CHARS_FOR_LLM_RERANK:
+                llm_input_chunks_str = llm_input_chunks_str[:MAX_CONTEXT_CHARS_FOR_LLM_RERANK] + "\n... (candidate chunks truncated)"
+                logger.warning("HybridMemoryTool: Truncated combined candidate chunks for LLM re-ranking prompt.")
+
+            user_prompt_for_rerank = f"""
+            Original User Query: "{query}"
+
+            Candidate Chunks from Memory Systems (initially ranked by score):
+            --- BEGIN CANDIDATE CHUNKS ---
+            {llm_input_chunks_str}
+            --- END CANDIDATE CHUNKS ---
+
+            Your task is to re-rank these chunks based on their relevance to the original query, select the top {top_n_final} most relevant and distinct ones,
+            and provide a brief synthesis if possible. Follow the JSON output format specified in your system prompt.
+            """
+
+            system_prompt = self.agent.read_prompt("tool.hybrid_memory.rerank_synthesize.system.md")
+            
+            # Use a utility LLM for this, similar to other tools
+            # For now, using agent's utility_model. A dedicated model might be better.
+            if not hasattr(self.agent, 'call_utility_model_direct'): # Check if agent has a direct LLM call method
+                logger.error("HybridMemoryTool: Agent does not have 'call_utility_model_direct'. Cannot perform LLM re-ranking.")
+                # Fallback: return top N based on initial scoring without LLM re-rank
+                return {
+                    "user_query": query,
+                    "ranked_and_selected_chunks": candidate_chunks[:top_n_final], # Simple slice
+                    "synthesized_context": "LLM re-ranking/synthesis skipped. Using initial top chunks.",
+                    "overall_confidence_in_context": 0.5 # Neutral confidence
+                }
+
+            try:
+                # Assuming call_utility_model_direct can handle JSON mode if model supports it
+                # Otherwise, we'd need to parse JSON from string response
+                llm_response_str = await self.agent.call_utility_model_direct(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt_for_rerank,
+                    json_mode=True # Request JSON output if supported
+                )
+                # If not JSON mode, LLM would need to be prompted to ONLY output JSON string
+                # llm_response_str = await self.agent.call_utility_model_direct(system_prompt, user_prompt_for_rerank)
+                
+                parsed_response = json.loads(llm_response_str)
+                logger.info(f"HybridMemoryTool: LLM re-ranking/synthesis response received: {parsed_response}")
+                return parsed_response
+            except json.JSONDecodeError:
+                logger.error(f"HybridMemoryTool: LLM re-ranking failed to produce valid JSON. Raw: {llm_response_str[:500]}")
+            except Exception as e:
+                logger.error(f"HybridMemoryTool: Error during LLM re-ranking call: {e}", exc_info=True)
+            
+            # Fallback if LLM re-ranking fails
+            return {
+                "user_query": query,
+                "ranked_and_selected_chunks": candidate_chunks[:top_n_final],
+                "synthesized_context": "LLM re-ranking/synthesis failed. Using initial top chunks.",
+                "overall_confidence_in_context": 0.4 
+            }
+
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], 
+                                    limit_per_source: int = 5, total_final_limit: int = 5, # Renamed total_limit
+                                    az_mem_threshold: float = 0.65,
+                                    mem0_search_limit_factor: int = 2
+                                    ) -> ToolResponse:
+            effective_user_id = user_id or self.agent_id_for_memory
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": effective_user_id})
+            
+            candidate_items: List[Dict[str, Any]] = [] # Will store items with 'weighted_score'
+
+            # 1. Retrieve from Agent Zero's structured memory
+            # ... (logic from Task 39 to fetch and score az_results_raw, append to candidate_items with weighted_score)
+            try:
+                az_mem_response_obj = await self.agent.call_tool("memory_load", {"query": query, "limit": limit_per_source * 2, "threshold": az_mem_threshold})
+                if az_mem_response_obj and not az_mem_response_obj.error and az_mem_response_obj.message:
+                    # ... (parsing az_mem_response_obj.message to az_results_raw as in Task 39)
+                    # ... (loop, calculate weighted_score, append to candidate_items)
+                    pass # For brevity, assume Task 39's logic is here
+            except Exception as e: logger.error(f"HybridMem: Error AZ retrieve: {e}")
+
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (Mem0)
+            # ... (logic from Task 39 to fetch and score mem0_results, append to candidate_items with weighted_score)
+            try:
+                mem0_response_obj = await self.agent.call_tool("memory_agent_tool", {"action": "search", "query": query, "user_id": effective_user_id, "limit": limit_per_source * mem0_search_limit_factor})
+                if mem0_response_obj and not mem0_response_obj.error and mem0_response_obj.data:
+                    # ... (loop through mem0_response_obj.data, calculate weighted_score, append to candidate_items)
+                    pass # For brevity, assume Task 39's logic is here
+            except Exception as e: logger.error(f"HybridMem: Error Mem0 retrieve: {e}")
+
+
+            # 3. Initial Sort and Deduplication of Candidates before LLM re-ranking
+            candidate_items.sort(key=lambda x: x.get("weighted_score", 0.0), reverse=True)
+            
+            deduplicated_candidates: List[Dict[str, Any]] = []
+            for item in candidate_items:
+                if len(deduplicated_candidates) >= MAX_CHUNKS_FOR_LLM_RERANK: # Limit input to LLM
+                    break
+                if not self._is_duplicate_refined(item, deduplicated_candidates):
+                    deduplicated_candidates.append(item)
+            
+            logger.info(f"HybridMemoryTool: Prepared {len(deduplicated_candidates)} distinct candidates for LLM re-ranking.")
+
+            # 4. LLM-based Re-ranking and Synthesis
+            if not deduplicated_candidates:
+                final_context_str = "No relevant information found in hybrid memory for your query."
+                final_selected_details = []
+            else:
+                llm_processed_result = await self._call_rerank_synthesis_llm(query, deduplicated_candidates, total_final_limit)
+                
+                final_context_str = llm_processed_result.get("synthesized_context", "LLM failed to provide a synthesized context. Using top ranked chunks directly.")
+                final_selected_details = llm_processed_result.get("ranked_and_selected_chunks", [])
+
+                # If LLM re-ranking provided a good synthesis, that might be the primary context.
+                # If not, or if we always want to include raw chunks:
+                if "Using initial top chunks" in final_context_str or not final_selected_details: # Fallback if LLM failed
+                    logger.warning("HybridMemoryTool: LLM re-ranking fallback triggered.")
+                    final_selected_details = deduplicated_candidates[:total_final_limit] # Use our previously ranked/deduplicated
+                    context_parts = [
+                        f"Source: {item['source_type']} (ID: {item.get('metadata', {}).get('id', 'N/A')}, Score: {item.get('weighted_score', 0.0):.2f})\n"
+                        f"Content: {item['content']}" for item in final_selected_details
+                    ]
+                    final_context_str = "\n\n---\n[END OF SOURCE]\n---\n\n".join(context_parts)
+                else: # LLM provided a good re-ranked list and possibly synthesis
+                     logger.info("HybridMemoryTool: Using LLM re-ranked/synthesized context.")
+                     # If we want to append raw re-ranked chunks to the synthesis:
+                     # re_ranked_chunks_text = "\n\n---\n[SUPPORTING DETAILS FROM RE-RANKED CHUNKS]\n---\n\n".join(
+                     #    [f"Source: {item['source_type']} (LLM Score: {item.get('llm_relevance_score', 0.0):.2f})\nContent: {item['content']}" for item in final_selected_details]
+                     # )
+                     # final_context_str = f"Synthesized Summary:\n{final_context_str}\n\n{re_ranked_chunks_text}"
+                     pass # For now, assume `final_context_str` from LLM is sufficient if it synthesized.
+            
+            # Truncate final context string if necessary
+            max_final_context_len = 8000 # For the agent's main LLM
+            if len(final_context_str) > max_final_context_len:
+                final_context_str = final_context_str[:max_final_context_len] + "\n... (final context truncated)"
+                logger.warning(f"HybridMemoryTool: Final combined context string truncated to {max_final_context_len} chars.")
+
+            response_data = {
+                "query": query, "user_id": effective_user_id,
+                "combined_context_text": final_context_str, # This is what the agent's main LLM will use
+                "retrieved_item_details": final_selected_details # For UI/debugging, shows LLM re-ranked items
+            }
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", 
+                                                 {"query": query, "final_selected_count": len(final_selected_details), "user_id": effective_user_id})
+            return ToolResponse(message="Context retrieved, re-ranked, and synthesized from hybrid memory.", data=response_data)
+    ```
+
+3.  **Update `python/helpers/call_llm.py` or ensure `Agent.call_utility_model_direct` exists:**
+    The `_call_rerank_synthesis_llm` method assumes the agent has a way to make direct LLM calls, possibly configured for JSON mode. If `Agent.call_utility_model_direct` doesn't exist, it needs to be created, or `call_llm` helper adapted.
+
+    ```python
+    # agent.py (ensure this or similar exists)
+    # class Agent:
+    #     ...
+    #     async def call_utility_model_direct(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
+    #         # Uses self.config.utility_model or a specific model for this
+    #         # ... (actual LLM call logic, similar to self._get_response but with custom prompts)
+    #         # Example using OpenAI client directly:
+    #         client = OpenAI(api_key=self.config.api_key_openai) # Assuming API key is in agent config
+    #         model_name = self.config.utility_model.name # e.g. "gpt-4o-mini"
+    #         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    #         response_format_arg = {"type": "json_object"} if json_mode else None
+    #         try:
+    #             completion = await asyncio.to_thread(
+    #                 client.chat.completions.create,
+    #                 model=model_name,
+    #                 messages=messages,
+    #                 response_format=response_format_arg,
+    #                 temperature=0.1
+    #             )
+    #             return completion.choices[0].message.content
+    #         except Exception as e:
+    #             logger.error(f"call_utility_model_direct failed: {e}")
+    #             return json.dumps({"error": str(e)}) # Return JSON error string
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-51 completed.
+*   `HybridMemoryTool` fetches from both memory sources (Task 39).
+*   An LLM is available for the re-ranking/synthesis step (e.g., configured as `agent.config.utility_model` or a specific model).
+*   A new prompt file `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md` is created.
+
+**Integration with Agent Zero:**
+*   The `HybridMemoryTool` now employs an LLM to process the combined search results. This LLM re-ranks the candidate chunks for relevance to the query and (optionally/preferably) synthesizes them into a coherent paragraph.
+*   This significantly improves the quality of the context provided to the main agent, making it more focused, less redundant, and easier to consume.
+*   The number of chunks sent to the re-ranking LLM is limited (`MAX_CHUNKS_FOR_LLM_RERANK`) to manage token usage and cost.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies specifically for this task beyond what's needed for LLM calls (e.g., `openai`).
+*   Ensure the new prompt file is included in the Docker image.
+
+**Summary of Task 52:**
+This task implements a more advanced context combination and ranking strategy for the `HybridMemoryTool`. By introducing an LLM-call for re-ranking and synthesizing the initially retrieved memory chunks, the tool can now provide a higher-quality, more focused, and potentially synthesized context to the main agent. This makes the agent's RAG capabilities more powerful and its responses more coherent when drawing from multiple memory sources. The actual quality will depend on the LLM's capabilities and the prompt engineering for the re-ranking/synthesis step.
+
+Please confirm to proceed.

@@ -58,28 +58,27 @@ class KnowledgeAgentTool(Tool):
             },
             **kwargs
         )
-        # Initialize components (these would be singletons or configured externally in a full app)
-        self.db_manager = DatabaseManager()
-        self.embed_generator = EmbeddingGenerator()
+        # These components are now more functional
+        self.db_manager = DatabaseManager() # Uses Supabase
+        self.embed_generator = EmbeddingGenerator() # Uses OpenAI
         self.retriever = InformationRetriever(self.db_manager, self.embed_generator)
-        self.rag_agent_logic = KnowledgeRAGAgent(self.db_manager, self.retriever) # The core logic
-        print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        # KnowledgeRAGAgent now also needs LLM client for generation
+        self.rag_agent_logic = KnowledgeRAGAgent(
+            database_manager=self.db_manager,
+            information_retriever=self.retriever,
+            # openai_api_key and llm_model_name will be picked from env by KnowledgeRAGAgent
+        )
+        print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} with real RAG components.")
 
     async def _emit_knowledge_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
-        """Helper to emit KNOWLEDGE_RESULT or PROGRESS_UPDATE events."""
-        if not STREAM_PROTOCOL_AVAILABLE:
-            print(f"KnowledgeAgentTool: StreamProtocol not available, logging event: {action_name} - {status}")
-            return
-            
         event_type = StreamEventType.KNOWLEDGE_RESULT if status == "completed" else StreamEventType.PROGRESS_UPDATE
-        payload = {"action": action_name, "status": status}
-        if details:
-            payload.update(details)
-        
+        payload = {"source_tool": "knowledge_agent", "action": action_name, "status": status}
+        if details: payload.update(details)
         if hasattr(self.agent, '_emit_stream_event'):
-            await self.agent._emit_stream_event(event_type, payload)
+             await self.agent._emit_stream_event(event_type, payload)
         else:
-            print(f"KnowledgeAgentTool: Agent does not have _emit_stream_event method. Cannot emit {event_type.value}.")
+            print(f"KnowledgeAgentTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
 
     async def execute(self, **kwargs) -> ToolResponse:
         """
@@ -111,13 +110,14 @@ class KnowledgeAgentTool(Tool):
             elif action == "query":
                 query_text = kwargs.get("query")
                 limit = kwargs.get("limit", 5)
+                filter_metadata = kwargs.get("filter_metadata")
                 if not query_text:
                     return ToolResponse(
                         success=False,
                         error="Missing 'query' parameter",
                         message="Error: 'query' is required for query action."
                     )
-                return await self._query_kb(query_text, limit)
+                return await self._query_kb(query_text, limit, filter_metadata)
             
             elif action == "raw_search": # Direct vector search without RAG response generation
                 query_text = kwargs.get("query")
@@ -152,70 +152,73 @@ class KnowledgeAgentTool(Tool):
             )
 
     async def _ingest_chunks(self, chunks_data: List[Dict[str, Any]]) -> ToolResponse:
-        """Ingests pre-processed and pre-embedded chunks."""
-        await self._emit_knowledge_event("ingest_chunks", "starting", {"chunk_count": len(chunks_data)})
-        
-        # Embed if embeddings are not provided (or re-embed based on policy)
+        """
+        Ingests chunks. If embeddings are not provided, generates them.
+        chunks_data: List of dicts, each like {"text": str, "metadata": Dict, "id": str}.
+                     "embedding" (List[float]) is optional.
+        """
+        await self._emit_knowledge_event("ingest_chunks", "starting", {"chunk_count_received": len(chunks_data)})
+
+        texts_to_embed = []
+        indices_needing_embedding = []
+
         for i, chunk_d in enumerate(chunks_data):
             if "embedding" not in chunk_d or not chunk_d["embedding"]:
                 text_to_embed = chunk_d.get("text")
-                if not text_to_embed:
-                    await self._emit_knowledge_event("ingest_chunks", "error", {"message": f"Chunk {i} has no text to embed."})
-                    return ToolResponse(
-                        success=False,
-                        error=f"Chunk {i} has no text for embedding",
-                        message=f"Error: Chunk {i} has no text for embedding."
-                    )
-                chunks_data[i]["embedding"] = await self.embed_generator.generate_single_embedding(text_to_embed)
+                if not text_to_embed or not text_to_embed.strip():
+                     err_msg = f"Chunk {i} (id: {chunk_d.get('id')}) has no text to embed."
+                     await self._emit_knowledge_event("ingest_chunks", "error", {"message": err_msg})
+                     # Skip this chunk or handle error more gracefully
+                     print(f"KnowledgeAgentTool: {err_msg}")
+                     continue
+                texts_to_embed.append(text_to_embed)
+                indices_needing_embedding.append(i)
 
-        result = await self.rag_agent_logic.ingest_document_chunks(chunks_data)
-        
+        if texts_to_embed:
+            print(f"KnowledgeAgentTool: Generating embeddings for {len(texts_to_embed)} chunks.")
+            generated_embeddings = await self.embed_generator.generate_embeddings(texts_to_embed)
+            if len(generated_embeddings) != len(indices_needing_embedding):
+                msg = "Error: Mismatch in generated embeddings count."
+                await self._emit_knowledge_event("ingest_chunks", "error", {"message": msg})
+                return ToolResponse(success=False, message=msg, error=msg)
+
+            for original_idx, embedding in zip(indices_needing_embedding, generated_embeddings):
+                chunks_data[original_idx]["embedding"] = embedding
+
+        # Filter out chunks that still lack embeddings (e.g., if text was empty and embedding failed)
+        valid_chunks_data = [cd for cd in chunks_data if cd.get("embedding")]
+
+        if not valid_chunks_data:
+            msg = "No valid chunks with embeddings to ingest."
+            await self._emit_knowledge_event("ingest_chunks", "error", {"message": msg})
+            return ToolResponse(success=False, message=msg, error=msg)
+
+        result = await self.rag_agent_logic.ingest_document_chunks(valid_chunks_data)
+
         await self._emit_knowledge_event("ingest_chunks", "completed", result)
-        return ToolResponse(
-            success=True,
-            data=result,
-            message=f"Ingested {result.get('count', 0)} chunks."
-        )
+        return ToolResponse(success=True, message=f"Ingested {result.get('count', 0)} chunks.", data=result)
 
-    async def _query_kb(self, query: str, limit: int) -> ToolResponse:
-        """Queries the KB and uses RAG to generate an answer."""
-        await self._emit_knowledge_event("query_kb", "processing", {"query": query})
-        
-        rag_response = await self.rag_agent_logic.query_knowledge_base(query, limit)
-        
-        await self._emit_knowledge_event("query_kb", "completed", rag_response)
-        # The main response text will be sent as TEXT_MESSAGE_CONTENT by the agent after this tool call.
-        # This tool provides the structured RAG output.
-        return ToolResponse(
-            success=True,
-            data=rag_response,
-            message=json.dumps(rag_response)
-        )
+    async def _query_kb(self, query: str, limit: int, filter_metadata: Optional[Dict] = None) -> ToolResponse: # Added filter_metadata
+        await self._emit_knowledge_event("query_kb", "processing", {"query": query, "filter": filter_metadata})
+
+        # Pass filter_metadata to the RAG logic
+        rag_response_dict = await self.rag_agent_logic.query_knowledge_base(query, limit, filter_metadata)
+
+        await self._emit_knowledge_event("query_kb", "completed", rag_response_dict)
+        # The tool returns the structured dictionary from KnowledgeRAGAgent
+        return ToolResponse(message=rag_response_dict["response"], data=rag_response_dict)
 
     async def _raw_search(self, query: str, limit: int, filter_metadata: Optional[Dict]) -> ToolResponse:
-        """Performs a raw semantic search and returns document chunks."""
         await self._emit_knowledge_event("raw_search", "processing", {"query": query, "filter": filter_metadata})
-        
-        # In a real RAG system, InformationRetriever would be used
-        # For this mock, we call db_manager directly after getting embedding
+
         query_embedding = await self.embed_generator.generate_single_embedding(query)
         search_results = await self.db_manager.semantic_search(query_embedding, limit, filter_metadata)
-        
+
         await self._emit_knowledge_event("raw_search", "completed", {"results_count": len(search_results)})
-        return ToolResponse(
-            success=True,
-            data={"results": search_results},
-            message=json.dumps(search_results)
-        )
+        return ToolResponse(success=True, message=json.dumps(search_results), data=search_results) # search_results is List[Dict]
 
     async def _list_sources(self) -> ToolResponse:
-        """Lists all unique sources in the knowledge base."""
         await self._emit_knowledge_event("list_sources", "processing", {})
         sources = await self.db_manager.get_all_sources()
-        sources_data = {"sources": sources}
-        await self._emit_knowledge_event("list_sources", "completed", sources_data)
-        return ToolResponse(
-            success=True,
-            data=sources_data,
-            message=json.dumps(sources_data)
-        )
+        await self._emit_knowledge_event("list_sources", "completed", {"sources": sources})
+        return ToolResponse(success=True, message=json.dumps({"sources": sources}), data={"sources": sources})

@@ -1,0 +1,507 @@
+## Task 54: Agent Core - Processing `GENERATIVE_UI` Responses
+
+**Focus:**
+This task refines how the Agent Core (specifically `Agent.process_streamed_message` and potentially `Agent.monologue`) handles data received from a `GENERATIVE_UI` component that was previously requested by the agent. Building on Task 35 where the agent *emits* `GENERATIVE_UI` requests:
+1.  Standardize the expected format of `ui_response_data` coming from the client (e.g., including the original `ui_request_id` and a `data` payload).
+2.  Ensure `Agent.process_streamed_message` correctly identifies and extracts this UI response data.
+3.  Store the received UI data in a way that the agent's subsequent reasoning steps in `monologue` can access and use it (e.g., adding to a specific part of the context, or making it available for the next LLM prompt).
+4.  Ensure the `HUMAN_INTERVENTION` (which was set when the UI was requested) is properly resolved.
+
+**File Paths and Code Changes:**
+
+1.  **Refine `agent.py` (`AgentContext` and `Agent` classes):**
+
+    ```python
+# agent.py
+    # ... (imports, StreamEventType)
+    import json # For consistent handling of data
+
+    class AgentContext:
+        # ... (existing attributes from Task 34: intervention_needed, intervention_prompt, halt_event)
+        self.last_ui_response: Optional[Dict[str, Any]] = None # To store the most recent UI response data
+
+        def request_intervention(self, prompt_for_human: str, ui_request_id: Optional[str] = None):
+            """Sets flags indicating intervention is needed, optionally associating a UI request ID."""
+            logger.info(f"AgentContext {self.id}: Intervention requested. Prompt: '{prompt_for_human}', UI Request ID: {ui_request_id}")
+            self.intervention_needed = True
+            # Store the specific prompt that led to this intervention, potentially including ui_request_id
+            self.intervention_prompt = prompt_for_human 
+            if ui_request_id:
+                self.custom_data['active_ui_request_id'] = ui_request_id # Store active UI request ID
+            self.halt_event.clear()
+
+        def resolve_intervention(self, ui_response: Optional[Dict[str, Any]] = None):
+            """Clears intervention flags and optionally stores UI response data."""
+            logger.info(f"AgentContext {self.id}: Resolving intervention. UI Response received: {bool(ui_response)}")
+            self.intervention_needed = False
+            self.intervention_prompt = None
+            if 'active_ui_request_id' in self.custom_data:
+                del self.custom_data['active_ui_request_id'] # Clear active UI request
+            if ui_response:
+                self.last_ui_response = ui_response # Store the data
+            self.halt_event.set()
+
+    class Agent:
+        # ... (_get_stream_protocol_tool, _emit_stream_event, _check_and_handle_intervention, _request_generative_ui as before)
+
+        async def monologue(self) -> Optional[str]:
+            # ...
+            while self.iteration_no < self.max_iterations:
+                self.iteration_no += 1
+                await self._check_and_handle_intervention() # Pauses if intervention_needed
+
+                # --- Accessing UI Response Data ---
+                # If an intervention was just resolved due to a UI response, that data is in self.context.last_ui_response
+                ui_data_for_this_iteration = None
+                if self.context.last_ui_response:
+                    ui_data_for_this_iteration = self.context.last_ui_response.copy()
+                    self.context.last_ui_response = None # Consume it
+                    logger.info(f"Agent {self.agent_name}: Monologue using UI response data: {ui_data_for_this_iteration}")
+                    await self._emit_stream_event(
+                        StreamEventType.CONTEXT_UPDATE,
+                        {"type": "ui_response_consumed", "data": ui_data_for_this_iteration}
+                    )
+                    # The agent's prompt/logic now needs to incorporate ui_data_for_this_iteration.
+                    # This typically means adding it to the 'extras' for the next LLM call.
+                    # We'll add it to loop_data.extras_override for this iteration.
+                
+                # ... (Call extensions to build loop_data.system_prompts, loop_data.user_prompts, loop_data.extras_*)
+                loop_data = await self._build_loop_data() # Assuming this method gathers all prompts/extras
+
+                if ui_data_for_this_iteration:
+                    # Add UI data to extras that get passed to the LLM prompt
+                    # The prompt template for the main LLM call needs to know how to use this.
+                    ui_response_text = f"[Data received from UI (Request ID: {ui_data_for_this_iteration.get('ui_request_id', 'N/A')})]:\n"
+                    ui_response_text += json.dumps(ui_data_for_this_iteration.get('data', {}), indent=2)
+                    loop_data.extras_override["last_ui_response"] = ui_response_text
+                    logger.debug(f"Agent {self.agent_name}: Added last_ui_response to loop_data.extras_override.")
+
+
+                # --- LLM Call section ---
+                # await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "Preparing to query LLM..."})
+                # response_json = await self._get_response(loop_data) # Pass loop_data
+                # (This part is simplified from Task 32 to show where loop_data would be used)
+                
+                # Let's assume _get_response internally uses loop_data to build its final prompt.
+                # If ui_data_for_this_iteration was present, the prompt will include it via extras_override.
+                # The agent's main system prompt (`agent.system.main.md`) might need a section on how to handle `last_ui_response` in [EXTRAS].
+                # Example: "[LAST UI RESPONSE]\n{{last_ui_response}}\n" in agent.context.extras.md if it exists,
+                # or the agent learns to look for "Data received from UI..." in the user message history.
+
+                # For now, the simplest way is to inject it into the user message history before the LLM call,
+                # as if it were a special system message.
+                if ui_data_for_this_iteration:
+                    self.hist_add_message( # Adding as a system message to current history before LLM call
+                        role="system",
+                        message_type="ui_response_processed", # Custom indicator
+                        content=f"The following data was submitted by the user via a UI form (request ID: {ui_data_for_this_iteration.get('ui_request_id', 'N/A')}):\n{json.dumps(ui_data_for_this_iteration.get('data', {}), indent=2)}\nIncorporate this information into your next action or response."
+                    )
+                    await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "ui_response_added_to_history"})
+
+
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": f"Iteration {self.iteration_no}: Planning next step..."})
+                response_json = await self._get_response() # _get_response will use the updated history
+
+                # ... (Rest of monologue: parsing thoughts, tool calls, handling tool responses)
+                # If a tool requested generative UI (as in Task 35 example), the loop will pause via _check_and_handle_intervention
+                # and the next iteration will start after process_streamed_message resolves it with ui_response_data.
+
+            # ... (end of monologue)
+            return None
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None,
+                                           ui_response_data: Optional[Dict[str, Any]] = None): # Existing from Task 35
+            
+            logger.info(f"Agent {self.agent_name}: process_streamed_message. Role='{role}', Content='{content[:50]}...', Has UI Data: {bool(ui_response_data)}")
+            
+            if incoming_state:
+                await self.set_agent_state_from_external(incoming_state, source="client_stream_input_state")
+
+            if ui_response_data: # Data from a previously requested generative UI
+                ui_request_id = ui_response_data.get("ui_request_id")
+                form_data = ui_response_data.get("data")
+                logger.info(f"Agent {self.agent_name}: Processing UI response for request_id '{ui_request_id}': {form_data}")
+                
+                await self._emit_stream_event(
+                    StreamEventType.GENERATIVE_UI,
+                    {"request_id": ui_request_id, "data_received": form_data, "status": "response_being_processed_by_agent"}
+                )
+                
+                # Resolve intervention if this UI response matches an active UI request
+                active_ui_req_id = self.context.custom_data.get('active_ui_request_id')
+                if self.context.intervention_needed and active_ui_req_id and active_ui_req_id == ui_request_id:
+                    logger.info(f"Agent {self.agent_name}: UI response for '{ui_request_id}' resolving intervention.")
+                    self.context.resolve_intervention(ui_response=ui_response_data) # Store it in context.last_ui_response
+                elif self.context.intervention_needed:
+                    # This UI response might not be for the *current* intervention, or there's a mismatch.
+                    # Or, this could be an unsolicited UI response. For now, still store it.
+                    logger.warning(f"Agent {self.agent_name}: Received UI response for '{ui_request_id}', but current intervention was for '{active_ui_req_id}' or generic. Storing response anyway.")
+                    self.context.last_ui_response = ui_response_data # Store it
+                    # We might not want to resolve a generic intervention with a specific UI response unless IDs match.
+                    # For simplicity now, if any intervention is active and UI data comes, we assume it's relevant.
+                    self.context.resolve_intervention(ui_response=ui_response_data)
+
+
+            elif role.lower() == "user": # Regular user text message
+                if self.context.intervention_needed:
+                    # If a user types a message while a UI form (or other intervention) was pending,
+                    # this message might supersede or relate to the intervention.
+                    logger.info(f"Agent {self.agent_name}: User message received while intervention active. Resolving intervention.")
+                    self.context.resolve_intervention() # Resolve with no specific UI data
+                
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj) # Adds to history for next LLM call
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "user_message_added", "content_preview": content[:50]})
+            
+            # Trigger monologue if there was any user input (text or UI response)
+            if role.lower() == "user" or ui_response_data:
+                # The monologue will pick up self.context.last_ui_response if set
+                return await self.monologue() 
+            
+            return None # No action if not user message and no UI response
+```
+
+2.  **Modify `python/tools/stream_protocol_tool.py` (`_handle_input`):**
+    *   Ensure it checks for `uiResponse` in the incoming `input_data` (from `RunAgentInput`) and passes it to `agent.process_streamed_message`. This was already sketched out in Task 35.
+
+    ```python
+# python/tools/stream_protocol_tool.py
+    # class StreamProtocolTool(Tool):
+    # ...
+    # async def _handle_input(self, input_data: Dict[str, Any]):
+    #     # ... (parsing RunAgentInput)
+    #     run_input = RunAgentInput(...)
+    #     ui_response_payload = input_data.get("uiResponse") # Check raw input_data for this key
+    #
+    #     # ... (set thread_id, user_id on agent context)
+    #
+    #     if ui_response_payload and isinstance(ui_response_payload, dict):
+    #         await self.agent.process_streamed_message(
+    #             content=json.dumps(ui_response_payload.get("data", {})), # Or a summary string
+    #             role="ui_response", # Special role
+    #             incoming_state=run_input.state,
+    #             ui_response_data=ui_response_payload # Pass the full payload
+    #         )
+    #     elif run_input.messages:
+    #         for i, message_data in enumerate(run_input.messages):
+    #             state_to_pass = run_input.state if i == 0 else None
+    #             await self.agent.process_streamed_message(
+    #                 content=message_data.get("content", ""),
+    #                 role=message_data.get("role", "user").lower(),
+    #                 attachments=message_data.get("attachments"),
+    #                 incoming_state=state_to_pass,
+    #                 ui_response_data=None # This path is for regular messages
+    #             )
+    #     elif run_input.state is not None: # Only state update
+    #         await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push_no_msg_handle_input")
+    #
+    #     # ... (rest of _handle_input)
+```
+
+3.  **Update `prompts/default/agent.context.extras.md` or main system prompt:**
+    The agent's main LLM prompt needs to be aware that it might receive information from UI components. This can be done by adding a placeholder in `agent.context.extras.md` which `Agent._build_loop_data` would populate if `self.context.last_ui_response` was consumed.
+
+    *   **New/Update `prompts/default/agent.context.extras.md`:**
+        ```markdown
+# This file's content is dynamically assembled and added to the end of the user message block.
+        # If other extras are defined by extensions, they will also be here.
+        
+        {{#if last_ui_response}}
+        [LAST UI RESPONSE]
+        The user provided the following data via a UI form/component:
+        {{last_ui_response}}
+        Consider this information for your next steps.
+        {{/if}}
+
+        {{#if other_extras}}
+        [ADDITIONAL CONTEXT]
+        {{other_extras}}
+        {{/if}}
+```
+        **Note on templating:** The `{{#if last_ui_response}} ... {{/if}}` is pseudo-templating. Agent Zero's `self.agent.read_prompt` likely uses simple string replacement. So, `loop_data.extras_override["last_ui_response"]` would contain the fully formatted text block (or an empty string if no UI response). The `[EXTRAS]` block in `agent.context.extras.md` would then just be `{{extras}}`, and `extras` would be a concatenation of all dynamic extra content.
+
+        Alternatively, and simpler to integrate with existing Agent Zero structure: the `ui_response_data` is added to history as a `system` message by `Agent.process_streamed_message`. The LLM will then see it as part of the conversation. This was implemented in the `agent.py` changes above.
+
+**Dependencies/Prerequisites:**
+*   Task 35 (Agent can request Generative UI and pause for intervention).
+*   `AgentContext` and `Agent` classes are set up for intervention handling.
+*   `StreamProtocolTool` can route client inputs (including potential UI responses) to `Agent.process_streamed_message`.
+
+**Integration with Agent Zero:**
+*   When a client sends data corresponding to a `GENERATIVE_UI` request (e.g., form submission), `StreamProtocolTool` passes this data to `Agent.process_streamed_message`.
+*   `Agent.process_streamed_message` identifies this as UI response data, stores it (e.g., in `AgentContext.last_ui_response` or directly into history), and resolves any pending intervention associated with that UI request.
+*   The subsequent `Agent.monologue` iteration can then access this `last_ui_response` data (e.g., via `loop_data.extras_override` or by reading it from history) and use it in its reasoning and next LLM prompt.
+*   The agent emits `GENERATIVE_UI` events indicating "response_received" and "response_being_processed".
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, a generative UI could be used to configure TTS parameters, and the agent would then use that data when calling `ChatterboxTTSTool`.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 54:**
+This task establishes the backend logic for processing data received from client-side generative UI components. The agent can now:
+1.  Receive structured data linked to a previous UI request.
+2.  Store this data in its context/history.
+3.  Resolve the intervention state it entered when requesting the UI.
+4.  Incorporate the received UI data into its subsequent decision-making process (e.g., by including it in the prompt for the next LLM call).
+This makes the `GENERATIVE_UI` loop functional from the backend's perspective, enabling more complex interactive workflows.
+
+Please confirm to proceed.Okay, let's proceed with Task 54.
+
+## Task 54: Agent Core - Processing `GENERATIVE_UI` Responses
+
+**Focus:**
+This task refines how the Agent Core (specifically `Agent.process_streamed_message` and potentially `Agent.monologue`) handles data received from a `GENERATIVE_UI` component that was previously requested by the agent. Building on Task 35 where the agent *emits* `GENERATIVE_UI` requests:
+1.  Standardize the expected format of `ui_response_data` coming from the client (e.g., including the original `ui_request_id` and a `data` payload).
+2.  Ensure `Agent.process_streamed_message` correctly identifies and extracts this UI response data.
+3.  Store the received UI data in a way that the agent's subsequent reasoning steps in `monologue` can access and use it (e.g., adding to a specific part of the context, or making it available for the next LLM prompt).
+4.  Ensure the `HUMAN_INTERVENTION` (which was set when the UI was requested) is properly resolved.
+
+**File Paths and Code Changes:**
+
+1.  **Refine `agent.py` (`AgentContext` and `Agent` classes):**
+
+    ```python
+    # agent.py
+    # ... (imports, StreamEventType)
+    import json # For consistent handling of data
+
+    class AgentContext:
+        # ... (existing attributes from Task 34: intervention_needed, intervention_prompt, halt_event)
+        self.last_ui_response: Optional[Dict[str, Any]] = None # To store the most recent UI response data
+
+        def request_intervention(self, prompt_for_human: str, ui_request_id: Optional[str] = None):
+            """Sets flags indicating intervention is needed, optionally associating a UI request ID."""
+            logger.info(f"AgentContext {self.id}: Intervention requested. Prompt: '{prompt_for_human}', UI Request ID: {ui_request_id}")
+            self.intervention_needed = True
+            # Store the specific prompt that led to this intervention, potentially including ui_request_id
+            self.intervention_prompt = prompt_for_human 
+            if ui_request_id:
+                self.custom_data['active_ui_request_id'] = ui_request_id # Store active UI request ID
+            self.halt_event.clear()
+
+        def resolve_intervention(self, ui_response: Optional[Dict[str, Any]] = None):
+            """Clears intervention flags and optionally stores UI response data."""
+            logger.info(f"AgentContext {self.id}: Resolving intervention. UI Response received: {bool(ui_response)}")
+            self.intervention_needed = False
+            self.intervention_prompt = None
+            if 'active_ui_request_id' in self.custom_data:
+                del self.custom_data['active_ui_request_id'] # Clear active UI request
+            if ui_response:
+                self.last_ui_response = ui_response # Store the data
+            self.halt_event.set()
+
+    class Agent:
+        # ... (_get_stream_protocol_tool, _emit_stream_event, _check_and_handle_intervention, _request_generative_ui as before)
+
+        async def monologue(self) -> Optional[str]:
+            # ...
+            while self.iteration_no < self.max_iterations:
+                self.iteration_no += 1
+                await self._check_and_handle_intervention() # Pauses if intervention_needed
+
+                # --- Accessing UI Response Data ---
+                # If an intervention was just resolved due to a UI response, that data is in self.context.last_ui_response
+                ui_data_for_this_iteration = None
+                if self.context.last_ui_response:
+                    ui_data_for_this_iteration = self.context.last_ui_response.copy()
+                    self.context.last_ui_response = None # Consume it
+                    logger.info(f"Agent {self.agent_name}: Monologue using UI response data: {ui_data_for_this_iteration}")
+                    await self._emit_stream_event(
+                        StreamEventType.CONTEXT_UPDATE,
+                        {"type": "ui_response_consumed", "data": ui_data_for_this_iteration}
+                    )
+                    # The agent's prompt/logic now needs to incorporate ui_data_for_this_iteration.
+                    # This typically means adding it to the 'extras' for the next LLM call.
+                    # We'll add it to loop_data.extras_override for this iteration.
+                
+                # ... (Call extensions to build loop_data.system_prompts, loop_data.user_prompts, loop_data.extras_*)
+                loop_data = await self._build_loop_data() # Assuming this method gathers all prompts/extras
+
+                if ui_data_for_this_iteration:
+                    # Add UI data to extras that get passed to the LLM prompt
+                    # The prompt template for the main LLM call needs to know how to use this.
+                    ui_response_text = f"[Data received from UI (Request ID: {ui_data_for_this_iteration.get('ui_request_id', 'N/A')})]:\n"
+                    ui_response_text += json.dumps(ui_data_for_this_iteration.get('data', {}), indent=2)
+                    loop_data.extras_override["last_ui_response"] = ui_response_text
+                    logger.debug(f"Agent {self.agent_name}: Added last_ui_response to loop_data.extras_override.")
+
+
+                # --- LLM Call section ---
+                # await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "Preparing to query LLM..."})
+                # response_json = await self._get_response(loop_data) # Pass loop_data
+                # (This part is simplified from Task 32 to show where loop_data would be used)
+                
+                # Let's assume _get_response internally uses loop_data to build its final prompt.
+                # If ui_data_for_this_iteration was present, the prompt will include it via extras_override.
+                # The agent's main system prompt (`agent.system.main.md`) might need a section on how to handle `last_ui_response` in [EXTRAS].
+                # Example: "[LAST UI RESPONSE]\n{{last_ui_response}}\n" in agent.context.extras.md if it exists,
+                # or the agent learns to look for "Data received from UI..." in the user message history.
+
+                # For now, the simplest way is to inject it into the user message history before the LLM call,
+                # as if it were a special system message.
+                if ui_data_for_this_iteration:
+                    self.hist_add_message( # Adding as a system message to current history before LLM call
+                        role="system",
+                        message_type="ui_response_processed", # Custom indicator
+                        content=f"The following data was submitted by the user via a UI form (request ID: {ui_data_for_this_iteration.get('ui_request_id', 'N/A')}):\n{json.dumps(ui_data_for_this_iteration.get('data', {}), indent=2)}\nIncorporate this information into your next action or response."
+                    )
+                    await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "ui_response_added_to_history"})
+
+
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": f"Iteration {self.iteration_no}: Planning next step..."})
+                response_json = await self._get_response() # _get_response will use the updated history
+
+                # ... (Rest of monologue: parsing thoughts, tool calls, handling tool responses)
+                # If a tool requested generative UI (as in Task 35 example), the loop will pause via _check_and_handle_intervention
+                # and the next iteration will start after process_streamed_message resolves it with ui_response_data.
+
+            # ... (end of monologue)
+            return None
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None,
+                                           ui_response_data: Optional[Dict[str, Any]] = None): # Existing from Task 35
+            
+            logger.info(f"Agent {self.agent_name}: process_streamed_message. Role='{role}', Content='{content[:50]}...', Has UI Data: {bool(ui_response_data)}")
+            
+            if incoming_state:
+                await self.set_agent_state_from_external(incoming_state, source="client_stream_input_state")
+
+            if ui_response_data: # Data from a previously requested generative UI
+                ui_request_id = ui_response_data.get("ui_request_id")
+                form_data = ui_response_data.get("data")
+                logger.info(f"Agent {self.agent_name}: Processing UI response for request_id '{ui_request_id}': {form_data}")
+                
+                await self._emit_stream_event(
+                    StreamEventType.GENERATIVE_UI,
+                    {"request_id": ui_request_id, "data_received": form_data, "status": "response_being_processed_by_agent"}
+                )
+                
+                # Resolve intervention if this UI response matches an active UI request
+                active_ui_req_id = self.context.custom_data.get('active_ui_request_id')
+                if self.context.intervention_needed and active_ui_req_id and active_ui_req_id == ui_request_id:
+                    logger.info(f"Agent {self.agent_name}: UI response for '{ui_request_id}' resolving intervention.")
+                    self.context.resolve_intervention(ui_response=ui_response_data) # Store it in context.last_ui_response
+                elif self.context.intervention_needed:
+                    # This UI response might not be for the *current* intervention, or there's a mismatch.
+                    # Or, this could be an unsolicited UI response. For now, still store it.
+                    logger.warning(f"Agent {self.agent_name}: Received UI response for '{ui_request_id}', but current intervention was for '{active_ui_req_id}' or generic. Storing response anyway.")
+                    self.context.last_ui_response = ui_response_data # Store it
+                    # We might not want to resolve a generic intervention with a specific UI response unless IDs match.
+                    # For simplicity now, if any intervention is active and UI data comes, we assume it's relevant.
+                    self.context.resolve_intervention(ui_response=ui_response_data)
+
+
+            elif role.lower() == "user": # Regular user text message
+                if self.context.intervention_needed:
+                    # If a user types a message while a UI form (or other intervention) was pending,
+                    # this message might supersede or relate to the intervention.
+                    logger.info(f"Agent {self.agent_name}: User message received while intervention active. Resolving intervention.")
+                    self.context.resolve_intervention() # Resolve with no specific UI data
+                
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj) # Adds to history for next LLM call
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "user_message_added", "content_preview": content[:50]})
+            
+            # Trigger monologue if there was any user input (text or UI response)
+            if role.lower() == "user" or ui_response_data:
+                # The monologue will pick up self.context.last_ui_response if set
+                return await self.monologue() 
+            
+            return None # No action if not user message and no UI response
+    ```
+
+2.  **Modify `python/tools/stream_protocol_tool.py` (`_handle_input`):**
+    *   Ensure it checks for `uiResponse` in the incoming `input_data` (from `RunAgentInput`) and passes it to `agent.process_streamed_message`. This was already sketched out in Task 35.
+
+    ```python
+    # python/tools/stream_protocol_tool.py
+    # class StreamProtocolTool(Tool):
+    # ...
+    # async def _handle_input(self, input_data: Dict[str, Any]):
+    #     # ... (parsing RunAgentInput)
+    #     run_input = RunAgentInput(...)
+    #     ui_response_payload = input_data.get("uiResponse") # Check raw input_data for this key
+    #
+    #     # ... (set thread_id, user_id on agent context)
+    #
+    #     if ui_response_payload and isinstance(ui_response_payload, dict):
+    #         await self.agent.process_streamed_message(
+    #             content=json.dumps(ui_response_payload.get("data", {})), # Or a summary string
+    #             role="ui_response", # Special role
+    #             incoming_state=run_input.state,
+    #             ui_response_data=ui_response_payload # Pass the full payload
+    #         )
+    #     elif run_input.messages:
+    #         for i, message_data in enumerate(run_input.messages):
+    #             state_to_pass = run_input.state if i == 0 else None
+    #             await self.agent.process_streamed_message(
+    #                 content=message_data.get("content", ""),
+    #                 role=message_data.get("role", "user").lower(),
+    #                 attachments=message_data.get("attachments"),
+    #                 incoming_state=state_to_pass,
+    #                 ui_response_data=None # This path is for regular messages
+    #             )
+    #     elif run_input.state is not None: # Only state update
+    #         await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push_no_msg_handle_input")
+    #
+    #     # ... (rest of _handle_input)
+    ```
+
+3.  **Update `prompts/default/agent.context.extras.md` or main system prompt:**
+    The agent's main LLM prompt needs to be aware that it might receive information from UI components. This can be done by adding a placeholder in `agent.context.extras.md` which `Agent._build_loop_data` would populate if `self.context.last_ui_response` was consumed.
+
+    *   **New/Update `prompts/default/agent.context.extras.md`:**
+        ```markdown
+        # This file's content is dynamically assembled and added to the end of the user message block.
+        # If other extras are defined by extensions, they will also be here.
+        
+        {{#if last_ui_response}}
+        [LAST UI RESPONSE]
+        The user provided the following data via a UI form/component:
+        {{last_ui_response}}
+        Consider this information for your next steps.
+        {{/if}}
+
+        {{#if other_extras}}
+        [ADDITIONAL CONTEXT]
+        {{other_extras}}
+        {{/if}}
+        ```
+        **Note on templating:** The `{{#if last_ui_response}} ... {{/if}}` is pseudo-templating. Agent Zero's `self.agent.read_prompt` likely uses simple string replacement. So, `loop_data.extras_override["last_ui_response"]` would contain the fully formatted text block (or an empty string if no UI response). The `[EXTRAS]` block in `agent.context.extras.md` would then just be `{{extras}}`, and `extras` would be a concatenation of all dynamic extra content.
+
+        Alternatively, and simpler to integrate with existing Agent Zero structure: the `ui_response_data` is added to history as a `system` message by `Agent.process_streamed_message`. The LLM will then see it as part of the conversation. This was implemented in the `agent.py` changes above.
+
+**Dependencies/Prerequisites:**
+*   Task 35 (Agent can request Generative UI and pause for intervention).
+*   `AgentContext` and `Agent` classes are set up for intervention handling.
+*   `StreamProtocolTool` can route client inputs (including potential UI responses) to `Agent.process_streamed_message`.
+
+**Integration with Agent Zero:**
+*   When a client sends data corresponding to a `GENERATIVE_UI` request (e.g., form submission), `StreamProtocolTool` passes this data to `Agent.process_streamed_message`.
+*   `Agent.process_streamed_message` identifies this as UI response data, stores it (e.g., in `AgentContext.last_ui_response` or directly into history), and resolves any pending intervention associated with that UI request.
+*   The subsequent `Agent.monologue` iteration can then access this `last_ui_response` data (e.g., via `loop_data.extras_override` or by reading it from history) and use it in its reasoning and next LLM prompt.
+*   The agent emits `GENERATIVE_UI` events indicating "response_received" and "response_being_processed".
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, a generative UI could be used to configure TTS parameters, and the agent would then use that data when calling `ChatterboxTTSTool`.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 54:**
+This task establishes the backend logic for processing data received from client-side generative UI components. The agent can now:
+1.  Receive structured data linked to a previous UI request.
+2.  Store this data in its context/history.
+3.  Resolve the intervention state it entered when requesting the UI.
+4.  Incorporate the received UI data into its subsequent decision-making process (e.g., by including it in the prompt for the next LLM call).
+This makes the `GENERATIVE_UI` loop functional from the backend's perspective, enabling more complex interactive workflows.
+
+Please confirm to proceed.

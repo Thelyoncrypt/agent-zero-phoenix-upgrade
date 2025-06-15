@@ -1,663 +1,515 @@
-## Task 21: Implement Real Logic for `WebCrawlerTool` - Hierarchical Chunking and Integration with `KnowledgeAgentTool` for Ingestion
+## Task 22: Implement Real Logic for `BrowserAgentTool` - AI-driven `act` Action (Basic DOM Interaction)
 
 **Focus:**
-This task completes the `WebCrawlerTool`'s core pipeline by:
-1.  Implementing a more sophisticated hierarchical markdown chunking strategy in `python/agents/web_crawler/chunker.py`, similar to what was described for `crawl4AI-agent-v2/insert_docs.py`.
-2.  Modifying the `WebCrawlerTool._process_and_ingest_crawled_doc` method to use this improved chunker.
-3.  Actually calling the `KnowledgeAgentTool`'s `ingest_chunks` action with the generated chunks and their metadata. This will leverage the real embedding generation (Task 14) and Supabase storage (Task 16) capabilities of the `KnowledgeAgentTool`.
+This task begins to implement the AI-driven `act` functionality in `BrowserAgentTool`. It will involve:
+1.  Taking natural language instructions (e.g., "click the login button", "type 'testuser' into the username field").
+2.  Using an LLM (e.g., OpenAI via a direct call or through a Pydantic AI agent sub-call if that pattern is preferred) to interpret these instructions and map them to simple Playwright actions on the current page (e.g., `click(selector)`, `fill(selector, text)`).
+3.  For this initial version, we will focus on simple actions and selectors. We will *not* yet implement the full Stagehand capability of having the LLM *select* the element based on visual context or complex descriptions, but rather have it identify a plausible selector string for a given action type. More advanced element selection will be a follow-up.
+4.  The `ActionExecutor` in `python/agents/browser_agent/actions.py` will house this logic.
 
 **File Paths and Code Changes:**
 
-1.  **Modify `python/agents/web_crawler/chunker.py`:**
-    *   Implement `HierarchicalChunker.chunk_document` with logic to split by headers (`#`, `##`, `###`) first, then by character length if necessary.
+1.  **Modify `python/agents/browser_agent/actions.py`:**
+    *   Update `ActionExecutor.execute_ai_action` to make an LLM call to translate natural language instructions into basic Playwright commands (click, fill) and selectors.
 
     ```python
-# python/agents/web_crawler/chunker.py
-    import re
-    from typing import List, Dict, Any
+# python/agents/browser_agent/actions.py
+    import asyncio
+    from typing import Dict, Any, Optional, List
+    from playwright.async_api import Page as PWPage, PlaywrightError
+    import json
 
-    class HierarchicalChunker:
-        """
-        Chunks markdown content hierarchically by headers, then by max length.
-        """
-        def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 0): # Overlap less critical for header-based
-            self.chunk_size = chunk_size
-            self.chunk_overlap = chunk_overlap # Not used in this hierarchical version yet, but kept for compatibility
-            print(f"HierarchicalChunker: Initialized with chunk_size: {chunk_size}")
+    # For LLM calls (similar to KnowledgeAgent or EmbeddingGenerator)
+    import os
+    from openai import OpenAI, APIError, RateLimitError
+    from dotenv import load_dotenv
+    from pathlib import Path
 
-        def _split_by_header_level(self, markdown_text: str, header_prefix: str) -> List[str]:
-            """Splits text by a specific markdown header level (e.g., '# ', '## ')."""
-            # Regex to find headers, ensuring they are at the beginning of a line
-            parts = re.split(fr"(^{re.escape(header_prefix)}.+)$", markdown_text, flags=re.MULTILINE)
-            chunks = []
-            current_header = ""
-            for i, part in enumerate(parts):
-                if re.match(fr"^{re.escape(header_prefix)}.+", part):
-                    current_header = part.strip()
-                elif part.strip(): # This is content under the current_header or before any header
-                    if current_header: # Content associated with a header
-                        chunks.append(f"{current_header}\n{part.strip()}")
-                    elif not chunks: # Content before the first header of this level
-                        chunks.append(part.strip())
-                    else: # Content likely orphaned, append to previous chunk if small enough
-                        if chunks and len(chunks[-1]) + len(part) < self.chunk_size * 1.5 : # Allow some leeway
-                             chunks[-1] += f"\n{part.strip()}"
-                        else:
-                             chunks.append(part.strip())
+    project_root = Path(__file__).resolve().parents[2]
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
 
-            # If no headers of this level were found, return the original text as one chunk
-            return chunks if chunks else [markdown_text.strip()]
+    ACTION_TRANSLATION_SYSTEM_PROMPT = """
+    You are an expert at translating natural language browser interaction commands into specific Playwright actions and CSS selectors.
+    Given an instruction, identify the primary action (e.g., "click", "type", "fill", "navigate") and the target element.
+    Respond with a JSON object containing:
+    {
+      "action_type": "click" | "fill" | "type" | "press" | "navigate" | "scroll" | "select_option",
+      "selector": "CSS_SELECTOR_FOR_THE_TARGET_ELEMENT" (e.g., "button#login", "input[name='username']", "a[href='/about']"),
+      "value": "TEXT_TO_TYPE_OR_FILL" (only for "fill" or "type" actions),
+      "key": "KEY_TO_PRESS" (only for "press" action, e.g., "Enter", "ArrowDown"),
+      "option_value": "VALUE_OF_OPTION_TO_SELECT" (only for "select_option" action)
+      "scroll_direction": "down" | "up" | "bottom" | "top" (only for "scroll" action)
+      "url": "URL_TO_NAVIGATE_TO" (only for "navigate" action)
+    }
+    Focus on common, simple selectors. If the target is ambiguous from the instruction alone, try to pick the most likely one.
+    For "type", it means typing character by character. For "fill", it means setting the value at once.
+    If the instruction is too complex or unclear for a single action, return an error or a request for clarification.
+    Example Instruction: "Click the big blue login button"
+    Example Response: {"action_type": "click", "selector": "button.primary[type='submit']"} (You might need to infer common class names or attributes)
+    Example Instruction: "Type 'hello world' into the search bar"
+    Example Response: {"action_type": "type", "selector": "input[type='search'], input[name='q'], input#search", "value": "hello world"} (Provide multiple likely selectors if not obvious)
+    """
 
+    class ActionExecutor:
+        def __init__(self):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini") # Use a capable chat model
+            if not self.api_key:
+                raise ValueError("OpenAI API key required for ActionExecutor.")
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"ActionExecutor: Initialized with OpenAI model '{self.llm_model}'.")
 
-        def _split_by_char_limit(self, text_segment: str) -> List[str]:
-            """Splits a text segment by character limit if it's too long."""
-            if len(text_segment) <= self.chunk_size:
-                return [text_segment]
-            
-            # Simple character-based splitting with overlap (can be improved with sentence awareness)
-            # For now, direct split similar to TextChunker in foundational-rag-agent
-            split_chunks = []
-            start = 0
-            while start < len(text_segment):
-                end = start + self.chunk_size
-                split_chunks.append(text_segment[start:end])
-                start += self.chunk_size - self.chunk_overlap # Apply overlap here if desired
-                if start >= len(text_segment) and end < len(text_segment) : # Ensure last part is captured
-                    if text_segment[start:].strip(): split_chunks.append(text_segment[start:])
-                elif end >= len(text_segment): # If end already reached or passed length
-                    break
-            return [c.strip() for c in split_chunks if c.strip()]
+        async def _translate_instruction_to_action(self, page_context_summary: str, instruction: str) -> Optional[Dict[str, Any]]:
+            """Uses LLM to translate natural language instruction to a structured action."""
+            prompt = f"""
+            Current Page Context Summary (e.g., title, visible interactive elements if available):
+            ---
+            {page_context_summary}
+            ---
+            User Instruction: "{instruction}"
 
-
-        async def chunk_document(self, processed_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+            Translate this instruction into a specific browser action JSON.
             """
-            Chunks a processed document's markdown content.
-            processed_doc: dict with "url", "title", "markdown", "metadata"
-            """
-            markdown_content = processed_doc.get("markdown", "")
-            source_url = processed_doc.get("url", "unknown_source")
-            doc_title = processed_doc.get("title", "Untitled Document")
-            base_metadata = processed_doc.get("metadata", {}) # e.g., {"original_url": ..., "crawl_depth": ...}
-
-            print(f"HierarchicalChunker: Chunking document from {source_url} (Title: {doc_title})")
-            
-            if not markdown_content or not markdown_content.strip():
-                print(f"HierarchicalChunker: No markdown content to chunk for {source_url}.")
-                return []
-
-            final_chunks_data: List[Dict[str, Any]] = []
-            
-            # Split by H1
-            h1_sections = self._split_by_header_level(markdown_content, "# ")
-            if len(h1_sections) == 1 and markdown_content.startswith("# "): # Only one H1 section is the whole doc
-                pass # Proceed to H2 within this section
-            elif not any(s.startswith("# ") for s in h1_sections) and h1_sections: # No H1s at all
-                 h1_sections = [markdown_content] # Treat whole doc as one section for H2/H3 splitting
-            
-            chunk_index_counter = 0
-            for h1_text in h1_sections:
-                current_h1_title = h1_text.splitlines()[0].lstrip('# ').strip() if h1_text.startswith("# ") else ""
-                
-                # Split by H2 within H1 section
-                h2_sections = self._split_by_header_level(h1_text, "## ")
-                if len(h2_sections) == 1 and h1_text.startswith("## "): # Only one H2 section means h1_text was actually an H2 block
-                     pass
-                elif not any(s.startswith("## ") for s in h2_sections) and h2_sections:
-                     h2_sections = [h1_text]
-
-                for h2_text in h2_sections:
-                    current_h2_title = h2_text.splitlines()[0].lstrip('## ').strip() if h2_text.startswith("## ") else ""
-                    
-                    # Split by H3 within H2 section
-                    h3_sections = self._split_by_header_level(h2_text, "### ")
-                    if len(h3_sections) == 1 and h2_text.startswith("### "):
-                        pass
-                    elif not any(s.startswith("### ") for s in h3_sections) and h3_sections:
-                        h3_sections = [h2_text]
-
-                    for h3_text_segment in h3_sections:
-                        current_h3_title = h3_text_segment.splitlines()[0].lstrip('### ').strip() if h3_text_segment.startswith("### ") else ""
-                        
-                        # Now, if h3_text_segment is still too large, split by character limit
-                        char_split_sub_chunks = self._split_by_char_limit(h3_text_segment)
-                        
-                        for sub_chunk_text in char_split_sub_chunks:
-                            if not sub_chunk_text.strip():
-                                continue
-
-                            headers_info = []
-                            if current_h1_title: headers_info.append(f"H1: {current_h1_title}")
-                            if current_h2_title and current_h2_title != current_h1_title : headers_info.append(f"H2: {current_h2_title}")
-                            if current_h3_title and current_h3_title != current_h2_title: headers_info.append(f"H3: {current_h3_title}")
-                            
-                            chunk_metadata = {
-                                **base_metadata, # original_url, crawl_depth
-                                "source_url": source_url, # Redundant but good for direct use
-                                "document_title": doc_title,
-                                "chunk_index": chunk_index_counter,
-                                "headers": "; ".join(headers_info) if headers_info else "General Content",
-                                "char_count": len(sub_chunk_text)
-                            }
-                            
-                            final_chunks_data.append({
-                                "id": f"{source_url}_chunk_{chunk_index_counter}", # Unique ID for the chunk
-                                "text": sub_chunk_text,
-                                "metadata": chunk_metadata
-                                # Embedding will be added by KnowledgeAgentTool
-                            })
-                            chunk_index_counter += 1
-            
-            print(f"HierarchicalChunker: Generated {len(final_chunks_data)} chunks for {source_url}.")
-            return final_chunks_data
-```
-
-2.  **Modify `python/tools/web_crawler_tool.py`:**
-    *   Update `_process_and_ingest_crawled_doc` to call the real `KnowledgeAgentTool.ingest_chunks` action.
-    *   Ensure the data passed to `ingest_chunks` matches what `KnowledgeAgentTool` expects (list of dicts with "id", "text", "metadata"; "embedding" will be added by `KnowledgeAgentTool`).
-
-    ```python
-# python/tools/web_crawler_tool.py
-    # ... (imports and __init__ as in Task 20)
-
-    # Ensure HierarchicalChunker is imported
-    from agents.web_crawler.chunker import HierarchicalChunker
-
-    class WebCrawlerTool(Tool):
-        def __init__(self, agent, **kwargs):
-            super().__init__(agent, name="web_crawler_tool", 
-                             description="Crawls websites, sitemaps, or markdown files, processes content, and ingests it into the knowledge base.",
-                             args_schema=None,
-                             **kwargs)
-            self.crawler = DocumentCrawler(headless_browser=self.agent.config.get("browser_headless", True)) # Use actual DocumentCrawler
-            self.processor = DocumentProcessor()
-            # Chunker is initialized in execute based on args for flexibility
-            print(f"WebCrawlerTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
-
-        # ... (_emit_crawl_event method same)
-
-        async def _process_and_ingest_crawled_doc(self, crawl_result: Any, chunker_instance: HierarchicalChunker) -> int: # Changed raw_doc_data to crawl_result
-            """Helper to process a single Crawl4AI result, chunk it, and ingest via KnowledgeAgentTool."""
-            if not crawl_result.success:
-                msg = f"Skipping failed crawl for {crawl_result.url}: {crawl_result.error_message}"
-                print(f"WebCrawlerTool: {msg}")
-                await self._emit_crawl_event("page_processing", "error", {"url": crawl_result.url, "error": crawl_result.error_message})
-                return 0
-
-            processed_doc_dict = await self.processor.process_document(crawl_result)
-            
-            if not processed_doc_dict.get("markdown"):
-                msg = f"No markdown content after processing {crawl_result.url}"
-                print(f"WebCrawlerTool: {msg}")
-                await self._emit_crawl_event("page_processing", "warning", {"url": crawl_result.url, "message": msg})
-                return 0
-                
-            # Use the passed chunker_instance
-            chunks_with_metadata_and_ids = await chunker_instance.chunk_document(processed_doc_dict)
-            
-            if not chunks_with_metadata_and_ids:
-                msg = f"No chunks generated for {crawl_result.url}"
-                print(f"WebCrawlerTool: {msg}")
-                await self._emit_crawl_event("chunking", "warning", {"url": crawl_result.url, "message": msg})
-                return 0
-
-            # Actual ingestion via KnowledgeAgentTool
-            # KnowledgeAgentTool._ingest_chunks expects `chunks_data` where each item has "text", "metadata", "id", and optionally "embedding".
-            # Our chunker_instance.chunk_document already returns this format.
-            
-            print(f"WebCrawlerTool: Attempting to ingest {len(chunks_with_metadata_and_ids)} chunks for {crawl_result.url} via KnowledgeAgentTool.")
-            await self._emit_crawl_event("ingestion_knowledge_agent", "starting", {"url": crawl_result.url, "chunk_count": len(chunks_with_metadata_and_ids)})
-            
+            messages = [
+                {"role": "system", "content": ACTION_TRANSLATION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
             try:
-                # Call the KnowledgeAgentTool
-                # The `chunks_data` from `HierarchicalChunker` should be suitable.
-                # Embedding generation will happen inside KnowledgeAgentTool if not provided.
-                ingestion_response = await self.agent.call_tool(
-                    "knowledge_agent_tool", 
-                    {
-                        "action": "ingest_chunks", 
-                        "chunks_data": chunks_with_metadata_and_ids
-                    }
+                response = await asyncio.to_thread(
+                    self.llm_client.chat.completions.create,
+                    model=self.llm_model,
+                    messages=messages,
+                    response_format={"type": "json_object"}, # Request JSON output
+                    temperature=0.1 # Low temperature for more deterministic output
                 )
-                if ingestion_response and not ingestion_response.error:
-                    ingested_count = ingestion_response.data.get("count", 0) if ingestion_response.data else 0
-                    print(f"WebCrawlerTool: KnowledgeAgentTool ingested {ingested_count} chunks for {crawl_result.url}.")
-                    await self._emit_crawl_event("ingestion_knowledge_agent", "completed", {"url": crawl_result.url, "ingested_count": ingested_count, "response": ingestion_response.message})
-                    return ingested_count
-                else:
-                    error_msg = ingestion_response.message if ingestion_response else "Unknown ingestion error"
-                    print(f"WebCrawlerTool: KnowledgeAgentTool ingestion failed for {crawl_result.url}: {error_msg}")
-                    await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": error_msg})
-                    return 0
+                action_json_str = response.choices[0].message.content
+                action_dict = json.loads(action_json_str)
+                print(f"ActionExecutor LLM translation: '{instruction}' -> {action_dict}")
+                return action_dict
+            except json.JSONDecodeError:
+                print(f"ActionExecutor: LLM returned invalid JSON for instruction '{instruction}': {action_json_str}")
             except Exception as e:
-                import traceback
-                error_msg = f"Exception calling KnowledgeAgentTool for {crawl_result.url}: {e}\n{traceback.format_exc()}"
-                print(f"WebCrawlerTool: {error_msg}")
-                await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": str(e)})
-                return 0
-        
-        # Modify execute to instantiate chunker with args.chunk_size
-        async def execute(self, action: str, **kwargs) -> ToolResponse:
-            chunk_size = int(kwargs.get("chunk_size", 1000)) # Ensure it's int
-            # Overlap can also be a parameter if HierarchicalChunker uses it
-            chunker_instance = HierarchicalChunker(chunk_size=chunk_size) 
+                print(f"ActionExecutor: Error calling LLM for instruction translation: {e}")
+            return None
+
+        async def execute_ai_action(self, page: PWPage, instructions: str) -> Dict[str, Any]:
+            print(f"ActionExecutor: Executing AI action on page {page.url} with instructions: '{instructions[:100]}...'")
             
-            # ... (rest of existing execute method, but pass chunker_instance to _process_and_ingest_crawled_doc)
-            # Example for _crawl_site:
-            # async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
-            #    chunks_ingested = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-            #    ...
+            # Get a brief summary of the page for context (e.g., title, some element types)
+            # This is a very simplified context summary. Stagehand would do more.
+            page_title = await page.title()
             try:
-                if action == "crawl_site":
-                    url = kwargs.get("url")
-                    max_depth = int(kwargs.get("max_depth", 3))
-                    max_pages = int(kwargs.get("max_pages", 100))
-                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                # Attempt to get some interactive elements to provide context to the LLM
+                # This is very basic; a more robust approach would list elements with attributes
+                buttons = await page.locator("button, input[type='submit'], a[role='button']").all_text_contents()
+                inputs = await page.locator("input[type='text'], input[type='search'], input[type='email'], input[type='password'], textarea").all_inner_texts() # Using inner_text for inputs might be empty
+                page_context_summary = f"Title: {page_title}. Visible buttons: {buttons[:3]}. Visible inputs: {len(inputs)}."
+            except Exception:
+                page_context_summary = f"Title: {page_title}. (Could not retrieve detailed elements)."
+
+
+            parsed_action = await self._translate_instruction_to_action(page_context_summary, instructions)
+
+            if not parsed_action or "action_type" not in parsed_action or "selector" not in parsed_action (
+                and parsed_action["action_type"] not in ["navigate", "scroll"] # these might not need a selector
+            ):
+                return {"status": "error", "message": "Could not parse instruction into a valid action.", "original_instruction": instructions}
+
+            action_type = parsed_action["action_type"]
+            selector = parsed_action.get("selector") # Selector might be a comma-separated list
+            value = parsed_action.get("value")
+            key_to_press = parsed_action.get("key")
+            option_value = parsed_action.get("option_value")
+            scroll_direction = parsed_action.get("scroll_direction")
+            url_to_navigate = parsed_action.get("url")
+
+            action_details = {"type": action_type, "selector": selector, "value": value, "key": key_to_press, "url": url_to_navigate}
+            
+            try:
+                # Handle multiple selectors by trying them in order
+                final_selector_used = None
+                target_locator = None
+
+                if selector:
+                    possible_selectors = [s.strip() for s in selector.split(',')]
+                    for sel_option in possible_selectors:
+                        try:
+                            # Check if element is visible and enabled before interacting
+                            # Use a short timeout for these checks.
+                            locator = page.locator(sel_option)
+                            await locator.wait_for(state="visible", timeout=2000)
+                            if action_type in ["click", "fill", "type", "press", "select_option"]:
+                                await locator.wait_for(state="enabled", timeout=2000)
+                            target_locator = locator
+                            final_selector_used = sel_option
+                            print(f"ActionExecutor: Using selector '{final_selector_used}' for action '{action_type}'.")
+                            break 
+                        except PlaywrightError:
+                            print(f"ActionExecutor: Selector option '{sel_option}' not found or not ready.")
+                            continue # Try next selector
                     
-                    await self._emit_crawl_event("crawl_site", "starting", {"url": url, "max_depth": max_depth, "max_pages": max_pages})
-                    total_chunks_ingested = 0; pages_processed_count = 0
-                    async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
-                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-                        total_chunks_ingested += chunks_i
-                        if crawl_result_obj.success: pages_processed_count += 1
-                        if pages_processed_count % 5 == 0: # Emit progress periodically
-                             await self._emit_crawl_event("crawl_site", "progress", {"url": url, "pages_processed": pages_processed_count, "chunks_ingested_so_far": total_chunks_ingested})
-                    summary = f"Site crawl completed for {url}. Processed {pages_processed_count} pages, ingested {total_chunks_ingested} chunks."
-                    await self._emit_crawl_event("crawl_site", "completed", {"url": url, "pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
-                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+                    if not target_locator and action_type not in ["navigate", "scroll", "press"]: # press might not need a selector if global
+                        raise PlaywrightError(f"No suitable element found for selectors: {selector}")
+                
+                action_taken_message = ""
 
-                elif action == "crawl_sitemap":
-                    sitemap_url_param = kwargs.get("sitemap_url")
-                    urls_param = kwargs.get("urls")
-                    if not sitemap_url_param and not urls_param:
-                        return ToolResponse("Error: 'sitemap_url' or 'urls' list is required.", error=True)
-                    
-                    urls_to_crawl = urls_param if urls_param else sitemap_url_param # crawler.crawl_sitemap_urls handles parsing if sitemap_url_param is a string
-
-                    await self._emit_crawl_event("crawl_sitemap", "starting", {"source_info": sitemap_url_param or f"{len(urls_to_crawl)} URLs"})
-                    total_chunks_ingested = 0; pages_processed_count = 0
-                    async for crawl_result_obj in self.crawler.crawl_sitemap_urls(urls_to_crawl):
-                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-                        total_chunks_ingested += chunks_i
-                        if crawl_result_obj.success: pages_processed_count +=1
-                        if isinstance(urls_to_crawl, list) and pages_processed_count % 5 == 0:
-                             await self._emit_crawl_event("crawl_sitemap", "progress", {"processed_urls": pages_processed_count, "total_urls_in_list": len(urls_to_crawl), "chunks_ingested_so_far": total_chunks_ingested})
-                    summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, ingested {total_chunks_ingested} chunks."
-                    await self._emit_crawl_event("crawl_sitemap", "completed", {"processed_urls": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
-                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
-
-                elif action == "crawl_markdown_file_url":
-                    url = kwargs.get("url")
-                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
-                    await self._emit_crawl_event("crawl_markdown_file_url", "starting", {"url": url})
-                    total_chunks_ingested = 0
-                    async for crawl_result_obj in self.crawler.crawl_markdown_file_url(url): # Expects an async generator
-                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-                        total_chunks_ingested += chunks_i
-                    summary = f"Markdown file crawl completed for {url}. Ingested {total_chunks_ingested} chunks."
-                    await self._emit_crawl_event("crawl_markdown_file_url", "completed", {"url": url, "total_chunks_ingested": total_chunks_ingested})
-                    return ToolResponse(message=summary, data={"total_chunks_ingested": total_chunks_ingested})
+                if action_type == "click":
+                    await target_locator.click(timeout=5000)
+                    action_taken_message = f"Clicked element with selector: {final_selector_used}"
+                elif action_type == "fill":
+                    await target_locator.fill(value or "", timeout=5000)
+                    action_taken_message = f"Filled element '{final_selector_used}' with value."
+                elif action_type == "type":
+                    await target_locator.type(value or "", delay=50, timeout=10000) # Add delay for typing
+                    action_taken_message = f"Typed into element '{final_selector_used}'."
+                elif action_type == "press":
+                    if target_locator: # Press on a specific element
+                        await target_locator.press(key_to_press, timeout=5000)
+                        action_taken_message = f"Pressed key '{key_to_press}' on element '{final_selector_used}'."
+                    else: # Global press
+                        await page.keyboard.press(key_to_press)
+                        action_taken_message = f"Pressed key '{key_to_press}' globally."
+                elif action_type == "navigate":
+                    if not url_to_navigate: raise ValueError("URL required for navigate action")
+                    await page.goto(url_to_navigate, timeout=60000)
+                    action_taken_message = f"Navigated to {url_to_navigate}"
+                elif action_type == "scroll":
+                    if scroll_direction == "down": await page.mouse.wheel(0, 500)
+                    elif scroll_direction == "up": await page.mouse.wheel(0, -500)
+                    elif scroll_direction == "bottom": await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    elif scroll_direction == "top": await page.evaluate("window.scrollTo(0, 0)")
+                    action_taken_message = f"Scrolled page {scroll_direction}"
+                elif action_type == "select_option":
+                    await target_locator.select_option(value=option_value) # or label=, or index=
+                    action_taken_message = f"Selected option '{option_value}' in '{final_selector_used}'"
                 else:
-                    return ToolResponse(f"Unknown WebCrawlerTool action: {action}", error=True)
-            except Exception as e: # Top-level try-except in execute
-                import traceback
-                error_message = f"WebCrawlerTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
-                print(error_message)
-                await self._emit_crawl_event(action, "error", {"error": str(e)})
-                return ToolResponse(message=error_message, error=True)
+                    return {"status": "error", "message": f"Unsupported action_type: {action_type}", "parsed_action": parsed_action}
+
+                await page.wait_for_load_state("domcontentloaded", timeout=5000) # Wait for potential page changes
+                return {"status": "success", "action_taken": action_taken_message, "target_url": page.url, "final_selector": final_selector_used}
+
+            except PlaywrightError as pe:
+                print(f"ActionExecutor: PlaywrightError during '{action_type}' on '{final_selector_used or selector}': {str(pe)}")
+                return {"status": "error", "message": f"Playwright interaction failed: {str(pe)}", "details": action_details}
+            except Exception as e:
+                print(f"ActionExecutor: Unexpected error during '{action_type}': {str(e)}")
+                return {"status": "error", "message": f"Unexpected error: {str(e)}", "details": action_details}
+
+        # ... (extract_data method remains largely placeholder, but now receives a real PWPage)
+        async def extract_data(self, page: PWPage, instructions: str, schema: Optional[Dict] = None) -> Dict[str, Any]:
+            print(f"ActionExecutor (Mock Extract): Extracting from page {page.url} with instructions: '{instructions[:100]}...'")
+            # Placeholder for LLM call to extract data based on schema and page content
+            # page.content() could be used to get HTML for the LLM
+            page_title = await page.title()
+            if schema:
+                mock_data = {key: f"mock_value_for_{key}_from_{page_title}" for key in schema.get("properties", {}).keys()}
+                return {"status": "success", "extracted_data": mock_data, "schema_used": True}
+            else:
+                return {"status": "success", "extracted_data": {"title": page_title, "first_heading": f"Mock Heading from {page_title}"}, "schema_used": False}
 ```
+
+2.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   Ensure `_ai_act` calls the updated `ActionExecutor.execute_ai_action`. No major structural changes needed here if `ActionExecutor`'s interface is maintained.
 
 **Dependencies/Prerequisites:**
-*   Tasks 1-20 completed.
-*   `KnowledgeAgentTool` (Task 16 & 17) is functional for `ingest_chunks` action, including real embedding generation and Supabase storage.
-*   `WebCrawlerTool` (Task 20) is functional for fetching web content and basic processing.
-*   Standard Python libraries (`re`).
+*   Tasks 1-21 completed.
+*   `playwright` library installed, browser binaries downloaded.
+*   `openai` library installed, `OPENAI_API_KEY` and `OPENAI_MODEL` configured for the LLM calls within `ActionExecutor`.
 
 **Integration with Agent Zero:**
-*   `HierarchicalChunker` provides a more intelligent way to split markdown content, preserving structure where possible.
-*   `WebCrawlerTool` now uses this improved chunker.
-*   The crucial change is that `WebCrawlerTool` now **calls `KnowledgeAgentTool`'s "ingest_chunks" action**, thereby completing the pipeline from web crawl to knowledge base storage.
+*   `ActionExecutor` now makes a call to an LLM (OpenAI) to interpret natural language instructions into structured actions (action type, selector, value).
+*   It then attempts to execute these simple actions (click, fill, type, press, navigate, scroll, select_option) on the Playwright `Page` object.
+*   Error handling for Playwright actions is basic.
+*   The `selector` parsing is very basic (tries comma-separated list). More advanced visual selection or LLM-based element identification is not yet implemented.
 
 **Chatterbox TTS Integration Requirements for this Task:**
 *   None directly.
 
 **Docker Compatibility:**
-*   No new Python package dependencies are introduced by these specific changes to chunking logic.
-*   Ensure all previous dependencies (`crawl4ai`, `openai`, `supabase`, etc.) are correctly installed in the Docker image.
+*   Ensure `openai` is in `requirements.txt`.
+*   The Docker container needs network access for OpenAI API calls.
+*   `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables must be available.
 
-**Summary of Task 21:**
-This task makes the `WebCrawlerTool` significantly more effective by implementing hierarchical markdown chunking and, most importantly, integrating it with the `KnowledgeAgentTool` for actual data ingestion. Now, when the `WebCrawlerTool` crawls a site, the processed and chunked content will be sent to the `KnowledgeAgentTool`, which will then generate embeddings and store them in Supabase. This completes a major part of the RAG pipeline.
+**Summary of Task 22:**
+This task implements a foundational version of the AI-driven `act` action in the `BrowserAgentTool`. `ActionExecutor` now uses an LLM to parse natural language instructions into simple Playwright commands and attempts to execute them. This is a significant step towards enabling more natural language control over browser interactions, though it's still far from the full capabilities of Stagehand (which involves more sophisticated LLM reasoning for element selection and complex action sequences).
 
-Please confirm to proceed.Okay, let's proceed with Task 21.
+Please confirm to proceed.After completing Task 21, we've made substantial progress. The RAG pipeline (crawling -> chunking -> embedding -> storage -> retrieval -> generation) is structurally complete, with real fetching, embedding, Supabase storage, and LLM-based RAG response generation in place for the `KnowledgeAgentTool`. The `WebCrawlerTool` now feeds into this. `StreamProtocolTool` is handling basic event structures and WebSocket setup, and `MemoryAgentTool` and `ChatterboxTTSTool` have their real library integrations for core functions.
 
-## Task 21: Implement Real Logic for `WebCrawlerTool` - Hierarchical Chunking and Integration with `KnowledgeAgentTool` for Ingestion
+Let's reassess the remaining major areas based on our initial plan and the complexities revealed:
+
+**Major Remaining Areas & Estimated Tasks:**
+
+1.  **`BrowserAgentTool` (Stagehand) - Full AI Logic (High Complexity):**
+    *   Task 22: Implement real AI-driven `act` (page interaction using LLMs like Stagehand does with `page.act()`). This involves taking natural language, converting it to Playwright actions (potentially via an LLM call), and executing them.
+    *   Task 23: Implement real AI-driven `extract` (structured data extraction using LLMs and schemas like Stagehand's `page.extract()`).
+    *   Task 24: Implement `agent_execute` (computer-use models). This is highly complex and might involve running a separate AI agent or a more sophisticated LLM interaction loop dedicated to browser tasks.
+    *   Task 25: Robust error handling, state management (e.g., active page, context isolation) for Playwright within `BrowserManager` and `BrowserAgentTool`.
+
+2.  **`MemoryAgentTool` (Mem0) - Advanced Features & Persistence (Medium-High Complexity):**
+    *   Task 26: Integrate Mem0's graph memory capabilities (if applicable to its Python library version and our use case).
+    *   Task 27: Integrate Mem0's LLM-based memory processing (summarization, entity/relationship extraction from stored memories).
+    *   Task 28: Configure and implement persistence for Mem0 (e.g., to local files or a dedicated DB, if Mem0 supports it beyond in-memory).
+
+3.  **`HybridMemoryTool` - Real Combination Logic (Medium Complexity):**
+    *   Task 29: Implement the actual ranking, merging, and context selection algorithm in `_combine_memory_contexts` to effectively use results from both Agent Zero's native memory and `MemoryAgentTool`.
+
+4.  **`ChatterboxTTSTool` - Voice Conversion & Advanced Features (Medium Complexity):**
+    *   Task 30: Implement real logic for `convert_voice` in `ChatterboxVCHandler` using Chatterbox VC capabilities.
+    *   Task 31: Refine audio output handling (e.g., options for streaming audio, more robust temporary file management, direct base64 for short clips, dedicated audio serving endpoint).
+
+5.  **StreamProtocol & Agent Core - Finalizing Integration (Medium Complexity):**
+    *   Task 32: Ensure all agent actions, tool calls, thoughts, and state changes consistently and correctly emit all 16 standard AG-UI events as appropriate. Refine payload structures for these events.
+    *   Task 33: Finalize agent state management (`AgentContext.agent_state`) and its synchronization with client state via `STATE_DELTA` events.
+    *   Task 34: Implement robust handling for `HUMAN_INTERVENTION` events if the frontend is expected to send them.
+
+6.  **Configuration, Docker, and Final Touches (Medium Complexity):**
+    *   Task 35: Comprehensive update of `settings.yaml` / `.env` for all new tools, models, API keys, and configurations.
+    *   Task 36: Final Dockerfile review and optimization: ensure all dependencies (Python and system-level for Playwright, Torch, etc.) are correctly installed, model files are handled efficiently (baked in, downloaded to volumes, or via Hugging Face cache in a volume). Test multi-arch builds if planned.
+    *   Task 37: Add comprehensive error handling, logging, and fault tolerance across all new components.
+    *   Task 38: Write/update unit and integration tests for all new and modified tools and core functionalities.
+    *   Task 39: Update Agent Zero's main README and any relevant documentation (`docs/` folder) to reflect all the "Phoenix" upgrades, new tools, and setup instructions.
+
+**Rough Estimate of Remaining Tasks: 18 tasks (Tasks 22-39).**
+
+This is an estimate, and some tasks might be broken down further or combined as we proceed. The complexity ratings give an idea of the effort involved.
+
+Let's proceed with the next task.
+
+## Task 22: Implement Real Logic for `BrowserAgentTool` - AI-driven `act` Action (Basic DOM Interaction)
 
 **Focus:**
-This task completes the `WebCrawlerTool`'s core pipeline by:
-1.  Implementing a more sophisticated hierarchical markdown chunking strategy in `python/agents/web_crawler/chunker.py`, similar to what was described for `crawl4AI-agent-v2/insert_docs.py`.
-2.  Modifying the `WebCrawlerTool._process_and_ingest_crawled_doc` method to use this improved chunker.
-3.  Actually calling the `KnowledgeAgentTool`'s `ingest_chunks` action with the generated chunks and their metadata. This will leverage the real embedding generation (Task 14) and Supabase storage (Task 16) capabilities of the `KnowledgeAgentTool`.
+This task begins to implement the AI-driven `act` functionality in `BrowserAgentTool`. It will involve:
+1.  Taking natural language instructions (e.g., "click the login button", "type 'testuser' into the username field").
+2.  Using an LLM (e.g., OpenAI via a direct call or through a Pydantic AI agent sub-call if that pattern is preferred) to interpret these instructions and map them to simple Playwright actions on the current page (e.g., `click(selector)`, `fill(selector, text)`).
+3.  For this initial version, we will focus on simple actions and selectors. We will *not* yet implement the full Stagehand capability of having the LLM *select* the element based on visual context or complex descriptions, but rather have it identify a plausible selector string for a given action type. More advanced element selection will be a follow-up.
+4.  The `ActionExecutor` in `python/agents/browser_agent/actions.py` will house this logic.
 
 **File Paths and Code Changes:**
 
-1.  **Modify `python/agents/web_crawler/chunker.py`:**
-    *   Implement `HierarchicalChunker.chunk_document` with logic to split by headers (`#`, `##`, `###`) first, then by character length if necessary.
+1.  **Modify `python/agents/browser_agent/actions.py`:**
+    *   Update `ActionExecutor.execute_ai_action` to make an LLM call to translate natural language instructions into basic Playwright commands (click, fill) and selectors.
 
     ```python
-    # python/agents/web_crawler/chunker.py
-    import re
-    from typing import List, Dict, Any
+    # python/agents/browser_agent/actions.py
+    import asyncio
+    from typing import Dict, Any, Optional, List
+    from playwright.async_api import Page as PWPage, PlaywrightError
+    import json
 
-    class HierarchicalChunker:
-        """
-        Chunks markdown content hierarchically by headers, then by max length.
-        """
-        def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 0): # Overlap less critical for header-based
-            self.chunk_size = chunk_size
-            self.chunk_overlap = chunk_overlap # Not used in this hierarchical version yet, but kept for compatibility
-            print(f"HierarchicalChunker: Initialized with chunk_size: {chunk_size}")
+    # For LLM calls (similar to KnowledgeAgent or EmbeddingGenerator)
+    import os
+    from openai import OpenAI, APIError, RateLimitError
+    from dotenv import load_dotenv
+    from pathlib import Path
 
-        def _split_by_header_level(self, markdown_text: str, header_prefix: str) -> List[str]:
-            """Splits text by a specific markdown header level (e.g., '# ', '## ')."""
-            # Regex to find headers, ensuring they are at the beginning of a line
-            parts = re.split(fr"(^{re.escape(header_prefix)}.+)$", markdown_text, flags=re.MULTILINE)
-            chunks = []
-            current_header = ""
-            for i, part in enumerate(parts):
-                if re.match(fr"^{re.escape(header_prefix)}.+", part):
-                    current_header = part.strip()
-                elif part.strip(): # This is content under the current_header or before any header
-                    if current_header: # Content associated with a header
-                        chunks.append(f"{current_header}\n{part.strip()}")
-                    elif not chunks: # Content before the first header of this level
-                        chunks.append(part.strip())
-                    else: # Content likely orphaned, append to previous chunk if small enough
-                        if chunks and len(chunks[-1]) + len(part) < self.chunk_size * 1.5 : # Allow some leeway
-                             chunks[-1] += f"\n{part.strip()}"
-                        else:
-                             chunks.append(part.strip())
+    project_root = Path(__file__).resolve().parents[2]
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
 
-            # If no headers of this level were found, return the original text as one chunk
-            return chunks if chunks else [markdown_text.strip()]
+    ACTION_TRANSLATION_SYSTEM_PROMPT = """
+    You are an expert at translating natural language browser interaction commands into specific Playwright actions and CSS selectors.
+    Given an instruction, identify the primary action (e.g., "click", "type", "fill", "navigate") and the target element.
+    Respond with a JSON object containing:
+    {
+      "action_type": "click" | "fill" | "type" | "press" | "navigate" | "scroll" | "select_option",
+      "selector": "CSS_SELECTOR_FOR_THE_TARGET_ELEMENT" (e.g., "button#login", "input[name='username']", "a[href='/about']"),
+      "value": "TEXT_TO_TYPE_OR_FILL" (only for "fill" or "type" actions),
+      "key": "KEY_TO_PRESS" (only for "press" action, e.g., "Enter", "ArrowDown"),
+      "option_value": "VALUE_OF_OPTION_TO_SELECT" (only for "select_option" action)
+      "scroll_direction": "down" | "up" | "bottom" | "top" (only for "scroll" action)
+      "url": "URL_TO_NAVIGATE_TO" (only for "navigate" action)
+    }
+    Focus on common, simple selectors. If the target is ambiguous from the instruction alone, try to pick the most likely one.
+    For "type", it means typing character by character. For "fill", it means setting the value at once.
+    If the instruction is too complex or unclear for a single action, return an error or a request for clarification.
+    Example Instruction: "Click the big blue login button"
+    Example Response: {"action_type": "click", "selector": "button.primary[type='submit']"} (You might need to infer common class names or attributes)
+    Example Instruction: "Type 'hello world' into the search bar"
+    Example Response: {"action_type": "type", "selector": "input[type='search'], input[name='q'], input#search", "value": "hello world"} (Provide multiple likely selectors if not obvious)
+    """
 
+    class ActionExecutor:
+        def __init__(self):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini") # Use a capable chat model
+            if not self.api_key:
+                raise ValueError("OpenAI API key required for ActionExecutor.")
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"ActionExecutor: Initialized with OpenAI model '{self.llm_model}'.")
 
-        def _split_by_char_limit(self, text_segment: str) -> List[str]:
-            """Splits a text segment by character limit if it's too long."""
-            if len(text_segment) <= self.chunk_size:
-                return [text_segment]
-            
-            # Simple character-based splitting with overlap (can be improved with sentence awareness)
-            # For now, direct split similar to TextChunker in foundational-rag-agent
-            split_chunks = []
-            start = 0
-            while start < len(text_segment):
-                end = start + self.chunk_size
-                split_chunks.append(text_segment[start:end])
-                start += self.chunk_size - self.chunk_overlap # Apply overlap here if desired
-                if start >= len(text_segment) and end < len(text_segment) : # Ensure last part is captured
-                    if text_segment[start:].strip(): split_chunks.append(text_segment[start:])
-                elif end >= len(text_segment): # If end already reached or passed length
-                    break
-            return [c.strip() for c in split_chunks if c.strip()]
+        async def _translate_instruction_to_action(self, page_context_summary: str, instruction: str) -> Optional[Dict[str, Any]]:
+            """Uses LLM to translate natural language instruction to a structured action."""
+            prompt = f"""
+            Current Page Context Summary (e.g., title, visible interactive elements if available):
+            ---
+            {page_context_summary}
+            ---
+            User Instruction: "{instruction}"
 
-
-        async def chunk_document(self, processed_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+            Translate this instruction into a specific browser action JSON.
             """
-            Chunks a processed document's markdown content.
-            processed_doc: dict with "url", "title", "markdown", "metadata"
-            """
-            markdown_content = processed_doc.get("markdown", "")
-            source_url = processed_doc.get("url", "unknown_source")
-            doc_title = processed_doc.get("title", "Untitled Document")
-            base_metadata = processed_doc.get("metadata", {}) # e.g., {"original_url": ..., "crawl_depth": ...}
-
-            print(f"HierarchicalChunker: Chunking document from {source_url} (Title: {doc_title})")
-            
-            if not markdown_content or not markdown_content.strip():
-                print(f"HierarchicalChunker: No markdown content to chunk for {source_url}.")
-                return []
-
-            final_chunks_data: List[Dict[str, Any]] = []
-            
-            # Split by H1
-            h1_sections = self._split_by_header_level(markdown_content, "# ")
-            if len(h1_sections) == 1 and markdown_content.startswith("# "): # Only one H1 section is the whole doc
-                pass # Proceed to H2 within this section
-            elif not any(s.startswith("# ") for s in h1_sections) and h1_sections: # No H1s at all
-                 h1_sections = [markdown_content] # Treat whole doc as one section for H2/H3 splitting
-            
-            chunk_index_counter = 0
-            for h1_text in h1_sections:
-                current_h1_title = h1_text.splitlines()[0].lstrip('# ').strip() if h1_text.startswith("# ") else ""
-                
-                # Split by H2 within H1 section
-                h2_sections = self._split_by_header_level(h1_text, "## ")
-                if len(h2_sections) == 1 and h1_text.startswith("## "): # Only one H2 section means h1_text was actually an H2 block
-                     pass
-                elif not any(s.startswith("## ") for s in h2_sections) and h2_sections:
-                     h2_sections = [h1_text]
-
-                for h2_text in h2_sections:
-                    current_h2_title = h2_text.splitlines()[0].lstrip('## ').strip() if h2_text.startswith("## ") else ""
-                    
-                    # Split by H3 within H2 section
-                    h3_sections = self._split_by_header_level(h2_text, "### ")
-                    if len(h3_sections) == 1 and h2_text.startswith("### "):
-                        pass
-                    elif not any(s.startswith("### ") for s in h3_sections) and h3_sections:
-                        h3_sections = [h2_text]
-
-                    for h3_text_segment in h3_sections:
-                        current_h3_title = h3_text_segment.splitlines()[0].lstrip('### ').strip() if h3_text_segment.startswith("### ") else ""
-                        
-                        # Now, if h3_text_segment is still too large, split by character limit
-                        char_split_sub_chunks = self._split_by_char_limit(h3_text_segment)
-                        
-                        for sub_chunk_text in char_split_sub_chunks:
-                            if not sub_chunk_text.strip():
-                                continue
-
-                            headers_info = []
-                            if current_h1_title: headers_info.append(f"H1: {current_h1_title}")
-                            if current_h2_title and current_h2_title != current_h1_title : headers_info.append(f"H2: {current_h2_title}")
-                            if current_h3_title and current_h3_title != current_h2_title: headers_info.append(f"H3: {current_h3_title}")
-                            
-                            chunk_metadata = {
-                                **base_metadata, # original_url, crawl_depth
-                                "source_url": source_url, # Redundant but good for direct use
-                                "document_title": doc_title,
-                                "chunk_index": chunk_index_counter,
-                                "headers": "; ".join(headers_info) if headers_info else "General Content",
-                                "char_count": len(sub_chunk_text)
-                            }
-                            
-                            final_chunks_data.append({
-                                "id": f"{source_url}_chunk_{chunk_index_counter}", # Unique ID for the chunk
-                                "text": sub_chunk_text,
-                                "metadata": chunk_metadata
-                                # Embedding will be added by KnowledgeAgentTool
-                            })
-                            chunk_index_counter += 1
-            
-            print(f"HierarchicalChunker: Generated {len(final_chunks_data)} chunks for {source_url}.")
-            return final_chunks_data
-
-    ```
-
-2.  **Modify `python/tools/web_crawler_tool.py`:**
-    *   Update `_process_and_ingest_crawled_doc` to call the real `KnowledgeAgentTool.ingest_chunks` action.
-    *   Ensure the data passed to `ingest_chunks` matches what `KnowledgeAgentTool` expects (list of dicts with "id", "text", "metadata"; "embedding" will be added by `KnowledgeAgentTool`).
-
-    ```python
-    # python/tools/web_crawler_tool.py
-    # ... (imports and __init__ as in Task 20)
-
-    # Ensure HierarchicalChunker is imported
-    from agents.web_crawler.chunker import HierarchicalChunker
-
-    class WebCrawlerTool(Tool):
-        def __init__(self, agent, **kwargs):
-            super().__init__(agent, name="web_crawler_tool", 
-                             description="Crawls websites, sitemaps, or markdown files, processes content, and ingests it into the knowledge base.",
-                             args_schema=None,
-                             **kwargs)
-            self.crawler = DocumentCrawler(headless_browser=self.agent.config.get("browser_headless", True)) # Use actual DocumentCrawler
-            self.processor = DocumentProcessor()
-            # Chunker is initialized in execute based on args for flexibility
-            print(f"WebCrawlerTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
-
-        # ... (_emit_crawl_event method same)
-
-        async def _process_and_ingest_crawled_doc(self, crawl_result: Any, chunker_instance: HierarchicalChunker) -> int: # Changed raw_doc_data to crawl_result
-            """Helper to process a single Crawl4AI result, chunk it, and ingest via KnowledgeAgentTool."""
-            if not crawl_result.success:
-                msg = f"Skipping failed crawl for {crawl_result.url}: {crawl_result.error_message}"
-                print(f"WebCrawlerTool: {msg}")
-                await self._emit_crawl_event("page_processing", "error", {"url": crawl_result.url, "error": crawl_result.error_message})
-                return 0
-
-            processed_doc_dict = await self.processor.process_document(crawl_result)
-            
-            if not processed_doc_dict.get("markdown"):
-                msg = f"No markdown content after processing {crawl_result.url}"
-                print(f"WebCrawlerTool: {msg}")
-                await self._emit_crawl_event("page_processing", "warning", {"url": crawl_result.url, "message": msg})
-                return 0
-                
-            # Use the passed chunker_instance
-            chunks_with_metadata_and_ids = await chunker_instance.chunk_document(processed_doc_dict)
-            
-            if not chunks_with_metadata_and_ids:
-                msg = f"No chunks generated for {crawl_result.url}"
-                print(f"WebCrawlerTool: {msg}")
-                await self._emit_crawl_event("chunking", "warning", {"url": crawl_result.url, "message": msg})
-                return 0
-
-            # Actual ingestion via KnowledgeAgentTool
-            # KnowledgeAgentTool._ingest_chunks expects `chunks_data` where each item has "text", "metadata", "id", and optionally "embedding".
-            # Our chunker_instance.chunk_document already returns this format.
-            
-            print(f"WebCrawlerTool: Attempting to ingest {len(chunks_with_metadata_and_ids)} chunks for {crawl_result.url} via KnowledgeAgentTool.")
-            await self._emit_crawl_event("ingestion_knowledge_agent", "starting", {"url": crawl_result.url, "chunk_count": len(chunks_with_metadata_and_ids)})
-            
+            messages = [
+                {"role": "system", "content": ACTION_TRANSLATION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
             try:
-                # Call the KnowledgeAgentTool
-                # The `chunks_data` from `HierarchicalChunker` should be suitable.
-                # Embedding generation will happen inside KnowledgeAgentTool if not provided.
-                ingestion_response = await self.agent.call_tool(
-                    "knowledge_agent_tool", 
-                    {
-                        "action": "ingest_chunks", 
-                        "chunks_data": chunks_with_metadata_and_ids
-                    }
+                response = await asyncio.to_thread(
+                    self.llm_client.chat.completions.create,
+                    model=self.llm_model,
+                    messages=messages,
+                    response_format={"type": "json_object"}, # Request JSON output
+                    temperature=0.1 # Low temperature for more deterministic output
                 )
-                if ingestion_response and not ingestion_response.error:
-                    ingested_count = ingestion_response.data.get("count", 0) if ingestion_response.data else 0
-                    print(f"WebCrawlerTool: KnowledgeAgentTool ingested {ingested_count} chunks for {crawl_result.url}.")
-                    await self._emit_crawl_event("ingestion_knowledge_agent", "completed", {"url": crawl_result.url, "ingested_count": ingested_count, "response": ingestion_response.message})
-                    return ingested_count
-                else:
-                    error_msg = ingestion_response.message if ingestion_response else "Unknown ingestion error"
-                    print(f"WebCrawlerTool: KnowledgeAgentTool ingestion failed for {crawl_result.url}: {error_msg}")
-                    await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": error_msg})
-                    return 0
+                action_json_str = response.choices[0].message.content
+                action_dict = json.loads(action_json_str)
+                print(f"ActionExecutor LLM translation: '{instruction}' -> {action_dict}")
+                return action_dict
+            except json.JSONDecodeError:
+                print(f"ActionExecutor: LLM returned invalid JSON for instruction '{instruction}': {action_json_str}")
             except Exception as e:
-                import traceback
-                error_msg = f"Exception calling KnowledgeAgentTool for {crawl_result.url}: {e}\n{traceback.format_exc()}"
-                print(f"WebCrawlerTool: {error_msg}")
-                await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": str(e)})
-                return 0
-        
-        # Modify execute to instantiate chunker with args.chunk_size
-        async def execute(self, action: str, **kwargs) -> ToolResponse:
-            chunk_size = int(kwargs.get("chunk_size", 1000)) # Ensure it's int
-            # Overlap can also be a parameter if HierarchicalChunker uses it
-            chunker_instance = HierarchicalChunker(chunk_size=chunk_size) 
+                print(f"ActionExecutor: Error calling LLM for instruction translation: {e}")
+            return None
+
+        async def execute_ai_action(self, page: PWPage, instructions: str) -> Dict[str, Any]:
+            print(f"ActionExecutor: Executing AI action on page {page.url} with instructions: '{instructions[:100]}...'")
             
-            # ... (rest of existing execute method, but pass chunker_instance to _process_and_ingest_crawled_doc)
-            # Example for _crawl_site:
-            # async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
-            #    chunks_ingested = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-            #    ...
+            # Get a brief summary of the page for context (e.g., title, some element types)
+            # This is a very simplified context summary. Stagehand would do more.
+            page_title = await page.title()
             try:
-                if action == "crawl_site":
-                    url = kwargs.get("url")
-                    max_depth = int(kwargs.get("max_depth", 3))
-                    max_pages = int(kwargs.get("max_pages", 100))
-                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                # Attempt to get some interactive elements to provide context to the LLM
+                # This is very basic; a more robust approach would list elements with attributes
+                buttons = await page.locator("button, input[type='submit'], a[role='button']").all_text_contents()
+                inputs = await page.locator("input[type='text'], input[type='search'], input[type='email'], input[type='password'], textarea").all_inner_texts() # Using inner_text for inputs might be empty
+                page_context_summary = f"Title: {page_title}. Visible buttons: {buttons[:3]}. Visible inputs: {len(inputs)}."
+            except Exception:
+                page_context_summary = f"Title: {page_title}. (Could not retrieve detailed elements)."
+
+
+            parsed_action = await self._translate_instruction_to_action(page_context_summary, instructions)
+
+            if not parsed_action or "action_type" not in parsed_action or "selector" not in parsed_action (
+                and parsed_action["action_type"] not in ["navigate", "scroll"] # these might not need a selector
+            ):
+                return {"status": "error", "message": "Could not parse instruction into a valid action.", "original_instruction": instructions}
+
+            action_type = parsed_action["action_type"]
+            selector = parsed_action.get("selector") # Selector might be a comma-separated list
+            value = parsed_action.get("value")
+            key_to_press = parsed_action.get("key")
+            option_value = parsed_action.get("option_value")
+            scroll_direction = parsed_action.get("scroll_direction")
+            url_to_navigate = parsed_action.get("url")
+
+            action_details = {"type": action_type, "selector": selector, "value": value, "key": key_to_press, "url": url_to_navigate}
+            
+            try:
+                # Handle multiple selectors by trying them in order
+                final_selector_used = None
+                target_locator = None
+
+                if selector:
+                    possible_selectors = [s.strip() for s in selector.split(',')]
+                    for sel_option in possible_selectors:
+                        try:
+                            # Check if element is visible and enabled before interacting
+                            # Use a short timeout for these checks.
+                            locator = page.locator(sel_option)
+                            await locator.wait_for(state="visible", timeout=2000)
+                            if action_type in ["click", "fill", "type", "press", "select_option"]:
+                                await locator.wait_for(state="enabled", timeout=2000)
+                            target_locator = locator
+                            final_selector_used = sel_option
+                            print(f"ActionExecutor: Using selector '{final_selector_used}' for action '{action_type}'.")
+                            break 
+                        except PlaywrightError:
+                            print(f"ActionExecutor: Selector option '{sel_option}' not found or not ready.")
+                            continue # Try next selector
                     
-                    await self._emit_crawl_event("crawl_site", "starting", {"url": url, "max_depth": max_depth, "max_pages": max_pages})
-                    total_chunks_ingested = 0; pages_processed_count = 0
-                    async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
-                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-                        total_chunks_ingested += chunks_i
-                        if crawl_result_obj.success: pages_processed_count += 1
-                        if pages_processed_count % 5 == 0: # Emit progress periodically
-                             await self._emit_crawl_event("crawl_site", "progress", {"url": url, "pages_processed": pages_processed_count, "chunks_ingested_so_far": total_chunks_ingested})
-                    summary = f"Site crawl completed for {url}. Processed {pages_processed_count} pages, ingested {total_chunks_ingested} chunks."
-                    await self._emit_crawl_event("crawl_site", "completed", {"url": url, "pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
-                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+                    if not target_locator and action_type not in ["navigate", "scroll", "press"]: # press might not need a selector if global
+                        raise PlaywrightError(f"No suitable element found for selectors: {selector}")
+                
+                action_taken_message = ""
 
-                elif action == "crawl_sitemap":
-                    sitemap_url_param = kwargs.get("sitemap_url")
-                    urls_param = kwargs.get("urls")
-                    if not sitemap_url_param and not urls_param:
-                        return ToolResponse("Error: 'sitemap_url' or 'urls' list is required.", error=True)
-                    
-                    urls_to_crawl = urls_param if urls_param else sitemap_url_param # crawler.crawl_sitemap_urls handles parsing if sitemap_url_param is a string
-
-                    await self._emit_crawl_event("crawl_sitemap", "starting", {"source_info": sitemap_url_param or f"{len(urls_to_crawl)} URLs"})
-                    total_chunks_ingested = 0; pages_processed_count = 0
-                    async for crawl_result_obj in self.crawler.crawl_sitemap_urls(urls_to_crawl):
-                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-                        total_chunks_ingested += chunks_i
-                        if crawl_result_obj.success: pages_processed_count +=1
-                        if isinstance(urls_to_crawl, list) and pages_processed_count % 5 == 0:
-                             await self._emit_crawl_event("crawl_sitemap", "progress", {"processed_urls": pages_processed_count, "total_urls_in_list": len(urls_to_crawl), "chunks_ingested_so_far": total_chunks_ingested})
-                    summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, ingested {total_chunks_ingested} chunks."
-                    await self._emit_crawl_event("crawl_sitemap", "completed", {"processed_urls": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
-                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
-
-                elif action == "crawl_markdown_file_url":
-                    url = kwargs.get("url")
-                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
-                    await self._emit_crawl_event("crawl_markdown_file_url", "starting", {"url": url})
-                    total_chunks_ingested = 0
-                    async for crawl_result_obj in self.crawler.crawl_markdown_file_url(url): # Expects an async generator
-                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
-                        total_chunks_ingested += chunks_i
-                    summary = f"Markdown file crawl completed for {url}. Ingested {total_chunks_ingested} chunks."
-                    await self._emit_crawl_event("crawl_markdown_file_url", "completed", {"url": url, "total_chunks_ingested": total_chunks_ingested})
-                    return ToolResponse(message=summary, data={"total_chunks_ingested": total_chunks_ingested})
+                if action_type == "click":
+                    await target_locator.click(timeout=5000)
+                    action_taken_message = f"Clicked element with selector: {final_selector_used}"
+                elif action_type == "fill":
+                    await target_locator.fill(value or "", timeout=5000)
+                    action_taken_message = f"Filled element '{final_selector_used}' with value."
+                elif action_type == "type":
+                    await target_locator.type(value or "", delay=50, timeout=10000) # Add delay for typing
+                    action_taken_message = f"Typed into element '{final_selector_used}'."
+                elif action_type == "press":
+                    if target_locator: # Press on a specific element
+                        await target_locator.press(key_to_press, timeout=5000)
+                        action_taken_message = f"Pressed key '{key_to_press}' on element '{final_selector_used}'."
+                    else: # Global press
+                        await page.keyboard.press(key_to_press)
+                        action_taken_message = f"Pressed key '{key_to_press}' globally."
+                elif action_type == "navigate":
+                    if not url_to_navigate: raise ValueError("URL required for navigate action")
+                    await page.goto(url_to_navigate, timeout=60000)
+                    action_taken_message = f"Navigated to {url_to_navigate}"
+                elif action_type == "scroll":
+                    if scroll_direction == "down": await page.mouse.wheel(0, 500)
+                    elif scroll_direction == "up": await page.mouse.wheel(0, -500)
+                    elif scroll_direction == "bottom": await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    elif scroll_direction == "top": await page.evaluate("window.scrollTo(0, 0)")
+                    action_taken_message = f"Scrolled page {scroll_direction}"
+                elif action_type == "select_option":
+                    await target_locator.select_option(value=option_value) # or label=, or index=
+                    action_taken_message = f"Selected option '{option_value}' in '{final_selector_used}'"
                 else:
-                    return ToolResponse(f"Unknown WebCrawlerTool action: {action}", error=True)
-            except Exception as e: # Top-level try-except in execute
-                import traceback
-                error_message = f"WebCrawlerTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
-                print(error_message)
-                await self._emit_crawl_event(action, "error", {"error": str(e)})
-                return ToolResponse(message=error_message, error=True)
+                    return {"status": "error", "message": f"Unsupported action_type: {action_type}", "parsed_action": parsed_action}
 
+                await page.wait_for_load_state("domcontentloaded", timeout=5000) # Wait for potential page changes
+                return {"status": "success", "action_taken": action_taken_message, "target_url": page.url, "final_selector": final_selector_used}
+
+            except PlaywrightError as pe:
+                print(f"ActionExecutor: PlaywrightError during '{action_type}' on '{final_selector_used or selector}': {str(pe)}")
+                return {"status": "error", "message": f"Playwright interaction failed: {str(pe)}", "details": action_details}
+            except Exception as e:
+                print(f"ActionExecutor: Unexpected error during '{action_type}': {str(e)}")
+                return {"status": "error", "message": f"Unexpected error: {str(e)}", "details": action_details}
+
+        # ... (extract_data method remains largely placeholder, but now receives a real PWPage)
+        async def extract_data(self, page: PWPage, instructions: str, schema: Optional[Dict] = None) -> Dict[str, Any]:
+            print(f"ActionExecutor (Mock Extract): Extracting from page {page.url} with instructions: '{instructions[:100]}...'")
+            # Placeholder for LLM call to extract data based on schema and page content
+            # page.content() could be used to get HTML for the LLM
+            page_title = await page.title()
+            if schema:
+                mock_data = {key: f"mock_value_for_{key}_from_{page_title}" for key in schema.get("properties", {}).keys()}
+                return {"status": "success", "extracted_data": mock_data, "schema_used": True}
+            else:
+                return {"status": "success", "extracted_data": {"title": page_title, "first_heading": f"Mock Heading from {page_title}"}, "schema_used": False}
     ```
+
+2.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   Ensure `_ai_act` calls the updated `ActionExecutor.execute_ai_action`. No major structural changes needed here if `ActionExecutor`'s interface is maintained.
 
 **Dependencies/Prerequisites:**
-*   Tasks 1-20 completed.
-*   `KnowledgeAgentTool` (Task 16 & 17) is functional for `ingest_chunks` action, including real embedding generation and Supabase storage.
-*   `WebCrawlerTool` (Task 20) is functional for fetching web content and basic processing.
-*   Standard Python libraries (`re`).
+*   Tasks 1-21 completed.
+*   `playwright` library installed, browser binaries downloaded.
+*   `openai` library installed, `OPENAI_API_KEY` and `OPENAI_MODEL` configured for the LLM calls within `ActionExecutor`.
 
 **Integration with Agent Zero:**
-*   `HierarchicalChunker` provides a more intelligent way to split markdown content, preserving structure where possible.
-*   `WebCrawlerTool` now uses this improved chunker.
-*   The crucial change is that `WebCrawlerTool` now **calls `KnowledgeAgentTool`'s "ingest_chunks" action**, thereby completing the pipeline from web crawl to knowledge base storage.
+*   `ActionExecutor` now makes a call to an LLM (OpenAI) to interpret natural language instructions into structured actions (action type, selector, value).
+*   It then attempts to execute these simple actions (click, fill, type, press, navigate, scroll, select_option) on the Playwright `Page` object.
+*   Error handling for Playwright actions is basic.
+*   The `selector` parsing is very basic (tries comma-separated list). More advanced visual selection or LLM-based element identification is not yet implemented.
 
 **Chatterbox TTS Integration Requirements for this Task:**
 *   None directly.
 
 **Docker Compatibility:**
-*   No new Python package dependencies are introduced by these specific changes to chunking logic.
-*   Ensure all previous dependencies (`crawl4ai`, `openai`, `supabase`, etc.) are correctly installed in the Docker image.
+*   Ensure `openai` is in `requirements.txt`.
+*   The Docker container needs network access for OpenAI API calls.
+*   `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables must be available.
 
-**Summary of Task 21:**
-This task makes the `WebCrawlerTool` significantly more effective by implementing hierarchical markdown chunking and, most importantly, integrating it with the `KnowledgeAgentTool` for actual data ingestion. Now, when the `WebCrawlerTool` crawls a site, the processed and chunked content will be sent to the `KnowledgeAgentTool`, which will then generate embeddings and store them in Supabase. This completes a major part of the RAG pipeline.
+**Summary of Task 22:**
+This task implements a foundational version of the AI-driven `act` action in the `BrowserAgentTool`. `ActionExecutor` now uses an LLM to parse natural language instructions into simple Playwright commands and attempts to execute them. This is a significant step towards enabling more natural language control over browser interactions, though it's still far from the full capabilities of Stagehand (which involves more sophisticated LLM reasoning for element selection and complex action sequences).
 
 Please confirm to proceed.

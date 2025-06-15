@@ -1,0 +1,139 @@
+## Task 56: Comprehensive Documentation Update
+
+**Focus:**
+This task involves updating Agent Zero's documentation to reflect all the new features, tools, architectural changes, and configuration options introduced by the "Phoenix" upgrade. This includes:
+1.  **README.md (Root):** High-level overview of new capabilities, updated quickstart/installation if changed significantly by new dependencies, links to more detailed documentation.
+2.  **`docs/README.md` (Main Docs Page):** Similar to root README but potentially more detailed.
+3.  **`docs/installation.md`:** Update with new dependencies (Playwright browser setup, `mem0`, `chatterbox-tts` and their requirements like CUDA for GPU, etc.), and any changes to the Docker setup process.
+4.  **`docs/usage.md`:** Add sections on how to use the new tools via agent interaction (example prompts and expected JSON for tool calls). Explain new concepts like `thread_id`, agent state, and streaming.
+5.  **`docs/architecture.md`:** Update diagrams and descriptions to include the new agent components (`BrowserAgent`, `WebCrawler`, `KnowledgeAgent`, `MemoryAgent`, `TTSAgent` concepts) and their interactions, including the StreamProtocol (AG-UI) layer.
+6.  **New Documentation Files (as needed):**
+    *   `docs/tools_reference.md` (or individual files per tool): Detailed reference for each new tool, its actions, arguments, expected output, and configuration options.
+    *   `docs/stream_protocol_agui.md`: Explanation of Agent Zero's AG-UI event implementation, event types, and how a client might interact with the WebSocket endpoint.
+    *   `docs/configuration.md`: A consolidated list of all relevant `.env` variables and `settings.yaml` options, especially the new ones.
+    *   `docs/knowledge_base_setup.md`: Guide for setting up Supabase/pgvector for the `KnowledgeAgentTool`.
+    *   `docs/memory_system.md`: Explanation of the hybrid memory approach, how to use `MemoryAgentTool` (Mem0), and its persistence.
+    *   `docs/tts_vc_guide.md`: Guide for using `ChatterboxTTSTool`, including voice cloning/prompting.
+7.  **Update existing `docs/quickstart.md`, `docs/troubleshooting.md`** as necessary.
+
+**Implementation - Key Content Points for Each File:**
+
+**1. README.md (Root) & `docs/README.md`:**
+    *   **Introduction:** Briefly mention the "Phoenix" upgrade and its goals (advanced RAG, browser automation, intelligent memory, TTS, streaming UI protocol).
+    *   **Key New Features:** List the major new capabilities:
+        *   AG-UI Protocol / WebSocket Streaming
+        *   AI-Powered Browser Automation (`BrowserAgentTool`)
+        *   Advanced Web Crawling & Knowledge Ingestion (`WebCrawlerTool`, `KnowledgeAgentTool` with Supabase)
+        *   Intelligent Memory System (`MemoryAgentTool` with Mem0, `HybridMemoryTool`)
+        *   Integrated Text-to-Speech and Voice Conversion (`ChatterboxTTSTool`)
+    *   **Updated "Getting Started" / "Quickstart":** Highlight any changes to installation (new major dependencies) or initial run commands.
+    *   **Links:** Point to the more detailed documentation sections in the `docs/` folder.
+
+**2. `docs/installation.md`:**
+    *   **Prerequisites:** Add requirements for Playwright browsers (`playwright install --with-deps chromium`), Supabase account (for `KnowledgeAgentTool`), OpenAI API key (now used by more components). Mention Python 3.11+ if strictly enforced.
+    *   **Dependencies:** Clearly state that `requirements.txt` has been updated significantly. List key new libraries like `playwright`, `crawl4ai`, `supabase`, `mem0`, `chatterbox-tts` (and its large dependencies like `torch`).
+    *   **Docker Installation:**
+        *   Explain that Docker images now include these new dependencies.
+        *   Highlight new volumes for persistent model caches (`HF_HOME`, Playwright browsers) and data (`Mem0 persistence`, `TTS outputs`).
+        *   Explain new environment variables in `docker-compose.yml` or `.env` needed for the new tools.
+        *   Mention GPU-enabled Docker image (`docker-compose.cuda.yml`) if `ChatterboxTTSTool` or other components benefit significantly from GPU.
+    *   **Environment Variables:** Link to the new `docs/configuration.md` or list critical new `.env` variables here (e.g., `SUPABASE_URL`, `SUPABASE_KEY`, `MEM0_CONFIG_JSON`, `CHATTERBOX_DEVICE`).
+
+**3. `docs/usage.md`:**
+    *   **Interacting with the Agent:**
+        *   Explain how to use the new tools through natural language prompts to the agent. Provide examples of high-level requests that would trigger specific tools.
+        *   Show example JSON structures the agent might use to call these tools (as detailed in `prompts/default/agent.system.tools.md`).
+    *   **New Tools Section:**
+        *   For each new tool (`BrowserAgentTool`, `WebCrawlerTool`, `KnowledgeAgentTool`, `MemoryAgentTool`, `HybridMemoryTool`, `ChatterboxTTSTool`):
+            *   Brief description of its purpose.
+            *   Key actions it supports.
+            *   Example prompts to the agent that would utilize the tool.
+            *   Expected outcomes or types of responses.
+    *   **Streaming & AG-UI Protocol:** Briefly explain that the agent now uses a streaming protocol for UI updates and link to `docs/stream_protocol_agui.md`.
+    *   **Agent State:** Mention the concept of `agent_state` and how it might be influenced or reported via `STATE_DELTA` events.
+    *   **Human Intervention & Generative UI:** Explain how these interaction patterns work from a user's perspective.
+
+**4. `docs/architecture.md`:**
+    *   **Updated Diagram:** Create a new architecture diagram showing:
+        *   Agent Zero Core
+        *   The suite of new tools as distinct components.
+        *   The `StreamProtocolTool` and WebSocket layer connecting to a "AG-UI Compliant Frontend".
+        *   External services: OpenAI (for LLMs, embeddings), Supabase (for RAG DB), Mem0 (conceptually, even if in-process), Playwright/Browser, Crawl4AI.
+    *   **Component Descriptions:** Update descriptions for existing components if their roles have changed, and add descriptions for all new tools and systems (e.g., `BrowserManager`, `Mem0MemorySystem`, `ChatterboxTTSHandler`).
+    *   **Data Flow:** Describe how data flows for key scenarios, e.g., a RAG query, a browser automation task, a TTS request.
+
+**5. New File: `docs/tools_reference.md` (or separate files like `docs/tool_browser_agent.md`):**
+    *   **For each new tool:**
+        *   **Name:** (e.g., `browser_agent_tool`)
+        *   **Purpose:** Detailed explanation.
+        *   **Actions:** List all actions (e.g., `navigate`, `act`, `extract` for `browser_agent`).
+            *   For each action:
+                *   Description.
+                *   Required arguments (name, type, description).
+                *   Optional arguments (name, type, default, description).
+                *   Example `tool_args` JSON.
+                *   Expected `ToolResponse` (data structure, meaning of `error` flag).
+                *   Relevant `StreamEventType`s emitted by this action.
+        *   **Configuration:** Link to relevant section in `docs/configuration.md`.
+        *   **Dependencies:** Any specific external services it relies on.
+
+**6. New File: `docs/stream_protocol_agui.md`:**
+    *   **Overview:** Explain Agent Zero's adoption of AG-UI principles for streaming.
+    *   **WebSocket Endpoint:** Document the `/ws/agui/<thread_id>` endpoint and any query parameters (`userId`, `contextId`).
+    *   **Event Types:** List all `StreamEventType` enums used by Agent Zero, with a brief description of each and example payloads. This is crucial for frontend developers.
+    *   **Client-to-Server Communication:** Explain how clients can send `RunAgentInput` (e.g., via HTTP POST to `/api/message_async` or a specific WebSocket message format if implemented) and potentially `uiResponse` data.
+    *   **Session Management:** How `thread_id` relates to agent sessions.
+
+**7. New File: `docs/configuration.md`:**
+    *   A comprehensive list of all environment variables from `.env.example`.
+    *   For each variable:
+        *   Name (e.g., `OPENAI_API_KEY`).
+        *   Description/Purpose.
+        *   Default value (if any from `settings.py`).
+        *   Example value.
+        *   Which component/tool uses it.
+    *   Explanation of relevant `settings.yaml` sections if any are user-configurable beyond `.env`.
+
+**8. New File: `docs/knowledge_base_setup.md`:**
+    *   Step-by-step guide for setting up a Supabase project.
+    *   Instructions for enabling the `pgvector` extension.
+    *   The SQL script from `rag-example.sql` (or `database/setup_db.py`) to create the `rag_pages` table and `match_rag_pages` function.
+    *   How to obtain `SUPABASE_URL` and `SUPABASE_KEY` (and which key to use - service_role for admin tasks like table creation/ingestion).
+
+**9. New File: `docs/memory_system.md`:**
+    *   **Hybrid Approach:** Explain the two main memory systems:
+        *   Agent Zero's native structured memory (via `memory_save`/`memory_load`).
+        *   The new `MemoryAgentTool` powered by `mem0`.
+    *   **`MemoryAgentTool (Mem0)`:**
+        *   Overview of its capabilities (intelligent processing, vector/graph concepts).
+        *   How to configure it (e.g., `MEM0_CONFIG_JSON`, persistence).
+        *   Key actions and how to use them.
+    *   **`HybridMemoryTool`:**
+        *   Purpose: Unified access, better context retrieval.
+        *   How it combines results (high-level).
+        *   When to prefer it over individual memory tools.
+    *   **Persistence:** Explain `mem0`'s persistence (if configured) and the placeholder file persistence if that's still relevant for the `Mem0MemorySystem` wrapper during dev.
+
+**10. New File: `docs/tts_vc_guide.md`:**
+    *   **`ChatterboxTTSTool`:**
+        *   Overview of TTS and VC capabilities.
+        *   **Configuration:** `CHATTERBOX_DEVICE`, `CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH`.
+        *   **TTS (`generate_speech` action):**
+            *   Parameters (text, audio_prompt_path for voice cloning, exaggeration, etc.).
+            *   Output (`audio_path`, streaming events).
+            *   How to use voice cloning by providing an `audio_prompt_path`.
+        *   **VC (`convert_voice` action):**
+            *   Parameters (`source_audio_path`, `target_voice_path`).
+            *   Output.
+        *   **Audio Output:** How to access generated audio files (via API endpoint using `audio_path`).
+        *   **Watermarking:** Briefly mention the built-in Perth watermarking.
+
+**Implementation Steps for this Task:**
+*   Create the new `.md` files in the `docs/` directory.
+*   Go through each existing and new documentation file and write the content based on the functionalities implemented and planned in Tasks 1-54.
+*   Refer heavily to the code (tool interfaces, `AgentConfig`, prompts) to ensure accuracy.
+*   Use clear language, provide code examples for tool usage (JSON args), and link between related documentation pages.
+
+This is a substantial documentation effort. It's about capturing the "as-built" (or "as-designed-and-partially-built") state of the Phoenix upgrade.
+
+Please confirm to proceed with drafting this documentation. Since this is a documentation task, I will describe the content for each section rather than writing full markdown files here. We can focus on key sections first.

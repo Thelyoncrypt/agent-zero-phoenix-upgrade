@@ -1,0 +1,341 @@
+Phase 1: Setting Up Your Langfuse Instance
+This phase focuses on getting a Langfuse server up and running. The easiest way for most users is with Docker.
+Task 1: Prepare Your Environment for Langfuse Docker Deployment
+Install Docker and Docker Compose:
+If you don't have them, install Docker Desktop (for Mac/Windows) or Docker Engine and Docker Compose plugin (for Linux).
+Refer to official Docker documentation: https://docs.docker.com/get-docker/
+Clone the Langfuse Repository:
+git clone https://github.com/langfuse/langfuse.git
+cd langfuse
+Use code with caution.
+Bash
+Configure Langfuse Environment:
+Langfuse uses .env files for configuration. Copy the development example:
+cp .env.dev.example .env
+Use code with caution.
+Bash
+Review and edit your .env file. Key variables to check/set:
+DATABASE_URL: PostgreSQL connection string. The default docker-compose.dev.yml sets up a Postgres container, and the default DATABASE_URL should work with it. If you use an external Postgres, update this.
+CLICKHOUSE_HOST, CLICKHOUSE_DB, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD: Similar to Postgres, the docker-compose.dev.yml sets up ClickHouse. Defaults should work.
+REDIS_HOST, REDIS_PORT, REDIS_PASSWORD: docker-compose.dev.yml includes Redis.
+NEXTAUTH_SECRET: Generate a strong secret (e.g., openssl rand -hex 32).
+NEXTAUTH_URL: Set this to http://localhost:3000 for local development.
+SALT: Generate a strong salt for hashing (e.g., openssl rand -hex 32).
+TELEMETRY_ENABLED: true or false (optional, defaults to true).
+(Optional) Email server settings (SMTP_USER, SMTP_PASSWORD, etc.) if you want email features like password reset or invitations to work.
+(Optional) LANGFUSE_EE_LICENSE_KEY: Only if you have an Enterprise Edition license. For open-source, leave this blank.
+Task 2: Build and Run Langfuse using Docker Compose (Development Setup)
+Build Docker Images (if necessary, often handled by compose up):
+Langfuse provides a docker-compose.build.yml for building local images if you modify the code. For standard setup, pre-built images are often used or built on first up.
+For development, the docker-compose.dev.yml is typically used.
+docker-compose -f docker-compose.dev.yml build 
+# This step might take a while the first time
+Use code with caution.
+Bash
+If you are using the pre-built images from Docker Hub specified in docker-compose.yml (for production-like setup), you might skip the explicit build step for web and worker and just use docker-compose up.
+Start Langfuse Services:
+For a development environment (which includes Postgres, ClickHouse, Redis, a worker, and the web UI):
+docker-compose -f docker-compose.dev.yml up -d
+Use code with caution.
+Bash
+To see logs: docker-compose -f docker-compose.dev.yml logs -f
+This will start:
+db (PostgreSQL)
+clickhouse
+redis
+worker (Langfuse background worker)
+web (Langfuse Next.js application)
+Database Migrations (Important!):
+Once the containers are up (especially db), run the Prisma database migrations for PostgreSQL:
+docker-compose -f docker-compose.dev.yml exec web pnpx prisma migrate deploy
+Use code with caution.
+Bash
+Then, run ClickHouse migrations. The packages/shared/clickhouse/scripts/up.sh script handles this. You'll need to execute it inside the clickhouse-migrator service (if defined in your compose, or adapt for another service that can run clickhouse-client).
+If clickhouse-migrator service is not in docker-compose.dev.yml (it's usually in the main docker-compose.yml), you might need to run migrations manually or adapt.
+A common way for dev is to exec into the worker or web container (if they have clickhouse-client) or run the migrator service temporarily:
+# If clickhouse-migrator is in the main docker-compose.yml and you want to run it with dev config
+# docker-compose -f docker-compose.dev.yml -f docker-compose.yml run --rm clickhouse-migrator
+# OR, if you have clickhouse-client in another container:
+docker-compose -f docker-compose.dev.yml exec clickhouse clickhouse-client -u $CLICKHOUSE_USER --password $CLICKHOUSE_PASSWORD -d $CLICKHOUSE_DB --query "SELECT 1" # Test connection
+# Then apply migrations from packages/shared/clickhouse/migrations manually or using a script that targets the CH instance.
+# The up.sh script is designed to be run from the host or a container with access to the migration files and clickhouse-client.
+# Easiest might be if the worker/web container has clickhouse-client:
+# docker-compose -f docker-compose.dev.yml exec web bash -c "cd /app/packages/shared/clickhouse/scripts && ./up.sh"
+# (This assumes clickhouse-client is installed in the web/worker image and paths are correct)
+
+# The Langfuse documentation recommends for self-hosting using the main docker-compose.yml which includes a migrator service:
+# docker-compose up -d
+# docker-compose exec clickhouse-migrator /app/packages/shared/clickhouse/scripts/up.sh
+# docker-compose exec app pnpx prisma migrate deploy
+# If using docker-compose.dev.yml, adapt the prisma migrate command:
+# docker-compose -f docker-compose.dev.yml exec web pnpx prisma migrate deploy
+# And for ClickHouse, you might need to run its migrations through a temporary service or manually.
+Use code with caution.
+Bash
+Crucial Step for ClickHouse migrations with docker-compose.dev.yml:
+Often, the clickhouse-client isn't in the web or worker dev containers by default.
+The easiest way to run ClickHouse migrations if not using the full docker-compose.yml's clickhouse-migrator service is to temporarily add a migrator service to your docker-compose.dev.yml or run it as a one-off command referencing both compose files if possible.
+Alternatively, copy the migration files into the clickhouse container and execute them there.
+Let's assume you can run this after docker-compose -f docker-compose.dev.yml up -d:
+# Ensure clickhouse-migrator is defined or temporarily add to dev compose for this step
+docker-compose -f docker-compose.dev.yml run --rm clickhouse-migrator /app/packages/shared/clickhouse/scripts/up.sh
+Use code with caution.
+Bash
+If clickhouse-migrator is not in docker-compose.dev.yml, you'd add a service definition for it or run the up.sh script via docker exec into the ClickHouse container after copying the script and migration files.
+Access Langfuse UI:
+Open your browser and go to http://localhost:3000.
+You should see the Langfuse setup page or login page. Create your first account if it's a new installation.
+Phase 2: Integrating Langfuse SDK into Your System ("My System")
+This phase involves adding the Langfuse SDK to your AI application that you want to monitor.
+Task 3: Install Langfuse SDK in Your Application
+Choose the SDK: Langfuse provides SDKs for Python and JavaScript/TypeScript.
+Python: pip install langfuse
+JS/TS: npm install langfuse or pnpm install langfuse or yarn add langfuse
+Configure SDK:
+You'll need the Public Key and Secret Key from your Langfuse project, and the Langfuse Host URL.
+In your Langfuse UI (http://localhost:3000):
+Create a project if you haven't already.
+Go to Project Settings -> API Keys.
+You'll find your Public Key (starts with PK-) and can generate a Secret Key (starts with SK-).
+The Langfuse Host URL will be http://localhost:3000 (since you are running Langfuse locally via Docker). If your application runs in a different Docker network than Langfuse, you might need to use the service name (e.g., http://web:3000 if web is the service name of the Langfuse Next.js app in docker-compose.dev.yml and your app is in the same Docker network) or expose Langfuse on a host-accessible port if your app is running directly on the host.
+Initialize Langfuse SDK in Your Application:
+For a Python Application:
+# In your Python application's setup or main file
+import os
+from langfuse import Langfuse
+
+# Best to use environment variables for these
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "http://localhost:3000") # Default for local Docker setup
+
+if not LANGFUSE_PUBLIC_KEY or not LANGFUSE_SECRET_KEY:
+    print("Langfuse environment variables (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY) not set. Tracing will be disabled.")
+    langfuse = None # Or a mock/disabled client
+else:
+    langfuse = Langfuse(
+        public_key=LANGFUSE_PUBLIC_KEY,
+        secret_key=LANGFUSE_SECRET_KEY,
+        host=LANGFUSE_HOST
+    )
+    print(f"Langfuse SDK initialized. Sending data to: {LANGFUSE_HOST}")
+Use code with caution.
+Python
+For a Node.js/TypeScript Application:
+// In your Node.js application's setup or main file
+import { Langfuse } from "langfuse";
+
+const langfuse = new Langfuse({
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
+  secretKey: process.env.LANGFUSE_SECRET_KEY!,
+  baseUrl: process.env.LANGFUSE_HOST || "http://localhost:3000", // Default for local Docker setup
+});
+console.log(`Langfuse SDK initialized. Sending data to: ${process.env.LANGFUSE_HOST || "http://localhost:3000"}`);
+Use code with caution.
+TypeScript
+Task 4: Instrument Your LLM Calls and Application Logic
+This is where you add Langfuse tracing to your existing AI system.
+Trace: A trace represents a single end-to-end execution of a request or a chain of operations.
+Span: A span represents a unit of work within a trace, like an LLM call, a tool execution, or a custom function. Spans can be nested.
+Generation: A specific type of span for LLM calls, capturing prompts, completions, model parameters, usage, and cost.
+Score: Evaluations or metrics associated with a trace or observation.
+Event: Discrete events within a trace (e.g., user feedback, a specific error).
+Python SDK Example:
+# In your Python application where you make LLM calls or have key logic blocks
+
+# If langfuse client was initialized globally:
+# from your_app_setup import langfuse 
+
+async def my_llm_feature(user_query: str, user_id: str):
+    if not langfuse:
+        # Fallback logic if Langfuse is not initialized
+        # response = await call_your_llm_directly(user_query)
+        # return response
+        print("Langfuse not available, proceeding without tracing.")
+        # ... your original logic ...
+        return "Mock LLM response if Langfuse is off"
+
+
+    # 1. Create a Trace for the overall request
+    trace = langfuse.trace(
+        name="my-llm-feature-request", # Descriptive name for the trace
+        user_id=user_id,
+        # session_id="some_session_identifier", # Optional: group traces by session
+        tags=["core-feature", "beta"],
+        metadata={"user_query_length": len(user_query)}
+    )
+
+    try:
+        # 2. Create a Span for a specific step (e.g., pre-processing)
+        preprocess_span = trace.span(
+            name="query-preprocessing",
+            input={"original_query": user_query},
+            metadata={"step": 1}
+        )
+        processed_query = user_query.lower().strip() # Your actual preprocessing
+        preprocess_span.end(output={"processed_query": processed_query})
+
+        # 3. Trace an LLM call as a Generation
+        generation_span = trace.generation( # Use trace.generation for LLM calls
+            name="claude-call-for-summary",
+            input=[{"role": "user", "content": processed_query}], # Langfuse accepts OpenAI message format or simple string/dict
+            model="claude-3-opus-20240229", # Your actual model name
+            model_parameters={"temperature": 0.7, "max_tokens": 500},
+            # prompt_name="my-summary-prompt", # If using Langfuse Prompt Management
+            # prompt_version=2, 
+        )
+
+        # --- Make your actual LLM call here (e.g., to Claude API) ---
+        # claude_response = await call_claude_api(processed_query, ...)
+        # mock_llm_output = "This is Claude's summary..."
+        # mock_usage = {"prompt_tokens": 50, "completion_tokens": 100} # From Claude's response
+        # For this example, let's assume mock values:
+        await asyncio.sleep(0.5) # Simulate API call
+        claude_response_content = f"Summary for '{processed_query}': This is a detailed summary provided by the LLM."
+        prompt_tokens_used = 50
+        completion_tokens_used = 150
+        # --- End LLM call ---
+
+        generation_span.end(
+            output={"summary": claude_response_content}, # Can be string or dict
+            usage={"promptTokens": prompt_tokens_used, "completionTokens": completion_tokens_used}
+        )
+
+        # 4. (Optional) Add a Score to the generation or trace
+        # This score could be from a human review, an LLM-based eval, or a heuristic
+        # Example: Heuristic score based on length
+        relevance_score = 0.8 if len(claude_response_content) > 50 else 0.3
+        generation_span.score( # Score the generation
+            name="summary-relevance-heuristic",
+            value=relevance_score,
+            comment="Based on length and keyword presence (mock)"
+        )
+        # Or score the entire trace
+        # trace.score(name="overall-task-success", value=1)
+
+
+        # 5. (Optional) Create another Span for post-processing
+        postprocess_span = trace.span(
+            name="response-formatting",
+            input={"llm_summary": claude_response_content}
+        )
+        final_output = f"Formatted Summary: {claude_response_content.upper()}"
+        postprocess_span.end(output={"formatted_output": final_output})
+        
+        return final_output
+
+    except Exception as e:
+        # Log errors to the trace/span if an exception occurs
+        if 'generation_span' in locals() and generation_span: # Check if span was created
+            generation_span.end(level="ERROR", status_message=str(e))
+        elif 'preprocess_span' in locals() and preprocess_span:
+            preprocess_span.end(level="ERROR", status_message=str(e))
+        trace.update(level="ERROR", status_message=f"Error in my_llm_feature: {str(e)}") # Update trace itself
+        print(f"Error during my_llm_feature: {e}")
+        raise # Re-raise the exception if needed
+
+    finally:
+        # IMPORTANT: Ensure Langfuse SDK flushes data, especially for serverless or short-lived processes.
+        # For long-running servers, the SDK typically batches and sends periodically.
+        # langfuse.flush() # Call this before your application exits if it's a short script.
+        # In a server, this might be handled by the SDK's background thread.
+        pass
+Use code with caution.
+Python
+Node.js/TypeScript SDK Example:
+// In your Node.js/TypeScript application
+// import { langfuse } from "./your-app-setup"; // Assuming global instance
+
+async function myLlmFeature(userQuery: string, userId: string): Promise<string> {
+  if (!langfuse) {
+    console.log("Langfuse not available, proceeding without tracing.");
+    // ... your original logic ...
+    return "Mock LLM response if Langfuse is off";
+  }
+
+  const trace = langfuse.trace({
+    name: "my-llm-feature-request-node",
+    userId: userId,
+    tags: ["core-feature", "typescript"],
+    metadata: { userQueryLength: userQuery.length }
+  });
+
+  try {
+    const preprocessSpan = trace.span({
+      name: "query-preprocessing-node",
+      input: { originalQuery: userQuery },
+      metadata: { step: 1 }
+    });
+    const processedQuery = userQuery.toLowerCase().trim();
+    preprocessSpan.end({ output: { processedQuery } });
+
+    const generation = trace.generation({ // Use trace.generation for LLM calls
+      name: "claude-call-for-summary-node",
+      input: [{ role: "user", content: processedQuery }],
+      model: "claude-3-sonnet-20240229",
+      modelParameters: { temperature: 0.7, max_tokens_to_sample: 500 },
+    });
+
+    // --- Make your actual LLM call here (e.g., to Claude API via Anthropic's SDK) ---
+    // const claudeResponse = await callClaudeApi(processedQuery, ...);
+    // const claudeResponseContent = claudeResponse.completion;
+    // const usage = { promptTokens: ..., completionTokens: ... }; // From Claude's response
+    await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
+    const claudeResponseContent = `Summary for '${processedQuery}': This is a Node.js summary.`;
+    const promptTokensUsed = 60;
+    const completionTokensUsed = 120;
+    // --- End LLM call ---
+
+    generation.end({
+      output: { summary: claudeResponseContent },
+      usage: { promptTokens: promptTokensUsed, completionTokens: completionTokensUsed }
+    });
+
+    generation.score({
+      name: "summary-conciseness-heuristic",
+      value: 0.9,
+      comment: "Mock score for conciseness"
+    });
+
+    return `Formatted Summary: ${claudeResponseContent.toUpperCase()}`;
+
+  } catch (e: any) {
+    trace.update({ level: "ERROR", statusMessage: `Error in myLlmFeature: ${e.message}` });
+    console.error(`Error during myLlmFeature: ${e.message}`);
+    throw e;
+  } finally {
+    // For serverless or scripts, ensure data is sent.
+    // await langfuse.shutdownAsync(); // or langfuse.flush()
+  }
+}
+Use code with caution.
+TypeScript
+Task 5: Verify Data in Langfuse UI
+Run Your Instrumented Application: Execute the parts of your system where you've added Langfuse tracing.
+Check Langfuse UI:
+Go to http://localhost:3000.
+Navigate to your project.
+You should see new Traces appearing in the "Traces" tab.
+Click on a trace to see its details, including nested observations (spans/generations), their inputs/outputs, metadata, usage, costs, and scores.
+Check the "Generations" tab for a list of all LLM calls.
+Check "Scores" if you've added scores.
+Check "Sessions" if you're using session_id.
+Phase 3: Advanced Integration & Utilization (Ongoing)
+Instrument all relevant parts of your system: LLM calls, tool uses, key business logic steps.
+Use session_id: Group related traces into sessions for better user journey analysis.
+Use user_id: Track usage and performance per user.
+Add tags: Categorize traces (e.g., "customer-support", "content-generation", "test-run").
+Use metadata: Store any relevant contextual information with traces and observations.
+Implement Scoring:
+Manually score important traces/generations via the UI for quality assessment.
+Programmatically add scores based on heuristics, user feedback, or LLM-based evaluations.
+Create Datasets: Collect interesting traces/observations into datasets for regression testing or fine-tuning.
+Run Evaluations: Use Langfuse's evaluation features to compare different prompts or models on your datasets.
+Monitor Dashboards: Utilize built-in dashboards and create custom ones to track key metrics (latency, cost, quality scores, failure rates).
+Prompt Management: If you iterate on prompts, use Langfuse's prompt management to version and track their performance.
+Key Points for Successful Langfuse Integration:
+Granularity: Decide on the right level of detail for your traces and observations. Too fine-grained can be noisy; too coarse can hide important details.
+Naming Conventions: Use consistent and descriptive names for traces, observations, and scores.
+Asynchronous Operations: Ensure the Langfuse SDK calls (especially flush or shutdownAsync) are handled correctly in your application's lifecycle, particularly for asynchronous frameworks or serverless environments. The SDKs are designed to batch and send data in the background, but a final flush might be needed on exit.
+Error Handling in Your App: Wrap Langfuse calls in try-except blocks if there's a chance they could fail (e.g., network issues to the Langfuse host) and you don't want it to crash your main application flow, although the SDKs are generally designed to be resilient.
+Cost Tracking: Ensure you provide accurate token counts (promptTokens, completionTokens) in generation.end(usage={...}) for correct cost calculation in Langfuse. Langfuse has built-in model pricing data for many common models.

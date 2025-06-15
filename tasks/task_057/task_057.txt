@@ -1,0 +1,102 @@
+## **Task 57: Code Cleanup, Refactoring, and Performance Optimization.**
+
+This is a critical task to ensure the maintainability, readability, and efficiency of the newly upgraded Agent Zero system. It should be performed after all core functionalities are in place and E2E testing (Task 55) has provided feedback.
+
+**Focus:**
+This task involves a comprehensive review of all new and modified code from the "Phoenix" upgrade (Tasks 1-54, and any refinements from Task 55 testing). The goals are:
+1.  **Readability and Consistency:** Ensure code style, naming conventions, and documentation (docstrings, comments) are consistent and clear across all new modules and tools.
+2.  **Efficiency:** Identify and address performance bottlenecks, especially in frequently called or resource-intensive operations (e.g., LLM calls, data processing loops, browser interactions, memory searches).
+3.  **Modularity and Decoupling:** Refactor code to improve modularity, reduce tight coupling between components, and enhance reusability.
+4.  **Error Handling:** Ensure error handling is robust, consistent, and provides informative logs/events.
+5.  **Resource Management:** Verify that resources like browser instances, database connections, and file handles are properly managed and released.
+6.  **Configuration Usage:** Confirm that all configurable parameters are correctly read from the central `AgentConfig` and that defaults are sensible.
+7.  **Removal of Placeholders:** Eliminate any remaining mock logic, TODO comments related to core functionality, or temporary workarounds that are no longer needed.
+8.  **Security Considerations (Basic Review):** Check for obvious security oversights (e.g., unsanitized inputs used in file paths or shell commands, though shell commands are less of a concern with the current toolset).
+
+**Key Areas for Review and Refactoring:**
+
+**1. `agent.py` (`Agent` and `AgentContext`):**
+    *   **Clarity of `monologue` loop:** Ensure the main agent loop is easy to follow.
+    *   **State Management (`agent_state`):** Verify that `agent_state` updates are consistent and `STATE_DELTA` events are emitted correctly.
+    *   **Intervention Logic (`_check_and_handle_intervention`, `request_intervention`, `resolve_intervention`):** Streamline and ensure robustness.
+    *   **Event Emission (`_emit_stream_event`):** Ensure it's used consistently and correctly by all parts of the agent that need to emit events.
+    *   **Tool Calling (`_call_tool`):** Ensure it handles `ToolResponse` (including `error` and `requires_clarification` flags) appropriately.
+    *   **Configuration Usage:** Ensure `self.config` is used for all agent-level settings.
+
+**2. Tool Implementations (`python/tools/*.py`):**
+    *   **General for all tools:**
+        *   Consistent `__init__` (taking `agent`, using `super().__init__`, fetching config from `agent.config`).
+        *   Consistent `execute` method structure with clear action dispatching.
+        *   Robust error handling for each action, emitting `ERROR_EVENT` and returning `ToolResponse(error=True)`.
+        *   Clear `ToolResponse` objects (meaningful messages, structured data).
+        *   Proper use of `agent._emit_stream_event` for `PROGRESS_UPDATE` and tool-specific events.
+        *   Docstrings for the tool and its actions, matching the descriptions in `prompts/default/agent.system.tools.md`.
+    *   **`StreamProtocolTool`:**
+        *   Review its role. Does it need to be a full "tool" called by the LLM, or more of an internal service used by the agent for event emission and input handling? If the latter, its exposure as a tool might be reduced. For now, its actions like `resume_agent_with_message` are useful.
+        *   Ensure `StreamTransportGlobal` (in `run_ui.py`) is robust and thread-safe.
+    *   **`BrowserAgentTool` & `python/agents/browser_agent/`:**
+        *   **`BrowserManager`:** Optimize browser/context/page creation and reuse. Ensure `close_all_contexts_and_browser` is called reliably on application shutdown. Ensure Playwright timeouts are configurable and appropriate.
+        *   **`ActionExecutor`:** Refine LLM prompts for `act` and `extract` for better accuracy and robustness. Improve parsing of LLM responses. Handle more edge cases in Playwright interactions (e.g., element not found, stale elements).
+        *   **`ComputerUsePlanner`:** Refine the prompt for task decomposition. Improve the loop in `BrowserAgentTool._agent_execute` for handling the plan, especially feedback for re-planning (even if re-planning itself is basic).
+    *   **`WebCrawlerTool` & `python/agents/web_crawler/`:**
+        *   **`DocumentCrawler`:** Optimize URL fetching (e.g., respect `robots.txt` conceptually, handle HTTP errors gracefully). Ensure `AsyncWebCrawler.arun_many` is used effectively for batch operations. Make sitemap parsing more resilient.
+        *   **`DocumentProcessor`:** Ensure `DefaultMarkdownGenerator` from `crawl4ai` is used effectively. Handle cases where markdown generation might fail or produce poor results.
+        *   **`HierarchicalChunker`:** Review chunking logic for edge cases and ensure it produces meaningful, non-overlapping (or minimally overlapping where intended) chunks suitable for embedding.
+        *   Ensure the data pipeline to `KnowledgeAgentTool.ingest_chunks` is smooth.
+    *   **`KnowledgeAgentTool` & `python/agents/knowledge_agent/`:**
+        *   **`DatabaseManager` (Supabase):** Optimize Supabase queries if needed. Ensure connection handling is robust. Handle potential Supabase API errors gracefully.
+        *   **`EmbeddingGenerator` (OpenAI):** Ensure API calls are efficient (batching where possible) and errors (rate limits, etc.) are handled with retries.
+        *   **`KnowledgeRAGAgent`:** Refine the RAG prompt (`RAG_GENERATION_SYSTEM_PROMPT` and `format_rag_prompt`) for better quality answer synthesis. Optimize how context chunks are passed to the LLM to stay within token limits.
+    *   **`MemoryAgentTool` & `python/agents/memory_agent/`:**
+        *   **`Mem0MemorySystem`:** Ensure all calls to the `mem0.Memory` client are correctly implemented according to `mem0`'s API. Handle potential errors from the `mem0` library. Clarify the `user_id` scoping for all operations. If `mem0` has different config options for persistence or LLM/embedding backends, ensure these are well-documented and configurable via `MEM0_CONFIG_JSON`.
+        *   Refine the conceptual graph and summarization methods. If they remain placeholders relying on our own LLM calls, ensure these are efficient.
+    *   **`HybridMemoryTool`:**
+        *   This is a key area for potential refactoring. The current `_retrieve_context` (Task 39/52) is a good start. Optimize scoring, deduplication, and the LLM re-ranking/synthesis step. Ensure it correctly handles cases where one memory source returns no results.
+    *   **`ChatterboxTTSTool` & `python/agents/tts_agent/`:**
+        *   **`ChatterboxTTSHandler`/`VCHandler`:** Optimize model loading (ensure singleton pattern for models is effective). Handle errors from the Chatterbox library gracefully. Ensure audio file saving is robust and paths are correct.
+        *   For audio streaming (`generate_speech_stream`), if true streaming from Chatterbox isn't possible, ensure the chunking of the full audio is efficient.
+
+**3. `python/helpers/*.py`:**
+    *   **`settings.py`:** Ensure `AgentConfig` TypedDict is complete and `load_settings` correctly populates all new configuration values from `.env` and `settings.yaml`.
+    *   **`files.py`:** Verify `get_tts_output_dir_abs`, `get_tts_output_web_path`, and `get_work_dir_base_path` are correct and used consistently.
+    *   **`runtime.py`:** Solidify application shutdown logic, especially `shutdown_application_resources` to close Playwright, etc.
+    *   Review other helpers for any impact from the new tools.
+
+**4. Prompts (`prompts/default/**/*.md`):**
+    *   Final review of all system prompts and tool descriptions for clarity, accuracy, and completeness based on the final implementations.
+    *   Ensure examples are correct and helpful for the LLM.
+
+**5. Docker Setup (`docker/` directory):**
+    *   Review `requirements.txt` for any version conflicts or unnecessary packages.
+    *   Optimize Dockerfile layers. Ensure all build arguments and environment variables are correctly used.
+    *   Verify volume mappings in `docker-compose.yml` for persistence and caching.
+    *   Test build process for both CPU and GPU (if applicable) environments.
+
+**Implementation Steps for this Task:**
+
+1.  **Establish Code Style Standards:** If not already strict, enforce `black`, `flake8`/`ruff`, `isort`, and `mypy` for type checking.
+2.  **Systematic Review - Module by Module:**
+    *   Start with core `agent.py`.
+    *   Then review each tool in `python/tools/` and its corresponding logic in `python/agents/`.
+    *   Then review helpers in `python/helpers/`.
+3.  **Focus Areas During Review:**
+    *   **DRY (Don't Repeat Yourself):** Look for duplicated code that can be refactored into helper functions or base classes.
+    *   **Single Responsibility Principle:** Ensure classes and methods have clear, focused purposes.
+    *   **Error Handling:** Are all external calls (APIs, libraries, file I/O) wrapped in try-except blocks? Are errors logged and reported appropriately?
+    *   **Resource Management:** Are files, network connections, browser instances, etc., closed or released properly (e.g., using `async with` where applicable)?
+    *   **Logging:** Is logging sufficient for debugging and monitoring? Is it consistent?
+    *   **Clarity:** Are variable and function names clear? Is the logic easy to understand? Add comments where necessary.
+    *   **Docstrings:** Ensure all public classes and methods have informative docstrings.
+    *   **Type Hinting:** Ensure comprehensive type hinting for better static analysis and readability.
+    *   **TODOs/FIXMEs:** Address any remaining placeholder comments.
+4.  **Performance Profiling (if needed):** For critical paths identified during E2E testing (Task 55), use profiling tools (e.g., `cProfile`, `asyncio-profiler`) to pinpoint bottlenecks. This might lead to:
+    *   Optimizing loops or data structures.
+    *   More efficient use of async/await.
+    *   Caching results of expensive operations where appropriate.
+    *   Optimizing LLM prompts for brevity and faster responses.
+5.  **Configuration Audit:** Check that every configurable parameter is indeed configurable through `settings.py` / `.env` and that tools use these configurations. Remove hardcoded values.
+6.  **Iterate:** Code cleanup is often an iterative process. Make changes, re-test (unit tests and relevant E2E scenarios), and refine.
+
+This task does not introduce new features but aims to improve the quality, robustness, and performance of the existing codebase after the major feature integrations. It's a consolidation phase.
+
+Please confirm to proceed with this cleanup and refactoring phase. I will focus on describing the *types* of changes and areas to look at rather than re-writing large chunks of previously generated code, unless specific refactoring examples are requested.

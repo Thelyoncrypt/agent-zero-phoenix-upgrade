@@ -1,0 +1,107 @@
+## Agent Zero "Phoenix" Upgrade: Task List & Roadmap
+
+**Phase 0: Initial Research & Planning (Implicitly Completed before Task 1)**
+*   Analyze target libraries/repositories: AG-UI Protocol, Stagehand, Crawl4AI, Foundational RAG, Mem0, Chatterbox.
+*   Define high-level integration architecture.
+
+---
+
+**Phase 1: Core Protocol & Tool Structures (Tasks 1-11, 32-35, 38, 40 - Largely Structurally Complete)**
+*   **StreamProtocol (AG-UI) Integration:**
+    *   ✅ **Task 1:** Implement Core StreamProtocol Structures (`StreamEventType`, data classes, basic `StreamProtocolTool`).
+    *   ✅ **Task 11 & 33 (Combined):** Implement Server-Side WebSocket (`run_ui.py`), `StreamTransportGlobal`, connect `StreamProtocolTool`, finalize Agent State & `STATE_DELTA`.
+    *   ✅ **Task 32 & 38 (Combined):** Comprehensive StreamProtocol Event Emission in Agent Core & Tools, including robust error eventing.
+    *   ✅ **Task 34:** Implement `HUMAN_INTERVENTION` Event Emission & Backend Handling Placeholder.
+    *   ✅ **Task 35:** Implement `GENERATIVE_UI` Event Emission Concept & Backend Placeholder.
+*   **Agent Core Enhancements for Streaming:**
+    *   ✅ **Task 2:** Enhance `AgentContext` & `Agent` for `thread_id`, `user_id`, basic state.
+*   **Tool Structure Placeholders & Basic Prompts:**
+    *   ✅ **Task 5:** `BrowserAgentTool` - Basic Structure & Placeholder Actions.
+    *   ✅ **Task 6:** `WebCrawlerTool` - Basic Structure & Placeholder Actions.
+    *   ✅ **Task 7:** `KnowledgeAgentTool` - Basic Structure & Placeholder Actions.
+    *   ✅ **Task 8:** `MemoryAgentTool` - Basic Structure & Placeholder Actions.
+    *   ✅ **Task 9:** `HybridMemoryTool` - Basic Structure & Placeholder Logic.
+    *   ✅ **Task 10:** `ChatterboxTTSTool` - Basic Structure & Placeholder Actions.
+    *   ✅ **Task 40:** Create and Update All Prompt Templates for New System.
+
+---
+
+**Phase 2: Implementing Real Logic - Tools & Core (Tasks 12-19, 20-21, 22-25, 26-28, 29, 30-31, 41-54 - In Progress / Partially Done)**
+
+*   **`BrowserAgentTool` (Stagehand-inspired - Playwright & LLM):**
+    *   ✅ **Task 12 & 25 (Combined):** Real `navigate` Action; Robust `BrowserManager` Error Handling & State.
+    *   ✅ **Task 22 & 41 (Combined):** Real AI-driven `act` Logic (Basic DOM interaction via LLM).
+    *   ✅ **Task 23 & 42 (Combined):** Real AI-driven `extract` Logic (LLM-based data extraction).
+    *   ✅ **Task 24 & 43 (Combined):** Basic `agent_execute` (LLM Task Planning & Sequential Execution).
+    *   ➡️ **Task 49:** `BrowserAgentTool._agent_execute` - Robust Loop & Basic Re-planning Feedback. *(Current Task if we were to continue implementation)*
+
+*   **`WebCrawlerTool` (Crawl4AI-inspired):**
+    *   ✅ **Task 13 & 20 (Combined):** Real URL Fetching & Basic Processing (`crawl4ai` integration).
+    *   ✅ **Task 44:** Refine Markdown Generation in `DocumentProcessor` using `crawl4ai`.
+    *   ✅ **Task 45:** Implement Robust Sitemap Parsing and Batched URL Crawling.
+    *   ✅ **Task 21 & Current:** Implement Hierarchical Chunking & Full Integration with `KnowledgeAgentTool` for Ingestion.
+
+*   **`KnowledgeAgentTool` (Foundational RAG-inspired - Supabase & LLM):**
+    *   ✅ **Task 14:** Real `EmbeddingGenerator` (OpenAI).
+    *   ✅ **Task 16 & 46 (Combined):** Real `DatabaseManager` for Supabase/pgvector (Storage & Search).
+    *   ✅ **Task 17 & 47 (Combined):** Real LLM-based Answer Generation in `KnowledgeRAGAgent`.
+
+*   **`MemoryAgentTool` (Mem0-inspired):**
+    *   ✅ **Task 15:** Basic Embedding & In-Memory Search for Mock `IntelligentMemory`.
+    *   ✅ **Task 18 & 48 (Combined):** Full `mem0` Library Integration for Core Add/Search/Get/Update/Delete.
+    *   ✅ **Task 26 (partially by Task 50):** Conceptual Graph Memory Placeholders.
+    *   ➡️ **Task 50:** `MemoryAgentTool` - Real `mem0` Graph Integration (if Python API exists).
+    *   ✅ **Task 27 (partially by Task 51):** Conceptual LLM Summarization Placeholder.
+    *   ➡️ **Task 51:** `MemoryAgentTool` - Real `mem0` Summarization/Advanced Query (if Python API exists).
+    *   ✅ **Task 28:** Conceptual Local File Persistence for *mock* `Mem0MemorySystem`. (Now superseded by `mem0`'s own persistence).
+
+*   **`HybridMemoryTool`:**
+    *   ✅ **Task 29 & 39 (Combined):** Basic Context Combination & Ranking Logic.
+    *   ➡️ **Task 52:** `HybridMemoryTool` - Advanced Context Combination/Ranking (e.g., LLM re-ranking).
+
+*   **`ChatterboxTTSTool`:**
+    *   ✅ **Task 19:** Real `ChatterboxTTSHandler` Model Loading & Basic TTS.
+    *   ✅ **Task 30:** Real `ChatterboxVCHandler` for Voice Conversion.
+    *   ✅ **Task 31:** Refined Audio Output Handling & API Endpoint.
+    *   ➡️ **Task 53:** `ChatterboxTTSTool` - Audio Streaming Output (Conceptual/Simulated for AG-UI).
+
+*   **Agent Core Processing:**
+    *   ➡️ **Task 54:** `Agent Core` - Processing `GENERATIVE_UI` Responses from Client.
+
+---
+
+**Phase 3: System Finalization & Polish (Tasks 36, 37 (as planning), 55-57 - Remaining)**
+
+*   **Configuration & Docker:**
+    *   ✅ **Task 36:** Comprehensive Update of `settings.yaml` / `.env` and Agent Configuration (Initial Pass).
+    *   ✅ **Task 37:** Dockerfile and Docker Compose Enhancements - Planning and Specification (Initial Pass).
+        *   **REMAINING (Part of finalization):** Verify and test all Docker builds and runtime configurations after all code changes.
+*   **Testing:**
+    *   ➡️ **Task 55:** End-to-End Testing of All New Features and Integrations.
+*   **Documentation:**
+    *   ➡️ **Task 56:** Comprehensive Documentation Update for "Phoenix" Features.
+*   **Code Quality:**
+    *   ➡️ **Task 57:** Code Cleanup, Refactoring, and Performance Optimization across the entire upgraded codebase.
+
+---
+
+**Summary of Remaining Tasks (approx. 9-10 core tasks + finalization):**
+
+*   **Browser Agent Refinement:**
+    *   **Task 49:** `BrowserAgentTool._agent_execute` - Robust Loop & Basic Re-planning Feedback.
+*   **Memory System (Mem0 & Hybrid):**
+    *   **Task 50:** `MemoryAgentTool` - Real `mem0` Graph Integration (API dependent).
+    *   **Task 51:** `MemoryAgentTool` - Real `mem0` Summarization/Advanced Query (API dependent).
+    *   **Task 52:** `HybridMemoryTool` - Advanced Context Combination/Ranking (LLM re-ranking).
+*   **TTS/Audio:**
+    *   **Task 53:** `ChatterboxTTSTool` - Audio Streaming Output implementation.
+*   **Agent Core & UI Protocol:**
+    *   **Task 54:** `Agent Core` - Full processing logic for responses from `GENERATIVE_UI` components.
+*   **Finalization Phase:**
+    *   **Task 55:** End-to-End Testing.
+    *   **Task 56:** Comprehensive Documentation Update.
+    *   **Task 57:** Code Cleanup, Refactoring, and Performance Optimization.
+    *   (Implicit) Task X: Final review of Docker configurations and build testing.
+    *   (Implicit) Task Y: Final review of all prompts based on implemented logic.
+
+This roadmap provides a clear path to completing the Agent Zero "Phoenix" upgrade. Each remaining task builds upon the previously established structures and integrations.
