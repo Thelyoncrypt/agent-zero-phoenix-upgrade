@@ -122,20 +122,20 @@ class StreamProtocolTool(Tool):
     
     def __init__(self, agent, **kwargs):
         super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
-        # Access the globally managed StreamTransport instance (e.g., from Flask app context)
-        # This assumes run_ui.py sets app.stream_transport or uses a global registry
-        transport_instance = agent.context.custom_data.get('stream_transport')
-        if not transport_instance:
-            # Fallback: use singleton pattern if app context not available
-            if not hasattr(StreamTransport, '_global_instance'):
-                StreamTransport._global_instance = StreamTransport()
-            transport_instance = StreamTransport._global_instance
-            agent.context.custom_data['stream_transport'] = transport_instance
         
-        self.transport: StreamTransport = transport_instance
+        # Attempt to get the transport from agent context (set by run_ui.py)
+        self.transport = self.agent.context.get_custom_data('stream_transport_instance')
+        if not self.transport:
+            # Fallback or error if not found - this indicates an initialization issue in run_ui.py
+            print("StreamProtocolTool: CRITICAL - StreamTransport instance not found in agent context.")
+            # As a last resort, could use a global singleton, but injection is cleaner.
+            # For now, we'll assume it will be there. If not, emit_event will fail.
+            # A more robust solution would be to pass it during agent/tool initialization.
+            raise RuntimeError("StreamTransport not properly initialized and passed to StreamProtocolTool.")
+
         self.active_threads: Dict[str, Dict[str, Any]] = {} 
         self.middleware_stack: List[callable] = []
-        print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using shared StreamTransport.")
+        print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using injected StreamTransport.")
         
     async def execute(self, action: str, **kwargs):
         """
@@ -221,7 +221,7 @@ class StreamProtocolTool(Tool):
             if event is None:
                 return self.agent_response("Event filtered by middleware")
         
-        await self.transport.emit_event(event)  # Uses the global transport
+        await self.transport.emit_event_to_thread(event)  # Uses the global transport with specific method
         
         return self.agent_response({
             "success": True,
@@ -312,7 +312,7 @@ class StreamProtocolTool(Tool):
             thread_id=thread_id,
             user_id=user_id
         )
-        await self.transport.emit_event(event)  # Uses the global transport
+        await self.transport.emit_event_to_thread(event)  # Uses the global transport with specific method
 
     # Placeholder for methods that will depend on agent modifications
     async def _update_agent_context(self, run_input: RunAgentInput):

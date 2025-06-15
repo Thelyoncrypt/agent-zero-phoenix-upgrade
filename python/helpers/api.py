@@ -28,9 +28,9 @@ class ApiHandler:
             try:
                 context.set_custom_data('flask_app_instance', current_app._get_current_object())
                 
-                # Also set the stream_transport if available
-                if hasattr(current_app, 'stream_transport'):
-                    context.set_custom_data('stream_transport', current_app.stream_transport)
+                # Also set the stream_transport_instance if available
+                if hasattr(current_app, 'stream_transport_global'):
+                    context.set_custom_data('stream_transport_instance', current_app.stream_transport_global)
             except RuntimeError:
                 # Outside of Flask request context
                 pass
@@ -45,8 +45,8 @@ class ApiHandler:
         if FLASK_AVAILABLE and current_app:
             try:
                 context.set_custom_data('flask_app_instance', current_app._get_current_object())
-                if hasattr(current_app, 'stream_transport'):
-                    context.set_custom_data('stream_transport', current_app.stream_transport)
+                if hasattr(current_app, 'stream_transport_global'):
+                    context.set_custom_data('stream_transport_instance', current_app.stream_transport_global)
             except RuntimeError:
                 pass
         
