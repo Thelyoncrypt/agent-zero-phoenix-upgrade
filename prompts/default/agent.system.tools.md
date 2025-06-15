@@ -72,3 +72,52 @@ Parameters: {
 Action: knowledge_agent_tool
 Parameters: {"action": "query", "query": "What is Pydantic AI?", "limit": 3}
 ```
+
+### memory_agent_tool
+
+**Purpose**: Manages an intelligent memory system with self-improving capabilities, allowing agents to store, search, update, and retrieve memories using Mem0-inspired techniques.
+
+**Actions**:
+- `add`: Add new memories from messages or generic data
+- `search`: Search existing memories by query
+- `update`: Update an existing memory
+- `delete`: Delete a specific memory
+- `get_all`: Retrieve all memories for debugging or analysis
+
+**Parameters**:
+- `action` (required): Type of memory operation
+- `user_id`: Identifier for the user whose memory is being accessed (optional, defaults to current session)
+- `messages`: List of messages to extract memories from (for add action) - format: [{"role": "user/assistant", "content": "..."}]
+- `data`: Generic data to store as a memory (for add action)
+- `memory_id`: Specific ID for memory operations (for update/delete actions)
+- `query`: Search query (for search action)
+- `limit`: Maximum number of results to return (default: 5)
+
+**Events**: Emits MEMORY_UPDATE events via StreamProtocol for real-time memory operation feedback.
+
+**Example for adding from messages**:
+```
+Action: memory_agent_tool
+Parameters: {
+  "action": "add",
+  "messages": [{"role": "user", "content": "My favorite color is blue."}],
+  "user_id": "user123"
+}
+```
+
+**Example for searching memories**:
+```
+Action: memory_agent_tool
+Parameters: {"action": "search", "query": "user's favorite color", "user_id": "user123", "limit": 3}
+```
+
+**Example for updating a memory**:
+```
+Action: memory_agent_tool
+Parameters: {
+  "action": "update",
+  "memory_id": "mem_0",
+  "data": "My favorite color is now green instead of blue.",
+  "user_id": "user123"
+}
+```

@@ -514,6 +514,14 @@ class Agent:
             print(f"Agent {self.agent_name}: KnowledgeAgent tool not available: {e}")
         
         try:
+            # Register MemoryAgent tool
+            from python.tools.memory_agent_tool import MemoryAgentTool
+            memory_agent_tool = MemoryAgentTool(self)
+            self.add_tool(memory_agent_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: MemoryAgent tool not available: {e}")
+        
+        try:
             # Register Response tool
             from python.tools.response import ResponseTool
             response_tool = ResponseTool(self)

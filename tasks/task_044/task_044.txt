@@ -1,0 +1,349 @@
+## Task 44: `WebCrawlerTool` - Refine Markdown Generation in `DocumentProcessor` using `crawl4ai`
+
+**Focus:**
+This task refines the `DocumentProcessor` within the `WebCrawlerTool` to leverage `crawl4ai`'s `DefaultMarkdownGenerator` (or a custom one if preferred) for converting HTML content (obtained from web crawls) into clean Markdown. This replaces the very basic HTML passthrough or naive title extraction used in previous placeholder versions.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `crawl4ai` is in `requirements.txt` and installed (as per Task 20).**
+
+2.  **Modify `python/agents/web_crawler/processors.py` (`DocumentProcessor`):**
+    *   The `process_document` method will now explicitly use `crawl4ai`'s markdown generation capabilities if the input `crawl_result` contains HTML.
+
+    ```python
+# python/agents/web_crawler/processors.py
+    from typing import Dict, Any
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from crawl4ai import WebCrawlerResult
+        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator, MarkdownGeneratorConfig
+        CRAWL4AI_AVAILABLE = True
+    except ImportError:
+        CRAWL4AI_AVAILABLE = False
+        # Fallback classes if crawl4ai is not installed (as in Task 20)
+        class WebCrawlerResult: # type: ignore
+            def __init__(self, url, success, markdown=None, html=None, links=None, error_message=None, title=None):
+                self.url = url; self.success = success; self.markdown = markdown
+                self.html_content = html; self.links = links or {}; self.error_message = error_message; self.title = title
+        class DefaultMarkdownGenerator: # type: ignore
+            def __init__(self, *args, **kwargs): pass
+            async def generate(self, html_content, url): return html_content # Passthrough
+
+    class DocumentProcessor:
+        def __init__(self):
+            if CRAWL4AI_AVAILABLE:
+                # Configure the markdown generator. DefaultMarkdownGenerator has its own defaults.
+                # We can customize it if needed, e.g., by passing a MarkdownGeneratorConfig.
+                # config = MarkdownGeneratorConfig(use_advanced_processing=True, custom_rules=...)
+                self.markdown_generator = DefaultMarkdownGenerator() 
+                logger.info("DocumentProcessor: Initialized with Crawl4AI's DefaultMarkdownGenerator.")
+            else:
+                self.markdown_generator = DefaultMarkdownGenerator() # Uses the fallback passthrough
+                logger.warning("DocumentProcessor: Crawl4AI not found, using basic passthrough for markdown generation.")
+
+        async def process_document(self, crawl_result: WebCrawlerResult) -> Dict[str, Any]:
+            """
+            Processes a WebCrawlerResult object. If it contains HTML content,
+            it's converted to Markdown using Crawl4AI's generator.
+            If it already contains markdown (e.g., from a .md or .txt file crawl),
+            that markdown is used directly.
+            """
+            url = crawl_result.url
+            # Try to get title from crawl_result, otherwise fallback
+            doc_title = crawl_result.title
+            if not doc_title: # Try to derive from URL if not present
+                try:
+                    doc_title = url.split('/')[-1] if url.split('/')[-1] else url.split('/')[-2] if len(url.split('/')) > 1 else "Untitled Document"
+                except:
+                    doc_title = "Untitled Document"
+
+
+            logger.info(f"DocumentProcessor: Processing document from {url}, Title: {doc_title}")
+
+            if not crawl_result.success:
+                logger.warning(f"DocumentProcessor: Crawl failed for {url}. Error: {crawl_result.error_message}")
+                return {
+                    "url": url, "title": doc_title, "markdown": "", 
+                    "metadata": {"original_url": url, "crawl_error": crawl_result.error_message or "Crawl failed"}
+                }
+
+            markdown_content = ""
+            # Crawl4AI's WebCrawlerResult has a `markdown` attribute which is a `MarkdownObject`
+            # and `html_content` attribute.
+            # If `result.markdown` is already populated by crawl4ai (e.g. from a .md file), use it.
+            # Otherwise, if `html_content` is present, generate markdown from it.
+
+            if crawl_result.markdown: # This is MarkdownObject from crawl4ai
+                if isinstance(crawl_result.markdown, str): # If it's already a string (e.g. from fallback)
+                    markdown_content = crawl_result.markdown
+                elif hasattr(crawl_result.markdown, 'raw_markdown'): # Accessing raw_markdown from MarkdownObject
+                    markdown_content = crawl_result.markdown.raw_markdown
+                else: # Fallback if it's an unexpected type
+                    markdown_content = str(crawl_result.markdown)
+                logger.debug(f"DocumentProcessor: Using pre-existing markdown for {url}. Length: {len(markdown_content)}")
+            elif crawl_result.html_content:
+                logger.debug(f"DocumentProcessor: Generating markdown from HTML for {url}. HTML length: {len(crawl_result.html_content)}")
+                try:
+                    # The generate method of markdown_generator is async
+                    markdown_object = await self.markdown_generator.generate(
+                        html_content=crawl_result.html_content,
+                        url=url
+                    )
+                    markdown_content = markdown_object.raw_markdown if markdown_object else ""
+                    logger.info(f"DocumentProcessor: Successfully generated markdown from HTML for {url}. Length: {len(markdown_content)}")
+                except Exception as e:
+                    logger.error(f"DocumentProcessor: Failed to generate markdown from HTML for {url}: {e}", exc_info=True)
+                    markdown_content = f"Error generating markdown from HTML: {str(e)}\n\nRaw HTML content (first 1000 chars):\n{crawl_result.html_content[:1000]}"
+            else:
+                logger.warning(f"DocumentProcessor: No markdown or HTML content found for {url}.")
+                markdown_content = "" # Ensure it's an empty string
+
+            # Basic check for empty or placeholder content
+            if not markdown_content.strip() or markdown_content.startswith("Error generating markdown") or len(markdown_content) < 50 : # Arbitrary small length
+                logger.warning(f"DocumentProcessor: Markdown content for {url} is empty or seems invalid after processing.")
+                # Optionally, could try to extract text using a simpler method as a last resort if markdown_content is poor.
+                # For now, we proceed with what we have or an empty string.
+
+            return {
+                "url": url,
+                "title": doc_title,
+                "markdown": markdown_content,
+                "metadata": {
+                    "original_url": url, 
+                    "crawl_depth": getattr(crawl_result, 'depth', 0), # Depth might not be on all results
+                    "content_type": "text/markdown" # Indicate processed content type
+                }
+            }
+```
+    **Key changes in `DocumentProcessor`:**
+    *   It now instantiates `crawl4ai.markdown_generation_strategy.DefaultMarkdownGenerator`.
+    *   The `process_document` method checks if `crawl_result.markdown` (from `crawl4ai`) already exists (e.g., if the source was a `.md` file).
+    *   If not, and `crawl_result.html_content` is available, it uses `self.markdown_generator.generate()` to convert HTML to Markdown.
+    *   Handles cases where content might be missing or generation fails.
+
+3.  **Verify `python/agents/web_crawler/crawler.py`:**
+    *   Ensure `DocumentCrawler` methods (`_fetch_single_url`, `crawl_recursive`, etc.) are returning `WebCrawlerResult` objects that `DocumentProcessor` can work with. The `WebCrawlerResult` from `crawl4ai` directly provides `.markdown` (as `MarkdownObject`) and `.html_content`.
+    *   The `_fetch_single_url` method in Task 20 already converts `result.markdown.raw_markdown` to a string. This is fine, as `DocumentProcessor` can now handle either a string or a `MarkdownObject`.
+
+    ```python
+# python/agents/web_crawler/crawler.py
+    # Ensure the _fetch_single_url method correctly returns a WebCrawlerResult
+    # (or an object that quacks like it if crawl4ai is not available)
+
+    async def _fetch_single_url(self, url: str) -> WebCrawlerResult:
+        crawler = await self.get_crawler()
+        if crawler:
+            try:
+                result = await crawler.arun(url=url, config=self.run_config, session_id=f"session_{hash(url)}")
+                # result from crawl4ai is already a WebCrawlerResult object
+                # Its .markdown attribute is a MarkdownObject.
+                # The DocumentProcessor will handle .markdown.raw_markdown or .html_content
+                return result 
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Error fetching {url} with Crawl4AI: {e}", exc_info=True)
+                return WebCrawlerResult(url=url, success=False, error_message=str(e), title=url)
+        else: # Basic fallback (from Task 20)
+            # ... (fallback logic that returns a WebCrawlerResult-like object) ...
+            # Ensure the markdown field in the fallback is a string.
+            # ...
+            pass # Keep fallback as is for now
+```
+
+4.  **No changes required in `python/tools/web_crawler_tool.py` for this specific task**, as it already calls `self.processor.process_document(crawl_result_obj)`. The enhanced processor will now do a better job.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-35 completed.
+*   `crawl4ai` library installed.
+
+**Integration with Agent Zero:**
+*   The `WebCrawlerTool`'s document processing step becomes much more effective by using `crawl4ai`'s HTML-to-Markdown capabilities. This means the chunks eventually sent to the `KnowledgeAgentTool` will be cleaner and more structured if the source was HTML.
+*   If the source is already Markdown/text, it will be used more directly.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   `crawl4ai` and its dependencies (like `beautifulsoup4`, `lxml`, `playwright`) must be correctly installed in the Docker image. This should be covered by `requirements.txt` and existing Docker setup for Playwright.
+
+**Summary of Task 44:**
+This task significantly improves the quality of data processed by the `WebCrawlerTool` by integrating `crawl4ai`'s HTML-to-Markdown conversion logic into the `DocumentProcessor`. When crawling HTML web pages, the content will now be converted into clean Markdown before being passed to the chunker. This ensures that the data prepared for ingestion into the knowledge base is more structured and suitable for RAG applications.
+
+Please confirm to proceed.Okay, let's proceed with Task 44.
+
+## Task 44: `WebCrawlerTool` - Refine Markdown Generation in `DocumentProcessor` using `crawl4ai`
+
+**Focus:**
+This task refines the `DocumentProcessor` within the `WebCrawlerTool` to leverage `crawl4ai`'s `DefaultMarkdownGenerator` (or a custom one if preferred) for converting HTML content (obtained from web crawls) into clean Markdown. This replaces the very basic HTML passthrough or naive title extraction used in previous placeholder versions.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `crawl4ai` is in `requirements.txt` and installed (as per Task 20).**
+
+2.  **Modify `python/agents/web_crawler/processors.py` (`DocumentProcessor`):**
+    *   The `process_document` method will now explicitly use `crawl4ai`'s markdown generation capabilities if the input `crawl_result` contains HTML.
+
+    ```python
+    # python/agents/web_crawler/processors.py
+    from typing import Dict, Any
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from crawl4ai import WebCrawlerResult
+        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator, MarkdownGeneratorConfig
+        CRAWL4AI_AVAILABLE = True
+    except ImportError:
+        CRAWL4AI_AVAILABLE = False
+        # Fallback classes if crawl4ai is not installed (as in Task 20)
+        class WebCrawlerResult: # type: ignore
+            def __init__(self, url, success, markdown=None, html=None, links=None, error_message=None, title=None):
+                self.url = url; self.success = success; self.markdown = markdown
+                self.html_content = html; self.links = links or {}; self.error_message = error_message; self.title = title
+        class DefaultMarkdownGenerator: # type: ignore
+            def __init__(self, *args, **kwargs): pass
+            async def generate(self, html_content, url): return html_content # Passthrough
+
+    class DocumentProcessor:
+        def __init__(self):
+            if CRAWL4AI_AVAILABLE:
+                # Configure the markdown generator. DefaultMarkdownGenerator has its own defaults.
+                # We can customize it if needed, e.g., by passing a MarkdownGeneratorConfig.
+                # config = MarkdownGeneratorConfig(use_advanced_processing=True, custom_rules=...)
+                self.markdown_generator = DefaultMarkdownGenerator() 
+                logger.info("DocumentProcessor: Initialized with Crawl4AI's DefaultMarkdownGenerator.")
+            else:
+                self.markdown_generator = DefaultMarkdownGenerator() # Uses the fallback passthrough
+                logger.warning("DocumentProcessor: Crawl4AI not found, using basic passthrough for markdown generation.")
+
+        async def process_document(self, crawl_result: WebCrawlerResult) -> Dict[str, Any]:
+            """
+            Processes a WebCrawlerResult object. If it contains HTML content,
+            it's converted to Markdown using Crawl4AI's generator.
+            If it already contains markdown (e.g., from a .md or .txt file crawl),
+            that markdown is used directly.
+            """
+            url = crawl_result.url
+            # Try to get title from crawl_result, otherwise fallback
+            doc_title = crawl_result.title
+            if not doc_title: # Try to derive from URL if not present
+                try:
+                    doc_title = url.split('/')[-1] if url.split('/')[-1] else url.split('/')[-2] if len(url.split('/')) > 1 else "Untitled Document"
+                except:
+                    doc_title = "Untitled Document"
+
+
+            logger.info(f"DocumentProcessor: Processing document from {url}, Title: {doc_title}")
+
+            if not crawl_result.success:
+                logger.warning(f"DocumentProcessor: Crawl failed for {url}. Error: {crawl_result.error_message}")
+                return {
+                    "url": url, "title": doc_title, "markdown": "", 
+                    "metadata": {"original_url": url, "crawl_error": crawl_result.error_message or "Crawl failed"}
+                }
+
+            markdown_content = ""
+            # Crawl4AI's WebCrawlerResult has a `markdown` attribute which is a `MarkdownObject`
+            # and `html_content` attribute.
+            # If `result.markdown` is already populated by crawl4ai (e.g. from a .md file), use it.
+            # Otherwise, if `html_content` is present, generate markdown from it.
+
+            if crawl_result.markdown: # This is MarkdownObject from crawl4ai
+                if isinstance(crawl_result.markdown, str): # If it's already a string (e.g. from fallback)
+                    markdown_content = crawl_result.markdown
+                elif hasattr(crawl_result.markdown, 'raw_markdown'): # Accessing raw_markdown from MarkdownObject
+                    markdown_content = crawl_result.markdown.raw_markdown
+                else: # Fallback if it's an unexpected type
+                    markdown_content = str(crawl_result.markdown)
+                logger.debug(f"DocumentProcessor: Using pre-existing markdown for {url}. Length: {len(markdown_content)}")
+            elif crawl_result.html_content:
+                logger.debug(f"DocumentProcessor: Generating markdown from HTML for {url}. HTML length: {len(crawl_result.html_content)}")
+                try:
+                    # The generate method of markdown_generator is async
+                    markdown_object = await self.markdown_generator.generate(
+                        html_content=crawl_result.html_content,
+                        url=url
+                    )
+                    markdown_content = markdown_object.raw_markdown if markdown_object else ""
+                    logger.info(f"DocumentProcessor: Successfully generated markdown from HTML for {url}. Length: {len(markdown_content)}")
+                except Exception as e:
+                    logger.error(f"DocumentProcessor: Failed to generate markdown from HTML for {url}: {e}", exc_info=True)
+                    markdown_content = f"Error generating markdown from HTML: {str(e)}\n\nRaw HTML content (first 1000 chars):\n{crawl_result.html_content[:1000]}"
+            else:
+                logger.warning(f"DocumentProcessor: No markdown or HTML content found for {url}.")
+                markdown_content = "" # Ensure it's an empty string
+
+            # Basic check for empty or placeholder content
+            if not markdown_content.strip() or markdown_content.startswith("Error generating markdown") or len(markdown_content) < 50 : # Arbitrary small length
+                logger.warning(f"DocumentProcessor: Markdown content for {url} is empty or seems invalid after processing.")
+                # Optionally, could try to extract text using a simpler method as a last resort if markdown_content is poor.
+                # For now, we proceed with what we have or an empty string.
+
+            return {
+                "url": url,
+                "title": doc_title,
+                "markdown": markdown_content,
+                "metadata": {
+                    "original_url": url, 
+                    "crawl_depth": getattr(crawl_result, 'depth', 0), # Depth might not be on all results
+                    "content_type": "text/markdown" # Indicate processed content type
+                }
+            }
+    ```
+    **Key changes in `DocumentProcessor`:**
+    *   It now instantiates `crawl4ai.markdown_generation_strategy.DefaultMarkdownGenerator`.
+    *   The `process_document` method checks if `crawl_result.markdown` (from `crawl4ai`) already exists (e.g., if the source was a `.md` file).
+    *   If not, and `crawl_result.html_content` is available, it uses `self.markdown_generator.generate()` to convert HTML to Markdown.
+    *   Handles cases where content might be missing or generation fails.
+
+3.  **Verify `python/agents/web_crawler/crawler.py`:**
+    *   Ensure `DocumentCrawler` methods (`_fetch_single_url`, `crawl_recursive`, etc.) are returning `WebCrawlerResult` objects that `DocumentProcessor` can work with. The `WebCrawlerResult` from `crawl4ai` directly provides `.markdown` (as `MarkdownObject`) and `.html_content`.
+    *   The `_fetch_single_url` method in Task 20 already converts `result.markdown.raw_markdown` to a string. This is fine, as `DocumentProcessor` can now handle either a string or a `MarkdownObject`.
+
+    ```python
+    # python/agents/web_crawler/crawler.py
+    # Ensure the _fetch_single_url method correctly returns a WebCrawlerResult
+    # (or an object that quacks like it if crawl4ai is not available)
+
+    async def _fetch_single_url(self, url: str) -> WebCrawlerResult:
+        crawler = await self.get_crawler()
+        if crawler:
+            try:
+                result = await crawler.arun(url=url, config=self.run_config, session_id=f"session_{hash(url)}")
+                # result from crawl4ai is already a WebCrawlerResult object
+                # Its .markdown attribute is a MarkdownObject.
+                # The DocumentProcessor will handle .markdown.raw_markdown or .html_content
+                return result 
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Error fetching {url} with Crawl4AI: {e}", exc_info=True)
+                return WebCrawlerResult(url=url, success=False, error_message=str(e), title=url)
+        else: # Basic fallback (from Task 20)
+            # ... (fallback logic that returns a WebCrawlerResult-like object) ...
+            # Ensure the markdown field in the fallback is a string.
+            # ...
+            pass # Keep fallback as is for now
+    ```
+
+4.  **No changes required in `python/tools/web_crawler_tool.py` for this specific task**, as it already calls `self.processor.process_document(crawl_result_obj)`. The enhanced processor will now do a better job.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-35 completed.
+*   `crawl4ai` library installed.
+
+**Integration with Agent Zero:**
+*   The `WebCrawlerTool`'s document processing step becomes much more effective by using `crawl4ai`'s HTML-to-Markdown capabilities. This means the chunks eventually sent to the `KnowledgeAgentTool` will be cleaner and more structured if the source was HTML.
+*   If the source is already Markdown/text, it will be used more directly.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   `crawl4ai` and its dependencies (like `beautifulsoup4`, `lxml`, `playwright`) must be correctly installed in the Docker image. This should be covered by `requirements.txt` and existing Docker setup for Playwright.
+
+**Summary of Task 44:**
+This task significantly improves the quality of data processed by the `WebCrawlerTool` by integrating `crawl4ai`'s HTML-to-Markdown conversion logic into the `DocumentProcessor`. When crawling HTML web pages, the content will now be converted into clean Markdown before being passed to the chunker. This ensures that the data prepared for ingestion into the knowledge base is more structured and suitable for RAG applications.
+
+Please confirm to proceed.

@@ -1,0 +1,511 @@
+## Task 45: `WebCrawlerTool` - Implement Robust Sitemap Parsing and Batched URL Crawling
+
+**Focus:**
+This task enhances the `crawl_sitemap` functionality within the `WebCrawlerTool` (specifically in `python/agents/web_crawler/crawler.py`). It involves:
+1.  Robustly parsing `sitemap.xml` files (including sitemap indexes that point to other sitemaps).
+2.  Efficiently crawling all discovered URLs from the sitemap(s) in batches using `crawl4ai`'s `arun_many` with a `MemoryAdaptiveDispatcher`.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `requests`, `lxml` (or `xml.etree.ElementTree`) are available (from Task 20/previous).** `lxml` is generally more robust for XML parsing. If not explicitly added, `requests` and `xml.etree.ElementTree` (standard library) can be used.
+
+2.  **Modify `python/agents/web_crawler/crawler.py` (`DocumentCrawler`):**
+    *   Update the `crawl_sitemap_urls` method to handle sitemap indexes and fetch/parse sitemaps to extract all URLs.
+    *   Use `AsyncWebCrawler.arun_many` with a `MemoryAdaptiveDispatcher` for efficient batch processing of the extracted URLs.
+
+    ```python
+# python/agents/web_crawler/crawler.py
+    import asyncio
+    from typing import List, Dict, Any, AsyncGenerator, Optional, Set
+    from urllib.parse import urlparse, urldefrag, urljoin
+    import requests # For synchronous initial sitemap fetching
+    from xml.etree import ElementTree # Standard library for XML parsing
+    import httpx # For async requests (alternative for fetching sitemaps if preferred)
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, WebCrawlerResult, MemoryAdaptiveDispatcher
+        CRAWL4AI_AVAILABLE = True
+    except ImportError:
+        # ... (fallback classes as before) ...
+        CRAWL4AI_AVAILABLE = False
+        class MemoryAdaptiveDispatcher: # type: ignore
+            def __init__(self, *args, **kwargs): pass
+
+
+    class DocumentCrawler:
+        # ... (__init__, get_crawler, close_crawler, _fetch_single_url, crawl_recursive, crawl_markdown_file_url from Task 20/earlier)
+
+        async def _parse_sitemap_xml_content(self, xml_content: str, sitemap_url_base: str) -> Tuple[List[str], List[str]]:
+            """Parses XML content of a sitemap, returns URLs and sub-sitemap URLs."""
+            urls: List[str] = []
+            sub_sitemaps: List[str] = []
+            try:
+                root = ElementTree.fromstring(xml_content)
+                # Common namespace for sitemaps
+                namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+                
+                # Check for sitemapindex (pointing to other sitemaps)
+                for sitemap_loc_element in root.findall('.//ns:sitemap/ns:loc', namespace):
+                    if sitemap_loc_element.text:
+                        sub_sitemaps.append(urljoin(sitemap_url_base, sitemap_loc_element.text.strip()))
+                
+                # Extract regular URLs
+                for url_loc_element in root.findall('.//ns:url/ns:loc', namespace):
+                    if url_loc_element.text:
+                        urls.append(urljoin(sitemap_url_base, url_loc_element.text.strip()))
+            except ElementTree.ParseError as e:
+                logger.error(f"DocumentCrawler: XML ParseError for sitemap content from {sitemap_url_base}: {e}")
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Unexpected error parsing sitemap content from {sitemap_url_base}: {e}")
+            return urls, sub_sitemaps
+
+        async def _fetch_and_parse_sitemap(self, sitemap_url: str, visited_sitemaps: Set[str], client: httpx.AsyncClient) -> Tuple[List[str], List[str]]:
+            """Fetches a single sitemap URL and parses it, handling recursion for sitemap indexes."""
+            if sitemap_url in visited_sitemaps:
+                return [], []
+            visited_sitemaps.add(sitemap_url)
+            
+            logger.info(f"DocumentCrawler: Fetching sitemap: {sitemap_url}")
+            try:
+                # Using httpx for async fetching of sitemap XML
+                response = await client.get(sitemap_url, timeout=20.0, follow_redirects=True)
+                response.raise_for_status()
+                return await self._parse_sitemap_xml_content(response.text, sitemap_url)
+            except httpx.RequestError as e:
+                logger.error(f"DocumentCrawler: HTTP RequestError fetching sitemap {sitemap_url}: {e}")
+            except httpx.HTTPStatusError as e:
+                 logger.error(f"DocumentCrawler: HTTP StatusError fetching sitemap {sitemap_url}: {e.response.status_code}")
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Generic error fetching/parsing sitemap {sitemap_url}: {e}")
+            return [], []
+
+
+        async def get_all_urls_from_sitemap_source(self, sitemap_source: str) -> List[str]:
+            """
+            Recursively fetches and parses a sitemap (or sitemap index) to get all unique page URLs.
+            """
+            all_page_urls: Set[str] = set()
+            sitemaps_to_process: asyncio.Queue[str] = asyncio.Queue()
+            await sitemaps_to_process.put(sitemap_source)
+            visited_sitemaps: Set[str] = set()
+
+            async with httpx.AsyncClient() as client:
+                processing_tasks = []
+                # Limit concurrent sitemap fetching/parsing to avoid overwhelming the target server
+                max_concurrent_sitemap_fetches = 5 
+
+                while True:
+                    current_batch_to_fetch = []
+                    while not sitemaps_to_process.empty() and len(current_batch_to_fetch) < max_concurrent_sitemap_fetches:
+                        s_url = await sitemaps_to_process.get()
+                        if s_url not in visited_sitemaps:
+                             current_batch_to_fetch.append(s_url)
+                        sitemaps_to_process.task_done() # Mark item as processed from queue immediately
+
+                    for s_url in current_batch_to_fetch:
+                         if s_url not in visited_sitemaps: # Double check, helpful with concurrency
+                            task = asyncio.create_task(self._fetch_and_parse_sitemap(s_url, visited_sitemaps, client))
+                            processing_tasks.append(task)
+                    
+                    if not processing_tasks and sitemaps_to_process.empty(): # No more tasks to create or process
+                        break
+
+                    if processing_tasks:
+                        done, pending = await asyncio.wait(processing_tasks, return_when=asyncio.FIRST_COMPLETED)
+                        processing_tasks = list(pending) # Update task list
+
+                        for task in done:
+                            try:
+                                page_urls, sub_sitemaps = await task
+                                for p_url in page_urls: all_page_urls.add(p_url)
+                                for sub_s in sub_sitemaps:
+                                    if sub_s not in visited_sitemaps: # Add to queue only if not yet visited
+                                        await sitemaps_to_process.put(sub_s)
+                            except Exception as e:
+                                logger.error(f"DocumentCrawler: Error processing a sitemap task result: {e}")
+                
+                # Ensure all queued items are processed if any tasks were created from the last batch
+                if not sitemaps_to_process.empty() and not processing_tasks: # If queue has items but no tasks running (e.g. last batch was small)
+                    #This will re-trigger the loop to process remaining items in queue
+                    pass 
+
+
+            logger.info(f"DocumentCrawler: Extracted {len(all_page_urls)} unique page URLs from sitemap source: {sitemap_source}")
+            return list(all_page_urls)
+
+
+        async def crawl_sitemap_urls(self, sitemap_url_or_list: Union[str, List[str]]) -> AsyncGenerator[WebCrawlerResult, None]:
+            """Crawls URLs from a provided list or extracted from a sitemap URL."""
+            urls_to_crawl: List[str]
+            if isinstance(sitemap_url_or_list, str): # It's a sitemap URL
+                urls_to_crawl = await self.get_all_urls_from_sitemap_source(sitemap_url_or_list)
+            elif isinstance(sitemap_url_or_list, list):
+                urls_to_crawl = sitemap_url_or_list
+            else:
+                err_msg = "sitemap_url_or_list must be a sitemap URL string or a list of URLs"
+                logger.error(f"DocumentCrawler: {err_msg}")
+                # Yield a single error result
+                yield WebCrawlerResult(url=str(sitemap_url_or_list), success=False, error_message=err_msg, title="Invalid Sitemap Source")
+                return
+
+            if not urls_to_crawl:
+                logger.info("DocumentCrawler: No URLs to crawl from sitemap/list.")
+                return
+
+            logger.info(f"DocumentCrawler: Starting batch crawl of {len(urls_to_crawl)} URLs.")
+            crawler = await self.get_crawler()
+            dispatcher = MemoryAdaptiveDispatcher(
+                max_session_permit=self.max_concurrent_crawlers,
+                memory_threshold_percent=75.0, # Example threshold
+                check_interval=1.0
+            )
+            try:
+                results_stream = crawler.arun_many( # arun_many returns an async generator
+                    urls=list(set(urls_to_crawl)), # Crawl unique URLs
+                    config=self.run_config,
+                    dispatcher=dispatcher
+                )
+                async for result in results_stream:
+                    yield result
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Error during arun_many for sitemap URLs: {e}", exc_info=True)
+                # Yield error results for remaining URLs or a general error?
+                # For now, just log and let it end. Individual errors are in result objects.
+            finally:
+                await self.close_crawler()
+```
+
+3.  **Modify `python/tools/web_crawler_tool.py`:**
+    *   The `_crawl_sitemap_urls` method in `WebCrawlerTool` will now correctly pass either a sitemap URL string or a list of URLs to `self.crawler.crawl_sitemap_urls`.
+
+    ```python
+# python/tools/web_crawler_tool.py
+    # ... (imports)
+
+    class WebCrawlerTool(Tool):
+        # ... (__init__, _emit_crawl_event, _process_and_ingest_crawled_doc, _crawl_site, _crawl_markdown_file_url)
+
+        async def _crawl_sitemap_urls(self, urls_or_sitemap_url: Union[str, List[str]], chunker_instance: HierarchicalChunker) -> ToolResponse:
+            action_name = "crawl_sitemap"
+            source_info_for_log = urls_or_sitemap_url if isinstance(urls_or_sitemap_url, str) else f"{len(urls_or_sitemap_url)} URLs provided"
+            await self._emit_crawl_event(action_name, "starting", {"source_info": source_info_for_log})
+            
+            total_chunks_ingested = 0
+            pages_processed_count = 0
+            try:
+                # DocumentCrawler.crawl_sitemap_urls now handles parsing if a sitemap URL string is given
+                async for crawl_result_obj in self.crawler.crawl_sitemap_urls(urls_or_sitemap_url):
+                    if crawl_result_obj.success:
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                        pages_processed_count += 1
+                    else:
+                        logger.warning(f"WebCrawlerTool: Failed to crawl URL from sitemap/list: {crawl_result_obj.url} - {crawl_result_obj.error_message}")
+                        await self._emit_crawl_event(action_name, "page_error", {"url": crawl_result_obj.url, "error": crawl_result_obj.error_message})
+                    
+                    # Periodic progress (consider total URLs if known from initial sitemap parse)
+                    # For now, just count processed pages
+                    if pages_processed_count > 0 and pages_processed_count % 10 == 0:
+                         await self._emit_crawl_event(action_name, "progress", {"processed_urls": pages_processed_count, "chunks_ingested_so_far": total_chunks_ingested})
+
+            except Exception as e:
+                logger.error(f"WebCrawlerTool: Error during sitemap crawl execution: {e}", exc_info=True)
+                await self._emit_crawl_event(action_name, "error", {"source_info": source_info_for_log, "error": str(e)})
+                return ToolResponse(message=f"Sitemap crawl failed: {str(e)}", error=True)
+
+            summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, prepared {total_chunks_ingested} chunks for ingestion."
+            await self._emit_crawl_event(action_name, "completed", {"processed_urls": pages_processed_count, "total_chunks_prepared": total_chunks_ingested})
+            return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_prepared": total_chunks_ingested})
+        
+        # In execute method:
+        # ...
+        # elif action == "crawl_sitemap":
+        #     sitemap_url_param = kwargs.get("sitemap_url")
+        #     urls_param = kwargs.get("urls") 
+        #     crawl_source = sitemap_url_param if sitemap_url_param else urls_param
+        #     if not crawl_source:
+        #         return ToolResponse("Error: 'sitemap_url' or 'urls' list is required for crawl_sitemap.", error=True)
+        #     return await self._crawl_sitemap_urls(crawl_source, chunker_instance)
+        # ...
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-44 completed.
+*   `crawl4ai` library installed and functional.
+*   `requests` and `httpx` for fetching sitemap files. `xml.etree.ElementTree` for parsing.
+
+**Integration with Agent Zero:**
+*   `DocumentCrawler` is now capable of thoroughly parsing sitemaps, including nested sitemap indexes, to compile a complete list of URLs.
+*   It then uses `crawl4ai`'s `arun_many` with a `MemoryAdaptiveDispatcher` to crawl these URLs efficiently and in parallel, respecting memory limits.
+*   The `WebCrawlerTool` orchestrates this, passing the sitemap URL or list of URLs to the crawler.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `requests`, `httpx`, and `lxml` (if chosen over `xml.etree.ElementTree` for robustness, though `ElementTree` is standard) are in `requirements.txt`.
+*   The Docker container needs network access to fetch sitemaps and crawl web pages.
+
+**Summary of Task 45:**
+This task significantly improves the `crawl_sitemap` action of the `WebCrawlerTool`. The `DocumentCrawler` can now robustly parse sitemap XML files, handle sitemap indexes (sitemaps linking to other sitemaps), and then efficiently batch-crawl all discovered URLs using `crawl4ai`'s parallel processing capabilities with a memory-adaptive dispatcher. This makes the tool much more effective for ingesting content from large websites that provide sitemaps.
+
+Please confirm to proceed.Okay, let's proceed with Task 45.
+
+## Task 45: `WebCrawlerTool` - Implement Robust Sitemap Parsing and Batched URL Crawling
+
+**Focus:**
+This task enhances the `crawl_sitemap` functionality within the `WebCrawlerTool` (specifically in `python/agents/web_crawler/crawler.py`). It involves:
+1.  Robustly parsing `sitemap.xml` files (including sitemap indexes that point to other sitemaps).
+2.  Efficiently crawling all discovered URLs from the sitemap(s) in batches using `crawl4ai`'s `arun_many` with a `MemoryAdaptiveDispatcher`.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `requests`, `lxml` (or `xml.etree.ElementTree`) are available (from Task 20/previous).** `lxml` is generally more robust for XML parsing. If not explicitly added, `requests` and `xml.etree.ElementTree` (standard library) can be used.
+
+2.  **Modify `python/agents/web_crawler/crawler.py` (`DocumentCrawler`):**
+    *   Update the `crawl_sitemap_urls` method to handle sitemap indexes and fetch/parse sitemaps to extract all URLs.
+    *   Use `AsyncWebCrawler.arun_many` with a `MemoryAdaptiveDispatcher` for efficient batch processing of the extracted URLs.
+
+    ```python
+    # python/agents/web_crawler/crawler.py
+    import asyncio
+    from typing import List, Dict, Any, AsyncGenerator, Optional, Set
+    from urllib.parse import urlparse, urldefrag, urljoin
+    import requests # For synchronous initial sitemap fetching
+    from xml.etree import ElementTree # Standard library for XML parsing
+    import httpx # For async requests (alternative for fetching sitemaps if preferred)
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, WebCrawlerResult, MemoryAdaptiveDispatcher
+        CRAWL4AI_AVAILABLE = True
+    except ImportError:
+        # ... (fallback classes as before) ...
+        CRAWL4AI_AVAILABLE = False
+        class MemoryAdaptiveDispatcher: # type: ignore
+            def __init__(self, *args, **kwargs): pass
+
+
+    class DocumentCrawler:
+        # ... (__init__, get_crawler, close_crawler, _fetch_single_url, crawl_recursive, crawl_markdown_file_url from Task 20/earlier)
+
+        async def _parse_sitemap_xml_content(self, xml_content: str, sitemap_url_base: str) -> Tuple[List[str], List[str]]:
+            """Parses XML content of a sitemap, returns URLs and sub-sitemap URLs."""
+            urls: List[str] = []
+            sub_sitemaps: List[str] = []
+            try:
+                root = ElementTree.fromstring(xml_content)
+                # Common namespace for sitemaps
+                namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+                
+                # Check for sitemapindex (pointing to other sitemaps)
+                for sitemap_loc_element in root.findall('.//ns:sitemap/ns:loc', namespace):
+                    if sitemap_loc_element.text:
+                        sub_sitemaps.append(urljoin(sitemap_url_base, sitemap_loc_element.text.strip()))
+                
+                # Extract regular URLs
+                for url_loc_element in root.findall('.//ns:url/ns:loc', namespace):
+                    if url_loc_element.text:
+                        urls.append(urljoin(sitemap_url_base, url_loc_element.text.strip()))
+            except ElementTree.ParseError as e:
+                logger.error(f"DocumentCrawler: XML ParseError for sitemap content from {sitemap_url_base}: {e}")
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Unexpected error parsing sitemap content from {sitemap_url_base}: {e}")
+            return urls, sub_sitemaps
+
+        async def _fetch_and_parse_sitemap(self, sitemap_url: str, visited_sitemaps: Set[str], client: httpx.AsyncClient) -> Tuple[List[str], List[str]]:
+            """Fetches a single sitemap URL and parses it, handling recursion for sitemap indexes."""
+            if sitemap_url in visited_sitemaps:
+                return [], []
+            visited_sitemaps.add(sitemap_url)
+            
+            logger.info(f"DocumentCrawler: Fetching sitemap: {sitemap_url}")
+            try:
+                # Using httpx for async fetching of sitemap XML
+                response = await client.get(sitemap_url, timeout=20.0, follow_redirects=True)
+                response.raise_for_status()
+                return await self._parse_sitemap_xml_content(response.text, sitemap_url)
+            except httpx.RequestError as e:
+                logger.error(f"DocumentCrawler: HTTP RequestError fetching sitemap {sitemap_url}: {e}")
+            except httpx.HTTPStatusError as e:
+                 logger.error(f"DocumentCrawler: HTTP StatusError fetching sitemap {sitemap_url}: {e.response.status_code}")
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Generic error fetching/parsing sitemap {sitemap_url}: {e}")
+            return [], []
+
+
+        async def get_all_urls_from_sitemap_source(self, sitemap_source: str) -> List[str]:
+            """
+            Recursively fetches and parses a sitemap (or sitemap index) to get all unique page URLs.
+            """
+            all_page_urls: Set[str] = set()
+            sitemaps_to_process: asyncio.Queue[str] = asyncio.Queue()
+            await sitemaps_to_process.put(sitemap_source)
+            visited_sitemaps: Set[str] = set()
+
+            async with httpx.AsyncClient() as client:
+                processing_tasks = []
+                # Limit concurrent sitemap fetching/parsing to avoid overwhelming the target server
+                max_concurrent_sitemap_fetches = 5 
+
+                while True:
+                    current_batch_to_fetch = []
+                    while not sitemaps_to_process.empty() and len(current_batch_to_fetch) < max_concurrent_sitemap_fetches:
+                        s_url = await sitemaps_to_process.get()
+                        if s_url not in visited_sitemaps:
+                             current_batch_to_fetch.append(s_url)
+                        sitemaps_to_process.task_done() # Mark item as processed from queue immediately
+
+                    for s_url in current_batch_to_fetch:
+                         if s_url not in visited_sitemaps: # Double check, helpful with concurrency
+                            task = asyncio.create_task(self._fetch_and_parse_sitemap(s_url, visited_sitemaps, client))
+                            processing_tasks.append(task)
+                    
+                    if not processing_tasks and sitemaps_to_process.empty(): # No more tasks to create or process
+                        break
+
+                    if processing_tasks:
+                        done, pending = await asyncio.wait(processing_tasks, return_when=asyncio.FIRST_COMPLETED)
+                        processing_tasks = list(pending) # Update task list
+
+                        for task in done:
+                            try:
+                                page_urls, sub_sitemaps = await task
+                                for p_url in page_urls: all_page_urls.add(p_url)
+                                for sub_s in sub_sitemaps:
+                                    if sub_s not in visited_sitemaps: # Add to queue only if not yet visited
+                                        await sitemaps_to_process.put(sub_s)
+                            except Exception as e:
+                                logger.error(f"DocumentCrawler: Error processing a sitemap task result: {e}")
+                
+                # Ensure all queued items are processed if any tasks were created from the last batch
+                if not sitemaps_to_process.empty() and not processing_tasks: # If queue has items but no tasks running (e.g. last batch was small)
+                    #This will re-trigger the loop to process remaining items in queue
+                    pass 
+
+
+            logger.info(f"DocumentCrawler: Extracted {len(all_page_urls)} unique page URLs from sitemap source: {sitemap_source}")
+            return list(all_page_urls)
+
+
+        async def crawl_sitemap_urls(self, sitemap_url_or_list: Union[str, List[str]]) -> AsyncGenerator[WebCrawlerResult, None]:
+            """Crawls URLs from a provided list or extracted from a sitemap URL."""
+            urls_to_crawl: List[str]
+            if isinstance(sitemap_url_or_list, str): # It's a sitemap URL
+                urls_to_crawl = await self.get_all_urls_from_sitemap_source(sitemap_url_or_list)
+            elif isinstance(sitemap_url_or_list, list):
+                urls_to_crawl = sitemap_url_or_list
+            else:
+                err_msg = "sitemap_url_or_list must be a sitemap URL string or a list of URLs"
+                logger.error(f"DocumentCrawler: {err_msg}")
+                # Yield a single error result
+                yield WebCrawlerResult(url=str(sitemap_url_or_list), success=False, error_message=err_msg, title="Invalid Sitemap Source")
+                return
+
+            if not urls_to_crawl:
+                logger.info("DocumentCrawler: No URLs to crawl from sitemap/list.")
+                return
+
+            logger.info(f"DocumentCrawler: Starting batch crawl of {len(urls_to_crawl)} URLs.")
+            crawler = await self.get_crawler()
+            dispatcher = MemoryAdaptiveDispatcher(
+                max_session_permit=self.max_concurrent_crawlers,
+                memory_threshold_percent=75.0, # Example threshold
+                check_interval=1.0
+            )
+            try:
+                results_stream = crawler.arun_many( # arun_many returns an async generator
+                    urls=list(set(urls_to_crawl)), # Crawl unique URLs
+                    config=self.run_config,
+                    dispatcher=dispatcher
+                )
+                async for result in results_stream:
+                    yield result
+            except Exception as e:
+                logger.error(f"DocumentCrawler: Error during arun_many for sitemap URLs: {e}", exc_info=True)
+                # Yield error results for remaining URLs or a general error?
+                # For now, just log and let it end. Individual errors are in result objects.
+            finally:
+                await self.close_crawler()
+    ```
+
+3.  **Modify `python/tools/web_crawler_tool.py`:**
+    *   The `_crawl_sitemap_urls` method in `WebCrawlerTool` will now correctly pass either a sitemap URL string or a list of URLs to `self.crawler.crawl_sitemap_urls`.
+
+    ```python
+    # python/tools/web_crawler_tool.py
+    # ... (imports)
+
+    class WebCrawlerTool(Tool):
+        # ... (__init__, _emit_crawl_event, _process_and_ingest_crawled_doc, _crawl_site, _crawl_markdown_file_url)
+
+        async def _crawl_sitemap_urls(self, urls_or_sitemap_url: Union[str, List[str]], chunker_instance: HierarchicalChunker) -> ToolResponse:
+            action_name = "crawl_sitemap"
+            source_info_for_log = urls_or_sitemap_url if isinstance(urls_or_sitemap_url, str) else f"{len(urls_or_sitemap_url)} URLs provided"
+            await self._emit_crawl_event(action_name, "starting", {"source_info": source_info_for_log})
+            
+            total_chunks_ingested = 0
+            pages_processed_count = 0
+            try:
+                # DocumentCrawler.crawl_sitemap_urls now handles parsing if a sitemap URL string is given
+                async for crawl_result_obj in self.crawler.crawl_sitemap_urls(urls_or_sitemap_url):
+                    if crawl_result_obj.success:
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                        pages_processed_count += 1
+                    else:
+                        logger.warning(f"WebCrawlerTool: Failed to crawl URL from sitemap/list: {crawl_result_obj.url} - {crawl_result_obj.error_message}")
+                        await self._emit_crawl_event(action_name, "page_error", {"url": crawl_result_obj.url, "error": crawl_result_obj.error_message})
+                    
+                    # Periodic progress (consider total URLs if known from initial sitemap parse)
+                    # For now, just count processed pages
+                    if pages_processed_count > 0 and pages_processed_count % 10 == 0:
+                         await self._emit_crawl_event(action_name, "progress", {"processed_urls": pages_processed_count, "chunks_ingested_so_far": total_chunks_ingested})
+
+            except Exception as e:
+                logger.error(f"WebCrawlerTool: Error during sitemap crawl execution: {e}", exc_info=True)
+                await self._emit_crawl_event(action_name, "error", {"source_info": source_info_for_log, "error": str(e)})
+                return ToolResponse(message=f"Sitemap crawl failed: {str(e)}", error=True)
+
+            summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, prepared {total_chunks_ingested} chunks for ingestion."
+            await self._emit_crawl_event(action_name, "completed", {"processed_urls": pages_processed_count, "total_chunks_prepared": total_chunks_ingested})
+            return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_prepared": total_chunks_ingested})
+        
+        # In execute method:
+        # ...
+        # elif action == "crawl_sitemap":
+        #     sitemap_url_param = kwargs.get("sitemap_url")
+        #     urls_param = kwargs.get("urls") 
+        #     crawl_source = sitemap_url_param if sitemap_url_param else urls_param
+        #     if not crawl_source:
+        #         return ToolResponse("Error: 'sitemap_url' or 'urls' list is required for crawl_sitemap.", error=True)
+        #     return await self._crawl_sitemap_urls(crawl_source, chunker_instance)
+        # ...
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-44 completed.
+*   `crawl4ai` library installed and functional.
+*   `requests` and `httpx` for fetching sitemap files. `xml.etree.ElementTree` for parsing.
+
+**Integration with Agent Zero:**
+*   `DocumentCrawler` is now capable of thoroughly parsing sitemaps, including nested sitemap indexes, to compile a complete list of URLs.
+*   It then uses `crawl4ai`'s `arun_many` with a `MemoryAdaptiveDispatcher` to crawl these URLs efficiently and in parallel, respecting memory limits.
+*   The `WebCrawlerTool` orchestrates this, passing the sitemap URL or list of URLs to the crawler.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `requests`, `httpx`, and `lxml` (if chosen over `xml.etree.ElementTree` for robustness, though `ElementTree` is standard) are in `requirements.txt`.
+*   The Docker container needs network access to fetch sitemaps and crawl web pages.
+
+**Summary of Task 45:**
+This task significantly improves the `crawl_sitemap` action of the `WebCrawlerTool`. The `DocumentCrawler` can now robustly parse sitemap XML files, handle sitemap indexes (sitemaps linking to other sitemaps), and then efficiently batch-crawl all discovered URLs using `crawl4ai`'s parallel processing capabilities with a memory-adaptive dispatcher. This makes the tool much more effective for ingesting content from large websites that provide sitemaps.
+
+Please confirm to proceed.
