@@ -1,0 +1,376 @@
+"""
+StreamProtocol Tool - AG-UI Protocol Integration for Agent Zero
+Provides standardized agent-frontend communication with real-time streaming
+Based on AG-UI Protocol specification and TypeScript SDK
+"""
+
+from python.helpers.tool import Tool # Existing Agent Zero helper
+from typing import Dict, Any, List, Optional, AsyncGenerator
+import asyncio
+import json
+import uuid
+from datetime import datetime
+from dataclasses import dataclass, field
+from enum import Enum
+
+class StreamEventType(Enum):
+    """16 standard AG-UI event types"""
+    TEXT_MESSAGE_CONTENT = "text_message_content"
+    TOOL_CALL_START = "tool_call_start"
+    TOOL_CALL_END = "tool_call_end"
+    STATE_DELTA = "state_delta"
+    AGENT_THOUGHT = "agent_thought"
+    HUMAN_INTERVENTION = "human_intervention"
+    GENERATIVE_UI = "generative_ui"
+    CONTEXT_UPDATE = "context_update"
+    PROGRESS_UPDATE = "progress_update"
+    ERROR_EVENT = "error_event"
+    SESSION_START = "session_start"
+    SESSION_END = "session_end"
+    MEMORY_UPDATE = "memory_update"
+    KNOWLEDGE_RESULT = "knowledge_result"
+    BROWSER_ACTION = "browser_action"
+    CRAWL_PROGRESS = "crawl_progress"
+
+@dataclass
+class RunAgentInput:
+    """AG-UI RunAgentInput schema"""
+    thread_id: str
+    messages: List[Dict[str, Any]]
+    state: Optional[Dict[str, Any]] = None
+    user_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+@dataclass 
+class StreamEvent:
+    """AG-UI compatible event structure"""
+    type: StreamEventType
+    payload: Dict[str, Any]
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    thread_id: Optional[str] = None
+    user_id: Optional[str] = None
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+class StreamTransport:
+    """Transport layer for AG-UI events"""
+    
+    def __init__(self):
+        self.connections = {}  # Stores active websocket connections
+        # self.event_handlers = {} # Placeholder for potential future server-side event handling
+        
+    async def emit_event(self, event: StreamEvent):
+        """Emit event to all connected clients relevant to the event's thread_id."""
+        event_data = {
+            "id": event.event_id,
+            "type": event.type.value,
+            "payload": event.payload,
+            "timestamp": event.timestamp,
+            "threadId": event.thread_id,
+            "userId": event.user_id
+        }
+        
+        connections_to_send = []
+        if event.thread_id:
+            for connection_id, connection_info in self.connections.items():
+                if connection_info.get("thread_id") == event.thread_id:
+                    connections_to_send.append(connection_info["websocket"])
+        
+        if not connections_to_send:
+            print(f"StreamTransport: No active connections found for thread_id {event.thread_id} to emit event {event.type.value}")
+            return
+
+        for ws in connections_to_send:
+            try:
+                await ws.send_text(json.dumps(event_data))
+            except Exception as e:
+                print(f"StreamTransport: Error sending event to a websocket: {e}")
+                # Potentially mark this websocket for removal or handle disconnection
+    
+    async def register_connection(self, websocket, thread_id: str, user_id: str = None):
+        """Register new websocket connection."""
+        connection_id = str(uuid.uuid4())
+        self.connections[connection_id] = {
+            "websocket": websocket,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow()
+        }
+        print(f"StreamTransport: Registered connection {connection_id} for thread {thread_id}")
+        return connection_id
+    
+    def unregister_connection(self, connection_id: str):
+        """Remove websocket connection."""
+        if connection_id in self.connections:
+            del self.connections[connection_id]
+            print(f"StreamTransport: Unregistered connection {connection_id}")
+
+class StreamProtocolTool(Tool):
+    """
+    StreamProtocol (AG-UI) integration for Agent Zero
+    Provides standardized agent-frontend communication with real-time streaming
+    """
+    
+    def __init__(self, agent, **kwargs):
+        super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+        # Note: The StreamTransport instance might be better managed globally or passed if multiple tools/agents need it.
+        # For now, each tool instance gets its own, which might not be intended for a shared transport.
+        # Let's assume for now it's per-agent context or needs a shared instance later.
+        # A shared transport instance should be initialized at a higher level (e.g., in run_ui.py) and passed around.
+        # For this task, we'll instantiate it here but acknowledge this might change.
+        if not hasattr(self.agent.context, 'stream_transport'):
+            self.agent.context.stream_transport = StreamTransport()
+        self.transport = self.agent.context.stream_transport
+        
+        self.active_threads = {} # This seems more like session management state, might belong elsewhere.
+        self.middleware_stack = []
+        
+    async def execute(self, action: str, **kwargs):
+        """
+        Execute StreamProtocol operations
+        
+        Args:
+            action (str): The specific action to perform (e.g., "emit_event", "handle_input").
+            **kwargs: Arguments specific to the action.
+        """
+        
+        # Ensure thread_id is available from agent context if not provided, stubbing for now
+        thread_id = kwargs.get("thread_id")
+        if not thread_id and hasattr(self.agent, 'get_thread_id'): # Placeholder for actual agent method
+             thread_id = self.agent.get_thread_id()
+
+
+        try:
+            if action == "emit_event":
+                # Required kwargs: event_type (str), payload (Dict)
+                # Optional kwargs: thread_id (str), user_id (str)
+                if "event_type" not in kwargs or "payload" not in kwargs:
+                    return self.agent_response("Missing 'event_type' or 'payload' for emit_event action.", error=True)
+                return await self._emit_event(**kwargs)
+            elif action == "handle_input":
+                # Required kwargs: input_data (Dict)
+                if "input_data" not in kwargs:
+                    return self.agent_response("Missing 'input_data' for handle_input action.", error=True)
+                return await self._handle_input(**kwargs)
+            elif action == "start_session":
+                # Required kwargs: thread_id (str)
+                # Optional kwargs: user_id (str), initial_state (Dict)
+                if "thread_id" not in kwargs:
+                    return self.agent_response("Missing 'thread_id' for start_session action.", error=True)
+                return await self._start_session(**kwargs)
+            elif action == "end_session":
+                # Required kwargs: thread_id (str)
+                if "thread_id" not in kwargs:
+                    return self.agent_response("Missing 'thread_id' for end_session action.", error=True)
+                return await self._end_session(**kwargs)
+            elif action == "update_state":
+                # Required kwargs: thread_id (str), state_delta (Dict)
+                if "thread_id" not in kwargs or "state_delta" not in kwargs:
+                    return self.agent_response("Missing 'thread_id' or 'state_delta' for update_state action.", error=True)
+                return await self._update_state(**kwargs)
+            elif action == "register_middleware":
+                # Required kwargs: middleware_func (callable)
+                if "middleware_func" not in kwargs:
+                    return self.agent_response("Missing 'middleware_func' for register_middleware action.", error=True)
+                return await self._register_middleware(**kwargs)
+            else:
+                return self.agent_response(f"Unknown StreamProtocol action: {action}", error=True)
+                
+        except Exception as e:
+            await self._emit_error_event(str(e), thread_id)
+            return self.agent_response(f"StreamProtocol error: {str(e)}", error=True)
+
+    async def _emit_event(self, event_type: str, payload: Dict[str, Any], 
+                         thread_id: str = None, user_id: str = None):
+        """Emit standardized event to frontend"""
+        try:
+            event_enum = StreamEventType(event_type)
+        except ValueError:
+            return self.agent_response(f"Invalid event type: {event_type}", error=True)
+        
+        # Ensure thread_id and user_id are sourced correctly if not provided
+        # These will depend on Agent Zero's context management, which will be enhanced in a later task.
+        current_thread_id = thread_id
+        if not current_thread_id and hasattr(self.agent, 'get_thread_id'):
+            current_thread_id = self.agent.get_thread_id()
+        
+        current_user_id = user_id
+        if not current_user_id and hasattr(self.agent, 'get_user_id'):
+            current_user_id = self.agent.get_user_id()
+
+        event = StreamEvent(
+            type=event_enum,
+            payload=payload,
+            thread_id=current_thread_id,
+            user_id=current_user_id
+        )
+        
+        for middleware in self.middleware_stack: # Apply middleware if any
+            event = await middleware(event)
+            if event is None:
+                return self.agent_response("Event filtered by middleware")
+        
+        await self.transport.emit_event(event)
+        
+        return self.agent_response({
+            "success": True,
+            "event_id": event.event_id,
+            "type": event_type,
+            "timestamp": event.timestamp
+        })
+    
+    async def _handle_input(self, input_data: Dict[str, Any]):
+        """Process incoming frontend input according to RunAgentInput schema"""
+        try:
+            run_input = RunAgentInput(
+                thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                messages=input_data.get("messages", []),
+                state=input_data.get("state", {}),
+                user_id=input_data.get("userId"),
+                metadata=input_data.get("metadata", {})
+            )
+            
+            # Agent context update logic will be added in a subsequent task
+            # For now, we'll just acknowledge the input
+            # await self._update_agent_context(run_input) # Placeholder
+            
+            if run_input.thread_id not in self.active_threads:
+                await self._emit_event_internal(
+                    StreamEventType.SESSION_START,
+                    {"threadId": run_input.thread_id, "userId": run_input.user_id},
+                    run_input.thread_id,
+                    run_input.user_id
+                )
+                self.active_threads[run_input.thread_id] = {
+                    "user_id": run_input.user_id,
+                    "state": run_input.state or {},
+                    "created_at": datetime.utcnow()
+                }
+            
+            # Process messages (simplified for now, actual agent processing in later task)
+            for message in run_input.messages:
+                await self._process_message(message, run_input.thread_id, run_input.user_id)
+            
+            return self.agent_response({
+                "success": True,
+                "thread_id": run_input.thread_id,
+                "messages_processed": len(run_input.messages)
+            })
+            
+        except Exception as e:
+            return self.agent_response(f"Input processing error: {str(e)}", error=True)
+
+    async def _process_message(self, message: Dict[str, Any], thread_id: str, user_id: Optional[str]):
+        """Process individual message from frontend (simplified)."""
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        
+        await self._emit_event_internal(
+            StreamEventType.TEXT_MESSAGE_CONTENT,
+            {
+                "role": role,
+                "content": f"Received: {content}", # Simplified echo for now
+                "messageId": message.get("id", str(uuid.uuid4()))
+            },
+            thread_id,
+            user_id
+        )
+        
+        if role == "user":
+            # Placeholder for actual agent processing logic to be added in a later task
+            # await self._trigger_agent_processing(content, thread_id, user_id)
+            print(f"StreamProtocolTool: Placeholder for triggering agent processing for content: '{content}' on thread {thread_id}")
+            pass
+
+
+    async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                             thread_id: Optional[str], user_id: Optional[str]):
+        """Internal helper to create and emit event, bypassing agent_response wrapper."""
+        event = StreamEvent(
+            type=event_type,
+            payload=payload,
+            thread_id=thread_id,
+            user_id=user_id
+        )
+        await self.transport.emit_event(event)
+
+    # Placeholder for methods that will depend on agent modifications
+    async def _update_agent_context(self, run_input: RunAgentInput):
+        print(f"StreamProtocolTool: Placeholder for _update_agent_context with {run_input}")
+        pass
+
+    async def _trigger_agent_processing(self, content: str, thread_id: str, user_id: Optional[str]):
+        print(f"StreamProtocolTool: Placeholder for _trigger_agent_processing with content '{content}'")
+        # This will eventually call self.agent.hist_add_user_message and self.agent.monologue
+        # and then emit events with the agent's thoughts and responses.
+        pass
+
+    async def _start_session(self, thread_id: str, user_id: str = None, 
+                           initial_state: Dict[str, Any] = None):
+        if thread_id in self.active_threads:
+            return self.agent_response(f"Session {thread_id} already active", error=True)
+        
+        self.active_threads[thread_id] = {
+            "user_id": user_id,
+            "state": initial_state or {},
+            "created_at": datetime.utcnow()
+        }
+        await self._emit_event_internal(
+            StreamEventType.SESSION_START,
+            {"threadId": thread_id, "userId": user_id, "initialState": initial_state},
+            thread_id, user_id
+        )
+        return self.agent_response({
+            "success": True, "thread_id": thread_id, "status": "session_started"
+        })
+
+    async def _end_session(self, thread_id: str):
+        if thread_id not in self.active_threads:
+            return self.agent_response(f"Session {thread_id} not found", error=True)
+        session_info = self.active_threads.pop(thread_id)
+        await self._emit_event_internal(
+            StreamEventType.SESSION_END,
+            {"threadId": thread_id, "duration": (datetime.utcnow() - session_info["created_at"]).total_seconds()},
+            thread_id, session_info.get("user_id")
+        )
+        return self.agent_response({
+            "success": True, "thread_id": thread_id, "status": "session_ended"
+        })
+
+    async def _update_state(self, thread_id: str, state_delta: Dict[str, Any]):
+        if thread_id not in self.active_threads:
+            return self.agent_response(f"Session {thread_id} not found", error=True)
+        current_state = self.active_threads[thread_id]["state"]
+        current_state.update(state_delta)
+        await self._emit_event_internal(
+            StreamEventType.STATE_DELTA,
+            {"delta": state_delta, "fullState": current_state},
+            thread_id, self.active_threads[thread_id].get("user_id")
+        )
+        return self.agent_response({
+            "success": True, "thread_id": thread_id, "updated_state": current_state
+        })
+
+    async def _register_middleware(self, middleware_func: callable):
+        self.middleware_stack.append(middleware_func)
+        return self.agent_response({
+            "success": True, "middleware_count": len(self.middleware_stack)
+        })
+
+    async def _emit_error_event(self, error_message: str, thread_id: str = None):
+        # Ensure thread_id is available, similar to _emit_event
+        current_thread_id = thread_id
+        if not current_thread_id and hasattr(self.agent, 'get_thread_id'):
+             current_thread_id = self.agent.get_thread_id()
+
+        await self._emit_event_internal(
+            StreamEventType.ERROR_EVENT,
+            {"error": error_message, "timestamp": datetime.utcnow().isoformat()},
+            current_thread_id,
+            None
+        )
+        
+    def agent_response(self, message_content: Any, error: bool = False) -> Dict[str, Any]:
+        """Helper to format tool responses consistently."""
+        if error:
+            return {"error": str(message_content)}
+        return {"result": message_content}
