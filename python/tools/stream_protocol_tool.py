@@ -7,6 +7,7 @@ Based on AG-UI Protocol specification and TypeScript SDK
 from python.helpers.tool import Tool  # Existing Agent Zero helper
 from typing import Dict, Any, List, Optional
 import asyncio
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -53,34 +54,65 @@ class StreamEvent:
 
 class StreamTransport:
     """
-    Placeholder for AG-UI event transport.
-    Actual WebSocket management will be handled at the server/application level.
+    Transport layer for AG-UI events. Manages active WebSocket connections.
+    An instance of this class should be globally available in the application.
     """
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(StreamTransport, cls).__new__(cls)
-            print("StreamTransport: Global instance created.")
-        return cls._instance
-
+    def __init__(self):
+        self.connections: Dict[str, Dict[str, Any]] = {}  # connection_id -> {"websocket": ws, "thread_id": str, "user_id": str}
+        self.lock = asyncio.Lock()  # To protect access to self.connections
+        print("StreamTransport: Instance created.")
+        
     async def emit_event(self, event: StreamEvent):
-        """Placeholder for emitting an event. In a real setup, this would send to WebSockets."""
-        event_data = {
+        """Emit event to all connected clients relevant to the event's thread_id."""
+        event_data_str = json.dumps({
             "id": event.event_id,
             "type": event.type.value,
             "payload": event.payload,
             "timestamp": event.timestamp,
             "threadId": event.thread_id,
             "userId": event.user_id
-        }
-        # For now, just print the event that would be sent.
-        # Later, this will interface with the actual WebSocket sending mechanism.
-        print(f"StreamTransport (Placeholder): Emitting Event: {json.dumps(event_data, indent=2)}")
-        # In a real scenario:
-        # relevant_websockets = self.get_connections_for_thread(event.thread_id)
-        # for ws in relevant_websockets:
-        #     await ws.send_text(json.dumps(event_data))
+        })
+        
+        connections_to_send = []
+        async with self.lock:
+            for conn_id, conn_info in self.connections.items():
+                if conn_info.get("thread_id") == event.thread_id:
+                    connections_to_send.append(conn_info["websocket"])
+        
+        if not connections_to_send:
+            print(f"StreamTransport: No active connections for thread_id {event.thread_id} to emit event {event.type.value}")
+            return
+
+        for ws in connections_to_send:
+            try:
+                if not hasattr(ws, 'closed') or not ws.closed:
+                    await ws.send(event_data_str)  # Use send() for flask-sock
+                else:
+                    print(f"StreamTransport: WebSocket for thread {event.thread_id} was closed. Cannot send event.")
+                    # Consider removing closed WebSockets from self.connections here or during unregister.
+            except Exception as e:
+                print(f"StreamTransport: Error sending event to WebSocket for thread {event.thread_id}: {e}")
+                # Consider removing this WebSocket or handling disconnection.
+    
+    async def register_connection(self, websocket, thread_id: str, user_id: Optional[str] = None) -> str:
+        """Register new websocket connection."""
+        connection_id = str(uuid.uuid4())
+        async with self.lock:
+            self.connections[connection_id] = {
+                "websocket": websocket,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "created_at": datetime.utcnow()
+            }
+        print(f"StreamTransport: Registered WS connection {connection_id} for thread {thread_id}")
+        return connection_id
+    
+    async def unregister_connection(self, connection_id: str):
+        """Remove websocket connection."""
+        async with self.lock:
+            if connection_id in self.connections:
+                del self.connections[connection_id]
+                print(f"StreamTransport: Unregistered WS connection {connection_id}")
 
 class StreamProtocolTool(Tool):
     """
@@ -90,10 +122,20 @@ class StreamProtocolTool(Tool):
     
     def __init__(self, agent, **kwargs):
         super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
-        self.transport = StreamTransport()  # Access the global/singleton instance
-        self.active_threads: Dict[str, Dict[str, Any]] = {}  # Manages session state per thread_id for this tool instance
+        # Access the globally managed StreamTransport instance (e.g., from Flask app context)
+        # This assumes run_ui.py sets app.stream_transport or uses a global registry
+        transport_instance = agent.context.custom_data.get('stream_transport')
+        if not transport_instance:
+            # Fallback: use singleton pattern if app context not available
+            if not hasattr(StreamTransport, '_global_instance'):
+                StreamTransport._global_instance = StreamTransport()
+            transport_instance = StreamTransport._global_instance
+            agent.context.custom_data['stream_transport'] = transport_instance
+        
+        self.transport: StreamTransport = transport_instance
+        self.active_threads: Dict[str, Dict[str, Any]] = {} 
         self.middleware_stack: List[callable] = []
-        print(f"StreamProtocolTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+        print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using shared StreamTransport.")
         
     async def execute(self, action: str, **kwargs):
         """

@@ -117,6 +117,15 @@ class AgentContext:
         if id in cls._instances:
             del cls._instances[id]
             print(f"AgentContext {id} removed")
+    
+    def set_custom_data(self, key: str, value: Any):
+        """Set custom data for the context"""
+        self.custom_data[key] = value
+        print(f"AgentContext {self.id} set custom_data['{key}']")
+    
+    def get_custom_data(self, key: str, default: Any = None) -> Any:
+        """Get custom data from the context"""
+        return self.custom_data.get(key, default)
 
 class Agent:
     """Enhanced Agent class with StreamProtocol support"""

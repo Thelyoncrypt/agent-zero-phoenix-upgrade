@@ -1,0 +1,6 @@
+# Agent Zero Requirements with StreamProtocol enhancements
+flask>=2.0.0
+flask-sock>=0.6.0
+a2wsgi
+werkzeug
+asyncio
