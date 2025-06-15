@@ -5,17 +5,52 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from datetime import datetime
 
+# Import StreamProtocol components for event emission
+try:
+    from python.tools.stream_protocol_tool import StreamProtocolTool, StreamEventType
+    STREAM_PROTOCOL_AVAILABLE = True
+except ImportError:
+    STREAM_PROTOCOL_AVAILABLE = False
+    StreamProtocolTool = None
+    StreamEventType = None
+
 # Placeholder imports - these would come from actual Agent Zero codebase
+class LogEntry:
+    def __init__(self, log_id: str, log_type: str, heading: str, content: str):
+        self.id = log_id
+        self.type = log_type
+        self.heading = heading
+        self.content = content
+    
+    def update(self, content: str):
+        self.content = content
+        print(f"Log entry {self.id} updated: {content[:100]}...")
+
 class Log:
     def __init__(self, context_id: str):
         self.context_id = context_id
+        self.entries = {}
         print(f"Log initialized for context {context_id}")
+    
+    def set_progress(self, message: str):
+        print(f"Progress: {message}")
+    
+    def log(self, type: str, heading: str, content: str) -> LogEntry:
+        log_id = str(uuid.uuid4())
+        entry = LogEntry(log_id, type, heading, content)
+        self.entries[log_id] = entry
+        print(f"Log entry created: {heading} - {content[:100]}...")
+        return entry
 
 class History:
     def __init__(self, context):
         self.context = context
         self.messages = []
         print(f"History initialized for context {context.id}")
+    
+    def add_message(self, role: str, message):
+        self.messages.append((role, message))
+        print(f"History: Added {role} message: {getattr(message, 'message', str(message))[:100]}...")
 
 @dataclass
 class AgentConfig:
@@ -58,8 +93,8 @@ class AgentContext:
                  thread_id: Optional[str] = None, user_id: Optional[str] = None):
         self.id: str = id or str(uuid.uuid4())
         self.name: str = name or "New Chat"
-        self.log: Log = Log(self.id)
         self.config: AgentConfig = settings.get_agent_config()
+        self.log: Log = Log(self.id)
         self.history: History = History(self)
         self.agent0: Optional['Agent'] = None
         self.streaming_agent: Optional['Agent'] = None
@@ -136,6 +171,9 @@ class Agent:
         self.context = context
         self.tools = []
         self.knowledge = None
+        self.iteration_no = 0
+        self.last_tool_was_response_tool = False
+        self._stream_protocol_tool_instance = None
         print(f"Agent initialized: {agent_name} (id: {agent_id}, context: {context.id})")
 
     def get_thread_id(self) -> Optional[str]:
@@ -171,60 +209,244 @@ class Agent:
         """
         Processes a message received via the StreamProtocol, adds it to history,
         and triggers the agent's monologue if it's a user message.
+        Enhanced with StreamProtocol event emission.
         """
         print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) processing streamed message: Role='{role}', Content='{content[:100]}...'")
+        
+        # Emit event that user message was received by the agent logic
+        await self._emit_stream_event(
+            StreamEventType.CONTEXT_UPDATE if STREAM_PROTOCOL_AVAILABLE else "context_update",
+            {"role": role, "content": content, "status": "processing_started"}
+        )
+
         if role.lower() == "user":
             user_message = UserMessage(message=content, attachments=attachments or [])
             self.hist_add_user_message(user_message)
             
-            # Trigger monologue for the agent to respond
-            # The monologue will eventually use StreamProtocolTool to emit its thoughts/responses
-            return await self.monologue()
+            # Trigger monologue which will emit its own events
+            final_agent_response_text = await self.monologue()
+            
+            # If monologue doesn't end with 'response' tool, emit the response here
+            if final_agent_response_text and not self.last_tool_was_response_tool:
+                await self._emit_stream_event(
+                    StreamEventType.TEXT_MESSAGE_CONTENT if STREAM_PROTOCOL_AVAILABLE else "text_message_content",
+                    {"role": "assistant", "content": final_agent_response_text}
+                )
+            
+            # Reset the flag for next interaction
+            self.last_tool_was_response_tool = False
+            return final_agent_response_text
         else:
-            # Handle other roles if necessary (e.g., system messages via stream)
-            # For now, we primarily expect 'user' role to trigger agent action.
             print(f"Agent {self.agent_name} received non-user streamed message (role: {role}), not triggering monologue.")
             return None
 
     def hist_add_user_message(self, message: UserMessage):
         """Add user message to history"""
-        self.context.history.messages.append(("user", message))
+        self.context.history.add_message("user", message)
         print(f"Agent {self.agent_name} added user message to history: {message.message[:100]}...")
 
     def hist_add_ai_message(self, message: AIMessage):
         """Add AI message to history"""
-        self.context.history.messages.append(("assistant", message))
+        self.context.history.add_message("assistant", message)
         print(f"Agent {self.agent_name} added AI message to history: {message.message[:100]}...")
 
-    async def monologue(self):
+    async def _get_stream_protocol_tool(self) -> Optional['StreamProtocolTool']:
+        """Helper to get or create an instance of StreamProtocolTool."""
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return None
+            
+        if not self._stream_protocol_tool_instance:
+            try:
+                self._stream_protocol_tool_instance = StreamProtocolTool(self)
+            except Exception as e:
+                print(f"Agent {self.agent_name}: Failed to initialize StreamProtocolTool: {e}")
+                return None
+        return self._stream_protocol_tool_instance
+
+    async def _emit_stream_event(self, event_type, payload: Dict[str, Any]):
+        """Convenience method for emitting stream events."""
+        if not STREAM_PROTOCOL_AVAILABLE:
+            print(f"Agent {self.agent_name}: StreamProtocol not available, skipping event {event_type}")
+            return
+            
+        try:
+            tool = await self._get_stream_protocol_tool()
+            if tool:
+                await tool.execute(
+                    action="emit_event", 
+                    event_type=event_type.value if hasattr(event_type, 'value') else str(event_type),
+                    payload=payload,
+                    thread_id=self.get_thread_id(),
+                    user_id=self.get_user_id()
+                )
+        except Exception as e:
+            print(f"Agent {self.agent_name}: Error emitting stream event {event_type}: {e}")
+
+    async def monologue(self) -> Optional[str]:
         """
-        Agent's main reasoning loop - placeholder for actual implementation.
-        This would normally handle the agent's thought process and tool usage.
+        Agent's main reasoning loop with StreamProtocol event emission.
+        This handles the agent's thought process and tool usage with full event streaming.
         """
         print(f"Agent {self.agent_name} entering monologue...")
-        # Placeholder implementation
-        # In real Agent Zero, this would:
-        # 1. Get response from LLM
-        # 2. Extract and execute tool calls
-        # 3. Emit events via StreamProtocolTool
-        # 4. Continue until task complete
+        self.iteration_no = 0
         
-        # For now, just echo back
-        response = AIMessage(message="I received your message and I'm processing it.")
-        self.hist_add_ai_message(response)
-        return response
+        # Emit an initial thought
+        await self._emit_stream_event(
+            StreamEventType.AGENT_THOUGHT if STREAM_PROTOCOL_AVAILABLE else "agent_thought",
+            {"content": "Starting to process the request."}
+        )
 
-    async def _get_response(self, prompt: str) -> str:
-        """Get response from LLM - placeholder"""
+        max_iterations = 10  # Prevent infinite loops
+        while self.iteration_no < max_iterations:
+            self.iteration_no += 1
+            
+            # Emit a general "thinking" thought before LLM call in each iteration
+            await self._emit_stream_event(
+                StreamEventType.AGENT_THOUGHT if STREAM_PROTOCOL_AVAILABLE else "agent_thought",
+                {"content": f"Iteration {self.iteration_no}: Preparing to analyze the request."}
+            )
+
+            # Simulate getting response from LLM
+            response_json = await self._get_response(f"Processing user request (iteration {self.iteration_no})")
+            
+            if not response_json:
+                await self._emit_stream_event(
+                    StreamEventType.ERROR_EVENT if STREAM_PROTOCOL_AVAILABLE else "error_event",
+                    {"error": "LLM did not return a valid response."}
+                )
+                break
+            
+            # Extract thoughts from response_json and emit them
+            agent_thoughts = response_json.get("thoughts", [])
+            if isinstance(agent_thoughts, list) and agent_thoughts:
+                for thought in agent_thoughts:
+                    await self._emit_stream_event(
+                        StreamEventType.AGENT_THOUGHT if STREAM_PROTOCOL_AVAILABLE else "agent_thought",
+                        {"content": thought}
+                    )
+            elif isinstance(agent_thoughts, str) and agent_thoughts:
+                await self._emit_stream_event(
+                    StreamEventType.AGENT_THOUGHT if STREAM_PROTOCOL_AVAILABLE else "agent_thought",
+                    {"content": agent_thoughts}
+                )
+
+            # Extract tool information from response
+            tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+            
+            if tool_name:
+                # Emit TOOL_CALL_START before execution
+                await self._emit_stream_event(
+                    StreamEventType.TOOL_CALL_START if STREAM_PROTOCOL_AVAILABLE else "tool_call_start",
+                    {"tool_name": tool_name, "tool_args": tool_args}
+                )
+                
+                # Simulate tool execution
+                tool_response = await self._call_tool(tool_name, tool_args, tool_message)
+                
+                # Emit TOOL_CALL_END after execution
+                await self._emit_stream_event(
+                    StreamEventType.TOOL_CALL_END if STREAM_PROTOCOL_AVAILABLE else "tool_call_end",
+                    {
+                        "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "result": tool_response.get("message") if tool_response else None,
+                        "error": tool_response.get("error") if tool_response else None
+                    }
+                )
+
+                if tool_response and tool_response.get("break_loop"):
+                    # If it's the 'response' tool (or any tool that breaks loop and provides final answer)
+                    if tool_name == "response" and tool_response.get("message"):
+                        self.last_tool_was_response_tool = True
+                        await self._emit_stream_event(
+                            StreamEventType.TEXT_MESSAGE_CONTENT if STREAM_PROTOCOL_AVAILABLE else "text_message_content",
+                            {"role": "assistant", "content": tool_response["message"]}
+                        )
+                        await self._emit_stream_event(
+                            StreamEventType.PROGRESS_UPDATE if STREAM_PROTOCOL_AVAILABLE else "progress_update",
+                            {"status": "completed", "reason": "Final response provided by agent."}
+                        )
+                        return tool_response["message"]
+            else:
+                # No tool needed, provide direct response
+                response_text = response_json.get("response", "I understand your request and I'm working on it.")
+                
+                # Emit final response
+                await self._emit_stream_event(
+                    StreamEventType.TEXT_MESSAGE_CONTENT if STREAM_PROTOCOL_AVAILABLE else "text_message_content",
+                    {"role": "assistant", "content": response_text}
+                )
+                
+                response = AIMessage(message=response_text)
+                self.hist_add_ai_message(response)
+                return response_text
+
+        # If monologue loop finishes without completion
+        await self._emit_stream_event(
+            StreamEventType.STATE_DELTA if STREAM_PROTOCOL_AVAILABLE else "state_delta",
+            {"status": "idle", "message": "Agent has completed processing or reached iteration limit."}
+        )
+        return "I've processed your request to the best of my ability."
+
+    async def _get_response(self, prompt: str) -> Dict[str, Any]:
+        """Get response from LLM - enhanced placeholder with structured response"""
         print(f"Agent {self.agent_name} getting LLM response for prompt: {prompt[:100]}...")
-        return "This is a placeholder LLM response."
+        
+        # Simulate a structured LLM response with thoughts and potential tool calls
+        if "iteration 1" in prompt.lower():
+            return {
+                "thoughts": ["I need to understand what the user is asking for.", "Let me analyze their request carefully."],
+                "tool_name": "analyze",
+                "tool_args": {"query": prompt},
+                "response": "I'm analyzing your request."
+            }
+        elif "iteration" in prompt.lower():
+            return {
+                "thoughts": ["Based on my analysis, I can now provide a helpful response."],
+                "tool_name": "response", 
+                "tool_args": {"text": "I've processed your request and here's my response."},
+                "response": "I've processed your request and here's my response."
+            }
+        else:
+            return {
+                "thoughts": ["Processing the user's message."],
+                "response": "I understand and I'm here to help."
+            }
 
-    async def _extract_and_call_tool(self, response: str) -> Optional[Dict[str, Any]]:
-        """Extract and execute tool calls - placeholder"""
-        print(f"Agent {self.agent_name} checking for tool calls in response...")
-        return None
+    def _extract_tool_from_response(self, response_json: Dict[str, Any]) -> tuple:
+        """Extract tool information from LLM response"""
+        tool_name = response_json.get("tool_name")
+        tool_args = response_json.get("tool_args", {})
+        tool_message = response_json.get("response", "")
+        return tool_name, tool_args, tool_message
+    
+    async def _call_tool(self, tool_name: str, tool_args: Dict[str, Any], tool_message: str) -> Dict[str, Any]:
+        """Execute a tool call - enhanced placeholder"""
+        print(f"Agent {self.agent_name} calling tool '{tool_name}' with args: {tool_args}")
+        
+        # Simulate different tool responses
+        if tool_name == "response":
+            return {
+                "message": tool_args.get("text", "Default response"),
+                "break_loop": True
+            }
+        elif tool_name == "analyze":
+            return {
+                "message": f"Analysis complete for: {tool_args.get('query', 'unknown')}",
+                "break_loop": False
+            }
+        else:
+            return {
+                "message": f"Tool {tool_name} executed successfully",
+                "break_loop": False
+            }
 
     def add_tool(self, tool):
         """Add a tool to the agent"""
         self.tools.append(tool)
         print(f"Agent {self.agent_name} added tool: {tool.name if hasattr(tool, 'name') else tool}")
+    
+    async def _extract_and_call_tool(self, response: str) -> Optional[Dict[str, Any]]:
+        """Extract and execute tool calls - placeholder for compatibility"""
+        print(f"Agent {self.agent_name} checking for tool calls in response...")
+        return None

@@ -9,6 +9,7 @@ class Response:
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    break_loop: bool = False
 
 class Tool:
     """Base class for all Agent Zero tools"""
