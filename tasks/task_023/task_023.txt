@@ -1,0 +1,418 @@
+## Task 23: Implement Real Logic for `BrowserAgentTool` - AI-driven `extract` Action
+
+**Focus:**
+This task implements the AI-driven `extract` functionality in `BrowserAgentTool`. It will involve:
+1.  Taking natural language instructions and an optional JSON schema.
+2.  Using an LLM (e.g., OpenAI) to extract structured data from the current page's content based on the instructions and schema.
+3.  The `ActionExecutor` in `python/agents/browser_agent/actions.py` will house this logic.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/browser_agent/actions.py`:**
+    *   Update `ActionExecutor.extract_data` to:
+        *   Fetch the relevant content from the Playwright `Page` (e.g., main content area, or full HTML if necessary). A simplified approach for now will be to get a summary or a specific part of the page.
+        *   Make an LLM call, providing the page content, extraction instruction, and schema.
+        *   Parse the LLM's JSON response containing the extracted data.
+
+    ```python
+# python/agents/browser_agent/actions.py
+    import asyncio
+    from typing import Dict, Any, Optional, List
+    from playwright.async_api import Page as PWPage, PlaywrightError
+    import json
+    import os
+    from openai import OpenAI, APIError, RateLimitError # Assuming OpenAI for extraction LLM
+    # ... (dotenv and Path imports if needed, should be there from previous task)
+
+    # New System Prompt for Data Extraction
+    DATA_EXTRACTION_SYSTEM_PROMPT = """
+    You are an expert at extracting structured information from web page content based on a user's instruction and an optional JSON schema.
+    You will be given a summary of the web page content, the user's instruction for what to extract, and a JSON schema defining the desired output format.
+    Your goal is to populate the JSON schema with information extracted from the page content according to the instruction.
+    If a schema is not provided, attempt to extract the information as a reasonably structured JSON object based on the instruction.
+    Focus only on the provided page content. If information is not present in the content, indicate this appropriately (e.g., null values or empty strings in the JSON).
+    Output ONLY the populated JSON object. Do not include any other text, explanations, or markdown formatting around the JSON.
+    If the page content is too limited or irrelevant to the instruction, return an empty JSON object or an object indicating no data found.
+    """
+
+    class ActionExecutor:
+        def __init__(self):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini") # Or a model specified for extraction
+            if not self.api_key:
+                raise ValueError("OpenAI API key required for ActionExecutor.")
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"ActionExecutor: Initialized with OpenAI model '{self.llm_model}' for actions and extractions.")
+
+        # ... (_translate_instruction_to_action method from Task 22)
+        # ... (execute_ai_action method from Task 22)
+
+        async def _get_simplified_page_content_for_llm(self, page: PWPage, max_chars: int = 4000) -> str:
+            """
+            Attempts to get a summarized or relevant portion of the page content for the LLM.
+            This is a simplified version. Stagehand/Crawl4AI have more sophisticated methods.
+            """
+            try:
+                # Try to get main content areas first
+                main_content_selectors = ["article", "main", "[role='main']", "body"] # Add more as needed
+                content = ""
+                for selector in main_content_selectors:
+                    try:
+                        element = page.locator(selector).first
+                        await element.wait_for(state="attached", timeout=1000) # Wait briefly for element
+                        content = await element.inner_text(timeout=2000) # Get text content
+                        if content and content.strip():
+                            print(f"ActionExecutor: Extracted content from selector '{selector}'. Length: {len(content)}")
+                            break 
+                    except PlaywrightError: # Element not found or timeout
+                        continue
+                    except Exception: # Other errors
+                        continue
+                
+                if not content or not content.strip(): # Fallback to full page text if main content is empty
+                    print("ActionExecutor: Main content selectors yielded no text, falling back to body's inner text.")
+                    content = await page.locator("body").inner_text(timeout=3000)
+
+                # Clean up excessive newlines and whitespace
+                content = re.sub(r'\s\s+', ' ', content.replace('\n', ' ')).strip()
+                
+                if len(content) > max_chars:
+                    print(f"ActionExecutor: Page content for LLM truncated from {len(content)} to {max_chars} chars.")
+                    return content[:max_chars] + "..."
+                return content if content.strip() else "Page content seems to be empty or primarily non-textual."
+            except Exception as e:
+                print(f"ActionExecutor: Error getting simplified page content: {e}")
+                return f"Error extracting page content: {e}"
+
+
+        async def extract_data(self, page: PWPage, instructions: str, schema: Optional[Dict] = None) -> Dict[str, Any]:
+            print(f"ActionExecutor: Attempting data extraction from {page.url}. Instruction: '{instructions[:100]}...'")
+            
+            page_content_summary = await self._get_simplified_page_content_for_llm(page)
+            
+            if "Error extracting page content" in page_content_summary or \
+               "Page content seems to be empty" in page_content_summary:
+                return {"status": "error", "message": "Could not retrieve sufficient page content for extraction.", "extracted_data": {}}
+
+            prompt_parts = [
+                f"Web Page Content Summary:\n---\n{page_content_summary}\n---\n",
+                f"User Instruction for Extraction: {instructions}\n"
+            ]
+            if schema:
+                prompt_parts.append(f"Desired JSON Schema:\n
+```json\n{json.dumps(schema, indent=2)}\n```
+\n")
+            else:
+                prompt_parts.append("No specific JSON schema provided. Extract into a logical JSON structure.\n")
+            
+            prompt_parts.append("Your task is to populate the JSON based on the instruction and page content. Output only the JSON object.")
+            
+            full_prompt = "".join(prompt_parts)
+
+            messages = [
+                {"role": "system", "content": DATA_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": full_prompt}
+            ]
+
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.llm_client.chat.completions.create,
+                        model=self.llm_model, # Or a model fine-tuned for JSON extraction
+                        messages=messages,
+                        response_format={"type": "json_object"}, # Request JSON
+                        temperature=0.0 # For deterministic extraction
+                    )
+                    extracted_json_str = response.choices[0].message.content
+                    extracted_data = json.loads(extracted_json_str)
+                    print(f"ActionExecutor: Successfully extracted data: {json.dumps(extracted_data, indent=2)}")
+                    return {"status": "success", "extracted_data": extracted_data, "schema_used": bool(schema)}
+                except json.JSONDecodeError:
+                    print(f"ActionExecutor: LLM returned invalid JSON for extraction (attempt {attempt+1}): {extracted_json_str}")
+                    if attempt == max_retries -1 : 
+                        return {"status": "error", "message": "LLM failed to return valid JSON for extraction.", "raw_output": extracted_json_str}
+                except RateLimitError as rle:
+                    wait_time = (2 ** attempt) + np.random.rand()
+                    print(f"ActionExecutor (Extract LLM): Rate limit (attempt {attempt+1}/{max_retries}). Retrying in {wait_time:.2f}s. Error: {rle}")
+                    await asyncio.sleep(wait_time)
+                except APIError as apie:
+                    print(f"ActionExecutor (Extract LLM): APIError (attempt {attempt+1}/{max_retries}): {apie}.")
+                    if attempt == max_retries -1:
+                        return {"status": "error", "message": f"OpenAI APIError during extraction: {str(apie)}"}
+                except Exception as e:
+                    print(f"ActionExecutor: Unexpected error during data extraction LLM call (attempt {attempt+1}): {e}")
+                    if attempt == max_retries -1:
+                        return {"status": "error", "message": f"Unexpected error during extraction: {str(e)}"}
+                
+                if attempt < max_retries -1: # If not the last attempt, wait before retrying
+                    await asyncio.sleep((2**attempt) + np.random.rand())
+
+
+            return {"status": "error", "message": "Failed to extract data after multiple attempts."}
+```
+    **Key changes in `ActionExecutor.extract_data`:**
+    *   `_get_simplified_page_content_for_llm`: A new helper (very basic for now) to get text content from the page. Real Stagehand/Crawl4AI would use more sophisticated methods (e.g., readability scores, main content extraction, or even rendering the page to an image/text representation for multimodal models).
+    *   An LLM call is made with a system prompt instructing it to extract data into JSON, using the page content, user instruction, and schema.
+    *   `response_format={"type": "json_object"}` is used if the OpenAI model supports it (like gpt-4o-mini, gpt-4-turbo).
+    *   Basic error handling for JSON parsing and API errors.
+
+2.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   The `_extract` method should correctly call the updated `ActionExecutor.extract_data`. No significant changes should be needed here if the `ActionExecutor`'s interface was maintained.
+
+    ```python
+# python/tools/browser_agent_tool.py
+    # ... (imports and __init__ as in Task 12)
+
+    class BrowserAgentTool(Tool):
+        # ... (get_browser_manager, __init__, _emit_browser_event, execute, _navigate, _ai_act methods)
+
+        async def _extract(self, instructions: str, schema: Optional[Dict], session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("extract_data", "processing", {"instructions": instructions, "schema_provided": bool(schema), "session_id": session_id, "page_index": page_index})
+
+            page = await self.browser_manager.get_page(session_id, page_index) # Get the Playwright Page
+            
+            # ActionExecutor.extract_data now contains the real logic
+            extract_result_dict = await self.action_executor.extract_data(page, instructions, schema) 
+            
+            await self._emit_browser_event("extract_data", "completed", {"result_status": extract_result_dict.get("status"), "session_id": session_id, "page_index": page_index})
+            
+            if extract_result_dict.get("status") == "success":
+                return ToolResponse(message="Data extracted successfully.", data=extract_result_dict.get("extracted_data"))
+            else:
+                return ToolResponse(message=extract_result_dict.get("message", "Data extraction failed."), error=True, data=extract_result_dict)
+
+        # ... (_agent_execute, _get_page_content, _new_page, _close_page, _close_context_session methods)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-21 completed.
+*   `playwright` and `openai` libraries installed.
+*   `OPENAI_API_KEY` and a suitable `OPENAI_MODEL` (e.g., "gpt-4o-mini" or "gpt-4-turbo" that support JSON mode well) configured in `.env`.
+
+**Integration with Agent Zero:**
+*   `ActionExecutor`'s `extract_data` method now uses an LLM to perform structured data extraction from web page content.
+*   The `BrowserAgentTool` invokes this method, allowing the main Agent Zero agent to request data extraction using natural language and an optional schema.
+*   `BROWSER_ACTION` events (via `StreamProtocolTool`) continue to report the status of these operations.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `openai` is in `requirements.txt`.
+*   The Docker container needs network access for OpenAI API calls.
+*   `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables must be available.
+
+**Summary of Task 23:**
+This task implements the AI-driven data extraction capability (`extract` action) for the `BrowserAgentTool`. By leveraging an LLM, the tool can now understand natural language instructions to pull specific pieces of information from a webpage, optionally conforming to a provided JSON schema. This significantly enhances the agent's ability to gather structured data from the web. The method for obtaining page content for the LLM is still basic and can be improved with more advanced techniques later.
+
+Please confirm to proceed.Okay, let's proceed with Task 23.
+
+## Task 23: Implement Real Logic for `BrowserAgentTool` - AI-driven `extract` Action
+
+**Focus:**
+This task implements the AI-driven `extract` functionality in `BrowserAgentTool`. It will involve:
+1.  Taking natural language instructions and an optional JSON schema.
+2.  Using an LLM (e.g., OpenAI) to extract structured data from the current page's content based on the instructions and schema.
+3.  The `ActionExecutor` in `python/agents/browser_agent/actions.py` will house this logic.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/browser_agent/actions.py`:**
+    *   Update `ActionExecutor.extract_data` to:
+        *   Fetch the relevant content from the Playwright `Page` (e.g., main content area, or full HTML if necessary). A simplified approach for now will be to get a summary or a specific part of the page.
+        *   Make an LLM call, providing the page content, extraction instruction, and schema.
+        *   Parse the LLM's JSON response containing the extracted data.
+
+    ```python
+    # python/agents/browser_agent/actions.py
+    import asyncio
+    from typing import Dict, Any, Optional, List
+    from playwright.async_api import Page as PWPage, PlaywrightError
+    import json
+    import os
+    from openai import OpenAI, APIError, RateLimitError # Assuming OpenAI for extraction LLM
+    # ... (dotenv and Path imports if needed, should be there from previous task)
+
+    # New System Prompt for Data Extraction
+    DATA_EXTRACTION_SYSTEM_PROMPT = """
+    You are an expert at extracting structured information from web page content based on a user's instruction and an optional JSON schema.
+    You will be given a summary of the web page content, the user's instruction for what to extract, and a JSON schema defining the desired output format.
+    Your goal is to populate the JSON schema with information extracted from the page content according to the instruction.
+    If a schema is not provided, attempt to extract the information as a reasonably structured JSON object based on the instruction.
+    Focus only on the provided page content. If information is not present in the content, indicate this appropriately (e.g., null values or empty strings in the JSON).
+    Output ONLY the populated JSON object. Do not include any other text, explanations, or markdown formatting around the JSON.
+    If the page content is too limited or irrelevant to the instruction, return an empty JSON object or an object indicating no data found.
+    """
+
+    class ActionExecutor:
+        def __init__(self):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini") # Or a model specified for extraction
+            if not self.api_key:
+                raise ValueError("OpenAI API key required for ActionExecutor.")
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"ActionExecutor: Initialized with OpenAI model '{self.llm_model}' for actions and extractions.")
+
+        # ... (_translate_instruction_to_action method from Task 22)
+        # ... (execute_ai_action method from Task 22)
+
+        async def _get_simplified_page_content_for_llm(self, page: PWPage, max_chars: int = 4000) -> str:
+            """
+            Attempts to get a summarized or relevant portion of the page content for the LLM.
+            This is a simplified version. Stagehand/Crawl4AI have more sophisticated methods.
+            """
+            try:
+                # Try to get main content areas first
+                main_content_selectors = ["article", "main", "[role='main']", "body"] # Add more as needed
+                content = ""
+                for selector in main_content_selectors:
+                    try:
+                        element = page.locator(selector).first
+                        await element.wait_for(state="attached", timeout=1000) # Wait briefly for element
+                        content = await element.inner_text(timeout=2000) # Get text content
+                        if content and content.strip():
+                            print(f"ActionExecutor: Extracted content from selector '{selector}'. Length: {len(content)}")
+                            break 
+                    except PlaywrightError: # Element not found or timeout
+                        continue
+                    except Exception: # Other errors
+                        continue
+                
+                if not content or not content.strip(): # Fallback to full page text if main content is empty
+                    print("ActionExecutor: Main content selectors yielded no text, falling back to body's inner text.")
+                    content = await page.locator("body").inner_text(timeout=3000)
+
+                # Clean up excessive newlines and whitespace
+                content = re.sub(r'\s\s+', ' ', content.replace('\n', ' ')).strip()
+                
+                if len(content) > max_chars:
+                    print(f"ActionExecutor: Page content for LLM truncated from {len(content)} to {max_chars} chars.")
+                    return content[:max_chars] + "..."
+                return content if content.strip() else "Page content seems to be empty or primarily non-textual."
+            except Exception as e:
+                print(f"ActionExecutor: Error getting simplified page content: {e}")
+                return f"Error extracting page content: {e}"
+
+
+        async def extract_data(self, page: PWPage, instructions: str, schema: Optional[Dict] = None) -> Dict[str, Any]:
+            print(f"ActionExecutor: Attempting data extraction from {page.url}. Instruction: '{instructions[:100]}...'")
+            
+            page_content_summary = await self._get_simplified_page_content_for_llm(page)
+            
+            if "Error extracting page content" in page_content_summary or \
+               "Page content seems to be empty" in page_content_summary:
+                return {"status": "error", "message": "Could not retrieve sufficient page content for extraction.", "extracted_data": {}}
+
+            prompt_parts = [
+                f"Web Page Content Summary:\n---\n{page_content_summary}\n---\n",
+                f"User Instruction for Extraction: {instructions}\n"
+            ]
+            if schema:
+                prompt_parts.append(f"Desired JSON Schema:\n```json\n{json.dumps(schema, indent=2)}\n```\n")
+            else:
+                prompt_parts.append("No specific JSON schema provided. Extract into a logical JSON structure.\n")
+            
+            prompt_parts.append("Your task is to populate the JSON based on the instruction and page content. Output only the JSON object.")
+            
+            full_prompt = "".join(prompt_parts)
+
+            messages = [
+                {"role": "system", "content": DATA_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": full_prompt}
+            ]
+
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.llm_client.chat.completions.create,
+                        model=self.llm_model, # Or a model fine-tuned for JSON extraction
+                        messages=messages,
+                        response_format={"type": "json_object"}, # Request JSON
+                        temperature=0.0 # For deterministic extraction
+                    )
+                    extracted_json_str = response.choices[0].message.content
+                    extracted_data = json.loads(extracted_json_str)
+                    print(f"ActionExecutor: Successfully extracted data: {json.dumps(extracted_data, indent=2)}")
+                    return {"status": "success", "extracted_data": extracted_data, "schema_used": bool(schema)}
+                except json.JSONDecodeError:
+                    print(f"ActionExecutor: LLM returned invalid JSON for extraction (attempt {attempt+1}): {extracted_json_str}")
+                    if attempt == max_retries -1 : 
+                        return {"status": "error", "message": "LLM failed to return valid JSON for extraction.", "raw_output": extracted_json_str}
+                except RateLimitError as rle:
+                    wait_time = (2 ** attempt) + np.random.rand()
+                    print(f"ActionExecutor (Extract LLM): Rate limit (attempt {attempt+1}/{max_retries}). Retrying in {wait_time:.2f}s. Error: {rle}")
+                    await asyncio.sleep(wait_time)
+                except APIError as apie:
+                    print(f"ActionExecutor (Extract LLM): APIError (attempt {attempt+1}/{max_retries}): {apie}.")
+                    if attempt == max_retries -1:
+                        return {"status": "error", "message": f"OpenAI APIError during extraction: {str(apie)}"}
+                except Exception as e:
+                    print(f"ActionExecutor: Unexpected error during data extraction LLM call (attempt {attempt+1}): {e}")
+                    if attempt == max_retries -1:
+                        return {"status": "error", "message": f"Unexpected error during extraction: {str(e)}"}
+                
+                if attempt < max_retries -1: # If not the last attempt, wait before retrying
+                    await asyncio.sleep((2**attempt) + np.random.rand())
+
+
+            return {"status": "error", "message": "Failed to extract data after multiple attempts."}
+
+    ```
+    **Key changes in `ActionExecutor.extract_data`:**
+    *   `_get_simplified_page_content_for_llm`: A new helper (very basic for now) to get text content from the page. Real Stagehand/Crawl4AI would use more sophisticated methods (e.g., readability scores, main content extraction, or even rendering the page to an image/text representation for multimodal models).
+    *   An LLM call is made with a system prompt instructing it to extract data into JSON, using the page content, user instruction, and schema.
+    *   `response_format={"type": "json_object"}` is used if the OpenAI model supports it (like gpt-4o-mini, gpt-4-turbo).
+    *   Basic error handling for JSON parsing and API errors.
+
+2.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   The `_extract` method should correctly call the updated `ActionExecutor.extract_data`. No significant changes should be needed here if the `ActionExecutor`'s interface was maintained.
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports and __init__ as in Task 12)
+
+    class BrowserAgentTool(Tool):
+        # ... (get_browser_manager, __init__, _emit_browser_event, execute, _navigate, _ai_act methods)
+
+        async def _extract(self, instructions: str, schema: Optional[Dict], session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("extract_data", "processing", {"instructions": instructions, "schema_provided": bool(schema), "session_id": session_id, "page_index": page_index})
+
+            page = await self.browser_manager.get_page(session_id, page_index) # Get the Playwright Page
+            
+            # ActionExecutor.extract_data now contains the real logic
+            extract_result_dict = await self.action_executor.extract_data(page, instructions, schema) 
+            
+            await self._emit_browser_event("extract_data", "completed", {"result_status": extract_result_dict.get("status"), "session_id": session_id, "page_index": page_index})
+            
+            if extract_result_dict.get("status") == "success":
+                return ToolResponse(message="Data extracted successfully.", data=extract_result_dict.get("extracted_data"))
+            else:
+                return ToolResponse(message=extract_result_dict.get("message", "Data extraction failed."), error=True, data=extract_result_dict)
+
+        # ... (_agent_execute, _get_page_content, _new_page, _close_page, _close_context_session methods)
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-21 completed.
+*   `playwright` and `openai` libraries installed.
+*   `OPENAI_API_KEY` and a suitable `OPENAI_MODEL` (e.g., "gpt-4o-mini" or "gpt-4-turbo" that support JSON mode well) configured in `.env`.
+
+**Integration with Agent Zero:**
+*   `ActionExecutor`'s `extract_data` method now uses an LLM to perform structured data extraction from web page content.
+*   The `BrowserAgentTool` invokes this method, allowing the main Agent Zero agent to request data extraction using natural language and an optional schema.
+*   `BROWSER_ACTION` events (via `StreamProtocolTool`) continue to report the status of these operations.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `openai` is in `requirements.txt`.
+*   The Docker container needs network access for OpenAI API calls.
+*   `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables must be available.
+
+**Summary of Task 23:**
+This task implements the AI-driven data extraction capability (`extract` action) for the `BrowserAgentTool`. By leveraging an LLM, the tool can now understand natural language instructions to pull specific pieces of information from a webpage, optionally conforming to a provided JSON schema. This significantly enhances the agent's ability to gather structured data from the web. The method for obtaining page content for the LLM is still basic and can be improved with more advanced techniques later.
+
+Please confirm to proceed.

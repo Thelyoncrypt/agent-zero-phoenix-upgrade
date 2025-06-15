@@ -1,0 +1,574 @@
+## Task 8: Implement Core MemoryAgent (Mem0) Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `MemoryAgentTool` within Agent Zero, based on the `mem0` repository. It will include placeholder implementations for core Mem0 actions like `add`, `search`, `update`, and `delete` memories. The actual intelligent memory processing, graph memory, and vector storage logic will be deferred. The goal is to create the tool's interface, make it callable by Agent Zero, and have it emit `MEMORY_UPDATE` events.
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories (if they don't exist):**
+    *   `python/agents/` (should exist)
+    *   `python/agents/memory_agent/`
+
+2.  **Create `python/agents/memory_agent/memory.py` (Placeholder):**
+    This will eventually hold the `IntelligentMemory`, `GraphMemory`, and `VectorMemory` logic from `mem0`.
+
+    ```python
+# python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+
+    class BaseMemory: # Common base for different memory types
+        def __init__(self, agent_id: str = "default_agent"):
+            self.agent_id = agent_id # Mem0 often scopes memory by agent/user
+            self.store: Dict[str, Any] = {} # Simple in-memory dict for mock
+            print(f"{self.__class__.__name__} (Mock) initialized for agent: {agent_id}")
+
+        async def add(self, memory_data: Any, memory_id: Optional[str] = None) -> str:
+            # In real Mem0, memory_data could be text, messages, etc.
+            # It would be processed to extract entities, relationships, and create embeddings.
+            _id = memory_id or f"mem_{len(self.store)}"
+            self.store[_id] = {"data": memory_data, "type": "generic_mock_memory"}
+            print(f"{self.__class__.__name__} (Mock): Added memory '{_id}': {str(memory_data)[:50]}...")
+            return _id
+
+        async def get(self, memory_id: str) -> Optional[Any]:
+            print(f"{self.__class__.__name__} (Mock): Getting memory '{memory_id}'")
+            return self.store.get(memory_id)
+
+        async def search(self, query: str, user_id: Optional[str] = None, limit: int = 5) -> List[Any]:
+            print(f"{self.__class__.__name__} (Mock): Searching memories for query '{query}' (user: {user_id}, limit: {limit})")
+            # Mock search: return a few items if query matches part of stored data
+            results = []
+            for mem_id, mem_content in self.store.items():
+                if query.lower() in str(mem_content.get("data", "")).lower():
+                    results.append({"id": mem_id, **mem_content, "relevance_score": 0.75}) # Add mock score
+                if len(results) >= limit:
+                    break
+            return results
+
+        async def update(self, memory_id: str, new_data: Any) -> bool:
+            if memory_id in self.store:
+                self.store[memory_id]["data"] = new_data
+                self.store[memory_id]["updated_at"] = "mock_timestamp"
+                print(f"{self.__class__.__name__} (Mock): Updated memory '{memory_id}'")
+                return True
+            print(f"{self.__class__.__name__} (Mock): Memory '{memory_id}' not found for update.")
+            return False
+
+        async def delete(self, memory_id: str) -> bool:
+            if memory_id in self.store:
+                del self.store[memory_id]
+                print(f"{self.__class__.__name__} (Mock): Deleted memory '{memory_id}'")
+                return True
+            print(f"{self.__class__.__name__} (Mock): Memory '{memory_id}' not found for deletion.")
+            return False
+        
+        async def get_all(self, user_id: Optional[str] = None) -> List[Any]:
+            print(f"{self.__class__.__name__} (Mock): Getting all memories for user '{user_id}'")
+            # In a real multi-user system, this would filter by user_id.
+            return list(self.store.values())
+
+
+    class IntelligentMemory(BaseMemory): # Placeholder for Mem0's core client/interface
+        """
+        Mock for Mem0's main client, which orchestrates different memory types.
+        """
+        def __init__(self, agent_id: str = "default_agent"):
+            super().__init__(agent_id)
+            # In real Mem0, this might initialize vector, graph, and other stores.
+            # self.vector_memory = VectorMemory(agent_id)
+            # self.graph_memory = GraphMemory(agent_id)
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id: Optional[str] = None) -> List[str]:
+            """Simulates adding memories extracted from a list of messages."""
+            print(f"IntelligentMemory (Mock): Adding memories from {len(messages)} messages for user '{user_id}'.")
+            # Mock processing: create one memory entry per message content
+            stored_ids = []
+            for msg in messages:
+                if msg.get("role") and msg.get("content"): # Basic check for message structure
+                    mem_id = await super().add(f"Role: {msg['role']}, Content: {msg['content'][:100]}...")
+                    stored_ids.append(mem_id)
+            return stored_ids
+        
+        # Other methods would delegate to specific memory types or combine results.
+```
+
+3.  **Create `python/tools/memory_agent_tool.py`:**
+
+    ```python
+# python/tools/memory_agent_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from agents.memory_agent.memory import IntelligentMemory # Using the mock IntelligentMemory
+    import asyncio
+    from typing import Dict, Any, List, Optional
+
+    class MemoryAgentTool(Tool):
+        """
+        MemoryAgent (Mem0 inspired) integration for Agent Zero.
+        Provides intelligent, self-improving memory capabilities.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool",
+                             description="Manages an intelligent memory system, allowing adding, searching, updating, and deleting memories.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            # Each agent/context gets its own memory instance for now.
+            # In a multi-user/multi-agent setup, agent_id would be crucial.
+            agent_id_for_memory = self.agent.get_user_id() or self.agent.get_thread_id() or "default_agent_zero_user"
+            self.memory_system = IntelligentMemory(agent_id=agent_id_for_memory)
+            print(f"MemoryAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with memory agent_id: {agent_id_for_memory}")
+
+        async def _emit_memory_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit MEMORY_UPDATE events."""
+            payload = {"action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.MEMORY_UPDATE, payload)
+            else:
+                print(f"MemoryAgentTool: Agent does not have _emit_stream_event. Cannot emit MEMORY_UPDATE.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute MemoryAgent operations.
+            """
+            user_id = kwargs.get("user_id", self.agent.get_user_id()) # Mem0 operations are often user-scoped
+
+            try:
+                if action == "add":
+                    # Mem0's `add` can take various forms of data. Here we simplify.
+                    # If 'messages' kwarg is present, use specific message processing.
+                    messages = kwargs.get("messages") # List of {"role": "user/assistant", "content": "..."}
+                    data_to_add = kwargs.get("data") # Generic data
+                    memory_id = kwargs.get("memory_id") # Optional ID for the new memory
+
+                    if messages and isinstance(messages, list):
+                        return await self._add_from_messages(messages, user_id)
+                    elif data_to_add:
+                        return await self._add_generic_memory(data_to_add, memory_id, user_id)
+                    else:
+                        return ToolResponse("Error: 'messages' (list of dicts) or 'data' (generic) required for 'add' action.", error=True)
+
+                elif action == "search":
+                    query = kwargs.get("query")
+                    limit = kwargs.get("limit", 5)
+                    if not query: return ToolResponse("Error: 'query' is required for search.", error=True)
+                    return await self._search_memory(query, user_id, limit)
+                
+                elif action == "update":
+                    memory_id = kwargs.get("memory_id")
+                    new_data = kwargs.get("data")
+                    if not memory_id or new_data is None:
+                        return ToolResponse("Error: 'memory_id' and 'data' are required for update.", error=True)
+                    return await self._update_memory(memory_id, new_data, user_id)
+                    
+                elif action == "delete":
+                    memory_id = kwargs.get("memory_id")
+                    if not memory_id: return ToolResponse("Error: 'memory_id' is required for delete.", error=True)
+                    return await self._delete_memory(memory_id, user_id)
+
+                elif action == "get_all": # For debugging or specific use cases
+                     return await self._get_all_memories(user_id)
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id": user_id})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _add_from_messages(self, messages: List[Dict[str, Any]], user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("add_messages", "starting", {"count": len(messages), "user_id": user_id})
+            # In real Mem0, this call is more complex, involving LLMs for extraction.
+            # Here, our mock IntelligentMemory.add_messages does a simplified version.
+            stored_ids = await self.memory_system.add_messages(messages, user_id=user_id)
+            result_details = {"stored_ids": stored_ids, "user_id": user_id, "processed_messages": len(messages)}
+            await self._emit_memory_event("add_messages", "completed", result_details)
+            return ToolResponse(message=f"Added {len(stored_ids)} memories from messages.", data=result_details)
+
+        async def _add_generic_memory(self, data: Any, memory_id: Optional[str], user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("add_generic", "starting", {"has_id": bool(memory_id), "user_id": user_id})
+            stored_id = await self.memory_system.add(data, memory_id=memory_id) # user_id scoping is part of memory_system
+            result_details = {"stored_id": stored_id, "user_id": user_id}
+            await self._emit_memory_event("add_generic", "completed", result_details)
+            return ToolResponse(message=f"Memory added with ID: {stored_id}", data=result_details)
+
+        async def _search_memory(self, query: str, user_id: Optional[str], limit: int) -> ToolResponse:
+            await self._emit_memory_event("search", "processing", {"query": query, "limit": limit, "user_id": user_id})
+            results = await self.memory_system.search(query, user_id=user_id, limit=limit)
+            await self._emit_memory_event("search", "completed", {"query": query, "results_count": len(results), "user_id": user_id})
+            return ToolResponse(message=json.dumps(results), data=results) # Return JSON string and raw list
+
+        async def _update_memory(self, memory_id: str, new_data: Any, user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("update", "processing", {"memory_id": memory_id, "user_id": user_id})
+            success = await self.memory_system.update(memory_id, new_data) # user_id scoping in memory_system
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("update", status, {"memory_id": memory_id, "success": success, "user_id": user_id})
+            return ToolResponse(message=f"Memory update {status}.", data={"success": success})
+
+        async def _delete_memory(self, memory_id: str, user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("delete", "processing", {"memory_id": memory_id, "user_id": user_id})
+            success = await self.memory_system.delete(memory_id) # user_id scoping in memory_system
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("delete", status, {"memory_id": memory_id, "success": success, "user_id": user_id})
+            return ToolResponse(message=f"Memory deletion {status}.", data={"success": success})
+
+        async def _get_all_memories(self, user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("get_all", "processing", {"user_id": user_id})
+            all_memories = await self.memory_system.get_all(user_id=user_id)
+            await self._emit_memory_event("get_all", "completed", {"count": len(all_memories), "user_id": user_id})
+            return ToolResponse(message=json.dumps(all_memories), data=all_memories)
+```
+
+4.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `memory_agent_tool`.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing tools including web_crawler_tool)
+
+    ### memory_agent_tool:
+    # Manages an intelligent memory system.
+    # Arguments:
+    #   action: string - "add", "search", "update", "delete", "get_all".
+    #   user_id: string - (Optional) Identifier for the user whose memory is being accessed. Defaults to current session/agent user.
+    #   For "add":
+    #     messages: list[dict] - (Optional) List of messages (e.g., [{"role": "user", "content": "..."}] ) to extract memories from.
+    #     data: any - (Optional if 'messages' provided) Generic data to store as a memory.
+    #     memory_id: string - (Optional) Specific ID for the new memory.
+    #   For "search":
+    #     query: string - The search query.
+    #     limit: int - (Optional, default 5) Max results.
+    #   For "update":
+    #     memory_id: string - ID of the memory to update.
+    #     data: any - The new data for the memory.
+    #   For "delete":
+    #     memory_id: string - ID of the memory to delete.
+    # Example for adding from messages:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "add", "messages": [{"role": "user", "content": "My favorite color is blue."}], "user_id": "user123" }
+    # }
+    # Example for searching:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "search", "query": "user's favorite color", "user_id": "user123" }
+    # }
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-4 completed (especially StreamProtocol integration for event emission).
+*   `Agent` class has `get_user_id()` and `_emit_stream_event()` methods.
+*   Standard Python libraries. The actual `mem0` package and its dependencies (like specific LLMs for intelligence, vector DBs) will be added when implementing the real logic.
+
+**Integration with Agent Zero:**
+*   `MemoryAgentTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `MEMORY_UPDATE` events via the agent's `_emit_stream_event` method.
+*   The tool's description and usage are added to system prompts.
+*   Placeholder actions for memory operations are implemented, preparing for future integration with the full `mem0` library.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for these placeholders.
+*   Ensure the new directory structure `python/agents/memory_agent/` and files within, plus `python/tools/memory_agent_tool.py`, are included in the Docker image.
+
+**Summary of Task 8:**
+This task sets up the structure for the `MemoryAgentTool` and its associated (mocked) `IntelligentMemory` component. It defines the tool's actions for adding, searching, updating, and deleting memories within Agent Zero's framework. It also establishes the emission of `MEMORY_UPDATE` events. This lays the groundwork for integrating the sophisticated, self-improving memory capabilities of Mem0 in later stages.
+
+Please confirm to proceed.Okay, let's proceed with Task 8.
+
+## Task 8: Implement Core MemoryAgent (Mem0) Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `MemoryAgentTool` within Agent Zero, based on the `mem0` repository. It will include placeholder implementations for core Mem0 actions like `add`, `search`, `update`, and `delete` memories. The actual intelligent memory processing, graph memory, and vector storage logic will be deferred. The goal is to create the tool's interface, make it callable by Agent Zero, and have it emit `MEMORY_UPDATE` events.
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories (if they don't exist):**
+    *   `python/agents/` (should exist)
+    *   `python/agents/memory_agent/`
+
+2.  **Create `python/agents/memory_agent/memory.py` (Placeholder):**
+    This will eventually hold the `IntelligentMemory`, `GraphMemory`, and `VectorMemory` logic from `mem0`.
+
+    ```python
+    # python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+
+    class BaseMemory: # Common base for different memory types
+        def __init__(self, agent_id: str = "default_agent"):
+            self.agent_id = agent_id # Mem0 often scopes memory by agent/user
+            self.store: Dict[str, Any] = {} # Simple in-memory dict for mock
+            print(f"{self.__class__.__name__} (Mock) initialized for agent: {agent_id}")
+
+        async def add(self, memory_data: Any, memory_id: Optional[str] = None) -> str:
+            # In real Mem0, memory_data could be text, messages, etc.
+            # It would be processed to extract entities, relationships, and create embeddings.
+            _id = memory_id or f"mem_{len(self.store)}"
+            self.store[_id] = {"data": memory_data, "type": "generic_mock_memory"}
+            print(f"{self.__class__.__name__} (Mock): Added memory '{_id}': {str(memory_data)[:50]}...")
+            return _id
+
+        async def get(self, memory_id: str) -> Optional[Any]:
+            print(f"{self.__class__.__name__} (Mock): Getting memory '{memory_id}'")
+            return self.store.get(memory_id)
+
+        async def search(self, query: str, user_id: Optional[str] = None, limit: int = 5) -> List[Any]:
+            print(f"{self.__class__.__name__} (Mock): Searching memories for query '{query}' (user: {user_id}, limit: {limit})")
+            # Mock search: return a few items if query matches part of stored data
+            results = []
+            for mem_id, mem_content in self.store.items():
+                if query.lower() in str(mem_content.get("data", "")).lower():
+                    results.append({"id": mem_id, **mem_content, "relevance_score": 0.75}) # Add mock score
+                if len(results) >= limit:
+                    break
+            return results
+
+        async def update(self, memory_id: str, new_data: Any) -> bool:
+            if memory_id in self.store:
+                self.store[memory_id]["data"] = new_data
+                self.store[memory_id]["updated_at"] = "mock_timestamp"
+                print(f"{self.__class__.__name__} (Mock): Updated memory '{memory_id}'")
+                return True
+            print(f"{self.__class__.__name__} (Mock): Memory '{memory_id}' not found for update.")
+            return False
+
+        async def delete(self, memory_id: str) -> bool:
+            if memory_id in self.store:
+                del self.store[memory_id]
+                print(f"{self.__class__.__name__} (Mock): Deleted memory '{memory_id}'")
+                return True
+            print(f"{self.__class__.__name__} (Mock): Memory '{memory_id}' not found for deletion.")
+            return False
+        
+        async def get_all(self, user_id: Optional[str] = None) -> List[Any]:
+            print(f"{self.__class__.__name__} (Mock): Getting all memories for user '{user_id}'")
+            # In a real multi-user system, this would filter by user_id.
+            return list(self.store.values())
+
+
+    class IntelligentMemory(BaseMemory): # Placeholder for Mem0's core client/interface
+        """
+        Mock for Mem0's main client, which orchestrates different memory types.
+        """
+        def __init__(self, agent_id: str = "default_agent"):
+            super().__init__(agent_id)
+            # In real Mem0, this might initialize vector, graph, and other stores.
+            # self.vector_memory = VectorMemory(agent_id)
+            # self.graph_memory = GraphMemory(agent_id)
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id: Optional[str] = None) -> List[str]:
+            """Simulates adding memories extracted from a list of messages."""
+            print(f"IntelligentMemory (Mock): Adding memories from {len(messages)} messages for user '{user_id}'.")
+            # Mock processing: create one memory entry per message content
+            stored_ids = []
+            for msg in messages:
+                if msg.get("role") and msg.get("content"): # Basic check for message structure
+                    mem_id = await super().add(f"Role: {msg['role']}, Content: {msg['content'][:100]}...")
+                    stored_ids.append(mem_id)
+            return stored_ids
+        
+        # Other methods would delegate to specific memory types or combine results.
+    ```
+
+3.  **Create `python/tools/memory_agent_tool.py`:**
+
+    ```python
+    # python/tools/memory_agent_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from agents.memory_agent.memory import IntelligentMemory # Using the mock IntelligentMemory
+    import asyncio
+    from typing import Dict, Any, List, Optional
+
+    class MemoryAgentTool(Tool):
+        """
+        MemoryAgent (Mem0 inspired) integration for Agent Zero.
+        Provides intelligent, self-improving memory capabilities.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool",
+                             description="Manages an intelligent memory system, allowing adding, searching, updating, and deleting memories.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            # Each agent/context gets its own memory instance for now.
+            # In a multi-user/multi-agent setup, agent_id would be crucial.
+            agent_id_for_memory = self.agent.get_user_id() or self.agent.get_thread_id() or "default_agent_zero_user"
+            self.memory_system = IntelligentMemory(agent_id=agent_id_for_memory)
+            print(f"MemoryAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with memory agent_id: {agent_id_for_memory}")
+
+        async def _emit_memory_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit MEMORY_UPDATE events."""
+            payload = {"action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.MEMORY_UPDATE, payload)
+            else:
+                print(f"MemoryAgentTool: Agent does not have _emit_stream_event. Cannot emit MEMORY_UPDATE.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute MemoryAgent operations.
+            """
+            user_id = kwargs.get("user_id", self.agent.get_user_id()) # Mem0 operations are often user-scoped
+
+            try:
+                if action == "add":
+                    # Mem0's `add` can take various forms of data. Here we simplify.
+                    # If 'messages' kwarg is present, use specific message processing.
+                    messages = kwargs.get("messages") # List of {"role": "user/assistant", "content": "..."}
+                    data_to_add = kwargs.get("data") # Generic data
+                    memory_id = kwargs.get("memory_id") # Optional ID for the new memory
+
+                    if messages and isinstance(messages, list):
+                        return await self._add_from_messages(messages, user_id)
+                    elif data_to_add:
+                        return await self._add_generic_memory(data_to_add, memory_id, user_id)
+                    else:
+                        return ToolResponse("Error: 'messages' (list of dicts) or 'data' (generic) required for 'add' action.", error=True)
+
+                elif action == "search":
+                    query = kwargs.get("query")
+                    limit = kwargs.get("limit", 5)
+                    if not query: return ToolResponse("Error: 'query' is required for search.", error=True)
+                    return await self._search_memory(query, user_id, limit)
+                
+                elif action == "update":
+                    memory_id = kwargs.get("memory_id")
+                    new_data = kwargs.get("data")
+                    if not memory_id or new_data is None:
+                        return ToolResponse("Error: 'memory_id' and 'data' are required for update.", error=True)
+                    return await self._update_memory(memory_id, new_data, user_id)
+                    
+                elif action == "delete":
+                    memory_id = kwargs.get("memory_id")
+                    if not memory_id: return ToolResponse("Error: 'memory_id' is required for delete.", error=True)
+                    return await self._delete_memory(memory_id, user_id)
+
+                elif action == "get_all": # For debugging or specific use cases
+                     return await self._get_all_memories(user_id)
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id": user_id})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _add_from_messages(self, messages: List[Dict[str, Any]], user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("add_messages", "starting", {"count": len(messages), "user_id": user_id})
+            # In real Mem0, this call is more complex, involving LLMs for extraction.
+            # Here, our mock IntelligentMemory.add_messages does a simplified version.
+            stored_ids = await self.memory_system.add_messages(messages, user_id=user_id)
+            result_details = {"stored_ids": stored_ids, "user_id": user_id, "processed_messages": len(messages)}
+            await self._emit_memory_event("add_messages", "completed", result_details)
+            return ToolResponse(message=f"Added {len(stored_ids)} memories from messages.", data=result_details)
+
+        async def _add_generic_memory(self, data: Any, memory_id: Optional[str], user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("add_generic", "starting", {"has_id": bool(memory_id), "user_id": user_id})
+            stored_id = await self.memory_system.add(data, memory_id=memory_id) # user_id scoping is part of memory_system
+            result_details = {"stored_id": stored_id, "user_id": user_id}
+            await self._emit_memory_event("add_generic", "completed", result_details)
+            return ToolResponse(message=f"Memory added with ID: {stored_id}", data=result_details)
+
+        async def _search_memory(self, query: str, user_id: Optional[str], limit: int) -> ToolResponse:
+            await self._emit_memory_event("search", "processing", {"query": query, "limit": limit, "user_id": user_id})
+            results = await self.memory_system.search(query, user_id=user_id, limit=limit)
+            await self._emit_memory_event("search", "completed", {"query": query, "results_count": len(results), "user_id": user_id})
+            return ToolResponse(message=json.dumps(results), data=results) # Return JSON string and raw list
+
+        async def _update_memory(self, memory_id: str, new_data: Any, user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("update", "processing", {"memory_id": memory_id, "user_id": user_id})
+            success = await self.memory_system.update(memory_id, new_data) # user_id scoping in memory_system
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("update", status, {"memory_id": memory_id, "success": success, "user_id": user_id})
+            return ToolResponse(message=f"Memory update {status}.", data={"success": success})
+
+        async def _delete_memory(self, memory_id: str, user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("delete", "processing", {"memory_id": memory_id, "user_id": user_id})
+            success = await self.memory_system.delete(memory_id) # user_id scoping in memory_system
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("delete", status, {"memory_id": memory_id, "success": success, "user_id": user_id})
+            return ToolResponse(message=f"Memory deletion {status}.", data={"success": success})
+
+        async def _get_all_memories(self, user_id: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("get_all", "processing", {"user_id": user_id})
+            all_memories = await self.memory_system.get_all(user_id=user_id)
+            await self._emit_memory_event("get_all", "completed", {"count": len(all_memories), "user_id": user_id})
+            return ToolResponse(message=json.dumps(all_memories), data=all_memories)
+
+    ```
+
+4.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `memory_agent_tool`.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing tools including web_crawler_tool)
+
+    ### memory_agent_tool:
+    # Manages an intelligent memory system.
+    # Arguments:
+    #   action: string - "add", "search", "update", "delete", "get_all".
+    #   user_id: string - (Optional) Identifier for the user whose memory is being accessed. Defaults to current session/agent user.
+    #   For "add":
+    #     messages: list[dict] - (Optional) List of messages (e.g., [{"role": "user", "content": "..."}] ) to extract memories from.
+    #     data: any - (Optional if 'messages' provided) Generic data to store as a memory.
+    #     memory_id: string - (Optional) Specific ID for the new memory.
+    #   For "search":
+    #     query: string - The search query.
+    #     limit: int - (Optional, default 5) Max results.
+    #   For "update":
+    #     memory_id: string - ID of the memory to update.
+    #     data: any - The new data for the memory.
+    #   For "delete":
+    #     memory_id: string - ID of the memory to delete.
+    # Example for adding from messages:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "add", "messages": [{"role": "user", "content": "My favorite color is blue."}], "user_id": "user123" }
+    # }
+    # Example for searching:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "search", "query": "user's favorite color", "user_id": "user123" }
+    # }
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-4 completed (especially StreamProtocol integration for event emission).
+*   `Agent` class has `get_user_id()` and `_emit_stream_event()` methods.
+*   Standard Python libraries. The actual `mem0` package and its dependencies (like specific LLMs for intelligence, vector DBs) will be added when implementing the real logic.
+
+**Integration with Agent Zero:**
+*   `MemoryAgentTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `MEMORY_UPDATE` events via the agent's `_emit_stream_event` method.
+*   The tool's description and usage are added to system prompts.
+*   Placeholder actions for memory operations are implemented, preparing for future integration with the full `mem0` library.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for these placeholders.
+*   Ensure the new directory structure `python/agents/memory_agent/` and files within, plus `python/tools/memory_agent_tool.py`, are included in the Docker image.
+
+**Summary of Task 8:**
+This task sets up the structure for the `MemoryAgentTool` and its associated (mocked) `IntelligentMemory` component. It defines the tool's actions for adding, searching, updating, and deleting memories within Agent Zero's framework. It also establishes the emission of `MEMORY_UPDATE` events. This lays the groundwork for integrating the sophisticated, self-improving memory capabilities of Mem0 in later stages.
+
+Please confirm to proceed.

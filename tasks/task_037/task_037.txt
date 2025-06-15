@@ -1,0 +1,441 @@
+## Task 37: Implement Full Dockerfile and Docker Compose Enhancements for All New Dependencies and Configurations
+
+**Focus:**
+This task focuses on updating Agent Zero's Docker setup (`docker/base/Dockerfile`, `docker/run/Dockerfile`, `docker-compose.yml`, and related scripts) to:
+1.  Install all new Python package dependencies from `requirements.txt`.
+2.  Install any new system-level dependencies required by these packages (e.g., for Playwright browsers, Torch, audio libraries).
+3.  Correctly handle environment variables for all new configurations.
+4.  Manage model file downloads and caching for tools like Chatterbox or Hugging Face based embedders (if applicable and not handled by the libraries themselves in a Docker-friendly way).
+5.  Ensure work directories and persistence paths are correctly set up and optionally mapped to volumes.
+
+**File Paths and Code Changes:**
+
+**A. Update `requirements.txt` (Consolidated):**
+   Ensure `requirements.txt` includes all new dependencies identified in previous tasks:
+   ```
+# requirements.txt
+   # ... (Agent Zero's original dependencies)
+   flask-sock
+   playwright
+   crawl4ai
+   requests
+   beautifulsoup4 
+   lxml # Often a dependency of crawl4ai or good for XML parsing
+   openai>=1.0.0 # Ensure a recent version
+   numpy
+   supabase>=2.0.0
+   mem0 # This will pull its own deps (torch, s3tokenizer, perth, etc. if Chatterbox is a dep of mem0, or add chatterbox separately)
+   chatterbox-tts # Or its individual components like torch, torchaudio, librosa etc. from its pyproject.toml
+   networkx 
+   # Ensure specific versions if needed for compatibility, e.g., torch for CUDA
+   # torch==2.x.x+cuXXX # Example for specific CUDA if needed
+   # torchaudio==2.x.x+cuXXX
+```
+   **Note:** If `chatterbox-tts` is not a PyPI package, its installation in Docker might involve cloning its repo and `pip install -e .` or installing its listed dependencies directly. For this task, we'll assume `chatterbox-tts` and `mem0` can be pip installed or their components are listed.
+
+**B. Dockerfile Modifications:**
+
+1.  **`docker/base/Dockerfile` (or wherever system packages and Python environment are built):**
+    *   Add system dependencies for Playwright, Torch (CUDA if GPU build), and audio libraries.
+    *   The existing `install_base_packages*.sh` scripts might need updates.
+
+    ```dockerfile
+# docker/base/Dockerfile (Illustrative additions)
+    # ... (existing FROM, ENV, locale setup)
+
+    # Existing package installs
+    # RUN bash /ins/install_base_packages1.sh
+    # RUN bash /ins/install_base_packages2.sh
+    # RUN bash /ins/install_base_packages3.sh # Installs nodejs, npm
+
+    # Add new system dependencies (example, might need refinement based on exact needs)
+    # This should go into one of the install_base_packagesX.sh scripts or a new one.
+    # For install_base_packages2.sh or a new script:
+    # RUN apt-get update && apt-get install -y --no-install-recommends \
+    #     # Playwright browser dependencies (already partially in existing install_playwright.sh's --with-deps)
+    #     # libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libasound2 \
+    #     # For Torch + audio processing (librosa, soundfile etc. might need these)
+    #     libsndfile1 \
+    #     # For lxml if used
+    #     libxml2-dev libxslt1-dev \
+    #     # Potentially build tools if any Python packages compile from source
+    #     build-essential \
+    #     && rm -rf /var/lib/apt/lists/*
+    
+    # Python installation (ensure Python 3.11+ as per foundational-rag-agent)
+    # The existing install_python.sh already sets up Python 3.12 and UV. This should be fine.
+    # RUN bash /ins/install_python.sh
+
+    # ... (rest of base Dockerfile: SearXNG, SSH setup)
+```
+    It's better to consolidate new `apt-get install` commands into the existing `install_base_packagesX.sh` scripts to keep layers minimal. The `install_playwright.sh` in `agent zero full code.md` already handles `--with-deps` which is good.
+
+2.  **`docker/run/Dockerfile` (or wherever the application and its Python deps are installed):**
+    *   The existing `install_A0.sh` script handles `uv pip install -r /git/agent-zero/requirements.txt`. This is the primary place Python deps are installed.
+    *   Ensure Playwright browser binaries are installed. The `install_A0.sh` calls `install_playwright.sh` which does `playwright install --with-deps chromium`. This is good.
+    *   **Model Downloading/Caching:**
+        *   For Hugging Face models (used by `sentence-transformers`, `transformers` via `mem0` or `chatterbox`): Set `HF_HOME` environment variable to a path that can be mapped as a volume to persist downloads.
+        *   `PLAYWRIGHT_BROWSERS_PATH` is already set by `install_playwright.sh` to `/a0/tmp/playwright`. This path should be part of a volume if browser binaries are large and re-downloading on each `docker-compose up --build` is undesirable.
+
+    ```dockerfile
+# docker/run/Dockerfile (Illustrative additions/verifications)
+    # ... (FROM, ARG BRANCH, ENV BRANCH, COPY ./fs/ /)
+
+    # Environment variables for model caches (can also be set in docker-compose.yml)
+    ENV HF_HOME=/a0/cache/huggingface 
+    ENV SENTENCE_TRANSFORMERS_HOME=/a0/cache/sentence-transformers
+    # PLAYWRIGHT_BROWSERS_PATH is set in install_playwright.sh to /a0/tmp/playwright
+
+    # pre installation steps (existing)
+    # RUN bash /ins/pre_install.sh $BRANCH
+
+    # install A0 (this runs requirements.txt and install_playwright.sh)
+    # RUN bash /ins/install_A0.sh $BRANCH
+    # ...
+
+    # After installing Python dependencies, create cache directories
+    # This should ideally be part of post_install.sh or similar,
+    # or ensure the user running the app can create them.
+    # RUN mkdir -p /a0/cache/huggingface /a0/cache/sentence-transformers /a0/tmp/playwright \
+    #     && chown -R someuser:somegroup /a0/cache /a0/tmp # If not running as root
+
+    # Ensure the work_dir and its subdirectories (like memory/mem0_data, tmp/audio_outputs) exist
+    # and have correct permissions if not running as root.
+    # RUN mkdir -p /a0/work_dir/memory/mem0_data /a0/work_dir/tmp/audio_outputs \
+    #     && chown -R appropriate_user:appropriate_group /a0/work_dir
+    # If AGENT_WORK_DIR is /root, these might be /root/memory/mem0_data etc.
+    # The application itself creates these via Path.mkdir(parents=True, exist_ok=True)
+
+    # ... (rest of run Dockerfile)
+```
+
+**C. Docker Compose (`docker-compose.yml` and `docker-compose.cuda.yml`):**
+
+*   **Environment Variables:** Pass all necessary API keys and configurations from the host's `.env` file (or directly in `docker-compose.yml` for non-sensitive defaults).
+*   **Volumes:**
+    *   Persist Hugging Face model cache: `- ./agent-zero/cache/huggingface:/a0/cache/huggingface`
+    *   Persist Sentence Transformers cache: `- ./agent-zero/cache/sentence-transformers:/a0/cache/sentence-transformers`
+    *   Persist Playwright browsers: `- ./agent-zero/tmp/playwright:/a0/tmp/playwright`
+    *   Persist Mem0 data: `- ./agent-zero/work_dir/memory/mem0_data:/a0/work_dir/memory/mem0_data` (adjust path based on `AGENT_WORK_DIR` and `MEM0_PERSISTENCE_DIR_BASE`)
+    *   Persist TTS/VC outputs: `- ./agent-zero/work_dir/tmp/audio_outputs:/a0/work_dir/tmp/audio_outputs`
+    *   The existing volume `./agent-zero:/a0` maps the whole application code.
+    *   The existing volume `./agent-zero/work_dir:/root` (in `docker-compose.cuda.yml`) or a similar one for `work_dir` if `AGENT_WORK_DIR` is not `/root`.
+
+    ```yaml
+# docker-compose.yml (Illustrative additions/changes)
+    services:
+      agent-zero:
+        container_name: agent-zero
+        image: frdel/agent-zero:latest # Or your local build tag
+        # build: # If building locally
+        #   context: .
+        #   dockerfile: docker/run/Dockerfile
+        #   args:
+        #     BRANCH: main # Or development
+        volumes:
+          - ./agent-zero:/a0 # Maps entire app code + subdirs created by app
+          # If AGENT_WORK_DIR is 'work_dir' (relative to /a0), these are subdirs of the above:
+          # - ./agent-zero/work_dir/memory/mem0_data:/a0/work_dir/memory/mem0_data 
+          # - ./agent-zero/work_dir/tmp/audio_outputs:/a0/work_dir/tmp/audio_outputs
+          # - ./agent-zero/tmp/playwright:/a0/tmp/playwright # Playwright browsers
+          # If AGENT_WORK_DIR is /root as in cuda compose file:
+          # This line already maps work_dir contents if AGENT_WORK_DIR is effectively /root for the app logic.
+          # The paths like /a0/work_dir/memory... would need to be /root/memory... in Python code, or AGENT_WORK_DIR set to /root.
+          # Let's assume AGENT_WORK_DIR is set to /a0/work_dir for consistency if the main app is in /a0.
+          # Or, if using the volume from docker-compose.cuda.yml:
+          # - ./agent-zero/work_dir:/root # Agent Zero's work_dir for user files etc.
+          # Then Python code paths would be e.g. /root/memory/mem0_data
+
+          # For persistent model caches (paths inside container match ENV vars)
+          - ./agent-zero-cache/huggingface:/a0/cache/huggingface 
+          - ./agent-zero-cache/sentence-transformers:/a0/cache/sentence-transformers
+          - ./agent-zero-cache/playwright_browsers:/a0/tmp/playwright # Persist downloaded browsers
+          
+          # For persistent application data (adjust paths based on AGENT_WORK_DIR)
+          # If AGENT_WORK_DIR maps to /a0/work_dir (default for local dev)
+          - ./agent-zero-data/work_dir:/a0/work_dir 
+          # This would make MEM0_PERSISTENCE_DIR_BASE="memory/mem0_data" resolve to /a0/work_dir/memory/mem0_data
+          # and CHATTERBOX_OUTPUT_DIR_RELATIVE="tmp/audio_outputs" to /a0/work_dir/tmp/audio_outputs
+
+        ports:
+          - "50080:80" # As in existing compose
+        env_file:
+          - .env # Load API keys and configurations from .env file
+        environment:
+          # Override or set additional env vars here if not in .env
+          - PYTHONUNBUFFERED=1
+          - HF_HOME=/a0/cache/huggingface # Match Dockerfile ENV and volume
+          - SENTENCE_TRANSFORMERS_HOME=/a0/cache/sentence-transformers # Match
+          - PLAYWRIGHT_BROWSERS_PATH=/a0/tmp/playwright # Match
+          # AGENT_WORK_DIR should be set here to match Python code's expectations
+          # If Python code uses files.get_abs_path(os.getenv("AGENT_WORK_DIR", "work_dir"))
+          # and the app is in /a0, then AGENT_WORK_DIR="work_dir" maps to /a0/work_dir.
+          - AGENT_WORK_DIR=work_dir # This means persistence dir is relative to /a0/work_dir
+        # restart: unless-stopped # Optional
+```
+
+    **For `docker-compose.cuda.yml`:**
+    Similar changes for volumes and environment variables would apply. The key difference is GPU access.
+    The volume `- ./agent-zero/work_dir:/root` implies `AGENT_WORK_DIR` should be `/root` in the Python code or env var for that setup. If so, paths for `MEM0_PERSISTENCE_DIR_BASE` and `CHATTERBOX_OUTPUT_DIR_RELATIVE` in `.env` or Python defaults should be relative to `/root`.
+    For consistency, it's often better to have `AGENT_WORK_DIR` point to a subdirectory within `/a0` (like `/a0/work_dir`) and mount that.
+
+    Let's assume we standardize on `AGENT_WORK_DIR=work_dir` which resolves to `/a0/work_dir` inside the container for both CPU and GPU setups. The `/root` volume in `docker-compose.cuda.yml` might be for other user-specific files or shell history, distinct from the application's primary `work_dir`. If they are meant to be the same, then `AGENT_WORK_DIR` should be set to `/root` when using that compose file.
+
+    Revised volume for `work_dir` to be consistent:
+    ```yaml
+# docker-compose.yml and docker-compose.cuda.yml
+    volumes:
+      - ./agent-zero:/a0 # App code
+      - ./agent-zero-data/app_work_dir:/a0/work_dir # For general app work_dir
+      - ./agent-zero-cache/huggingface:/a0/cache/huggingface
+      - ./agent-zero-cache/sentence-transformers:/a0/cache/sentence-transformers
+      - ./agent-zero-cache/playwright_browsers:/a0/tmp/playwright
+    environment:
+      - AGENT_WORK_DIR=/a0/work_dir # Explicitly set work_dir path
+```
+    This way, `MEM0_PERSISTENCE_DIR_BASE="memory/mem0_data"` in `.env` becomes `/a0/work_dir/memory/mem0_data`.
+
+**Dependencies/Prerequisites:**
+*   All previous tasks.
+*   A comprehensive `requirements.txt` including all new libraries.
+*   An updated `.env.example` and a corresponding `.env` file with necessary credentials and configurations.
+
+**Integration with Agent Zero:**
+*   The Docker environment is now fully configured to support all new tools and their dependencies.
+*   Model caches and persistent data (like Mem0's store, TTS outputs) are mapped to host volumes, ensuring data survives container restarts and rebuilds (for cache).
+*   All necessary configurations are passed as environment variables.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Ensuring `torch`, `torchaudio`, `librosa`, `perth`, `s3tokenizer`, `chatterbox-tts` are in `requirements.txt`.
+*   Handling potential CUDA setup for `torch` in `docker-compose.cuda.yml` (already present via `NVIDIA_VISIBLE_DEVICES`).
+*   `CHATTERBOX_DEVICE` env var is passed.
+*   Model downloads by Chatterbox (if from Hugging Face) would benefit from `HF_HOME` volume mapping.
+
+**Docker Compatibility:**
+*   This task is *all about* Docker compatibility.
+
+**Summary of Task 37:**
+This task comprehensively updates the Docker configuration (`Dockerfile`s and `docker-compose.yml`) to support the fully upgraded Agent Zero. It includes installing all new Python and system dependencies, setting up environment variables for configuration, and defining volumes for persistent model caches and application data. This ensures the "Phoenix" version of Agent Zero can be built and run reliably in a containerized environment, both for CPU and potentially GPU operations.
+
+Please confirm to proceed.Okay, let's proceed with Task 37.
+
+## Task 37: Implement Full Dockerfile and Docker Compose Enhancements for All New Dependencies and Configurations
+
+**Focus:**
+This task focuses on updating Agent Zero's Docker setup (`docker/base/Dockerfile`, `docker/run/Dockerfile`, `docker-compose.yml`, and related scripts) to:
+1.  Install all new Python package dependencies from `requirements.txt`.
+2.  Install any new system-level dependencies required by these packages (e.g., for Playwright browsers, Torch, audio libraries).
+3.  Correctly handle environment variables for all new configurations.
+4.  Manage model file downloads and caching for tools like Chatterbox or Hugging Face based embedders (if applicable and not handled by the libraries themselves in a Docker-friendly way).
+5.  Ensure work directories and persistence paths are correctly set up and optionally mapped to volumes.
+
+**File Paths and Code Changes:**
+
+**A. Update `requirements.txt` (Consolidated):**
+   Ensure `requirements.txt` includes all new dependencies identified in previous tasks:
+   ```
+   # requirements.txt
+   # ... (Agent Zero's original dependencies)
+   flask-sock
+   playwright
+   crawl4ai
+   requests
+   beautifulsoup4 
+   lxml # Often a dependency of crawl4ai or good for XML parsing
+   openai>=1.0.0 # Ensure a recent version
+   numpy
+   supabase>=2.0.0
+   mem0 # This will pull its own deps (torch, s3tokenizer, perth, etc. if Chatterbox is a dep of mem0, or add chatterbox separately)
+   chatterbox-tts # Or its individual components like torch, torchaudio, librosa etc. from its pyproject.toml
+   networkx 
+   # Ensure specific versions if needed for compatibility, e.g., torch for CUDA
+   # torch==2.x.x+cuXXX # Example for specific CUDA if needed
+   # torchaudio==2.x.x+cuXXX
+   ```
+   **Note:** If `chatterbox-tts` is not a PyPI package, its installation in Docker might involve cloning its repo and `pip install -e .` or installing its listed dependencies directly. For this task, we'll assume `chatterbox-tts` and `mem0` can be pip installed or their components are listed.
+
+**B. Dockerfile Modifications:**
+
+1.  **`docker/base/Dockerfile` (or wherever system packages and Python environment are built):**
+    *   Add system dependencies for Playwright, Torch (CUDA if GPU build), and audio libraries.
+    *   The existing `install_base_packages*.sh` scripts might need updates.
+
+    ```dockerfile
+    # docker/base/Dockerfile (Illustrative additions)
+    # ... (existing FROM, ENV, locale setup)
+
+    # Existing package installs
+    # RUN bash /ins/install_base_packages1.sh
+    # RUN bash /ins/install_base_packages2.sh
+    # RUN bash /ins/install_base_packages3.sh # Installs nodejs, npm
+
+    # Add new system dependencies (example, might need refinement based on exact needs)
+    # This should go into one of the install_base_packagesX.sh scripts or a new one.
+    # For install_base_packages2.sh or a new script:
+    # RUN apt-get update && apt-get install -y --no-install-recommends \
+    #     # Playwright browser dependencies (already partially in existing install_playwright.sh's --with-deps)
+    #     # libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libasound2 \
+    #     # For Torch + audio processing (librosa, soundfile etc. might need these)
+    #     libsndfile1 \
+    #     # For lxml if used
+    #     libxml2-dev libxslt1-dev \
+    #     # Potentially build tools if any Python packages compile from source
+    #     build-essential \
+    #     && rm -rf /var/lib/apt/lists/*
+    
+    # Python installation (ensure Python 3.11+ as per foundational-rag-agent)
+    # The existing install_python.sh already sets up Python 3.12 and UV. This should be fine.
+    # RUN bash /ins/install_python.sh
+
+    # ... (rest of base Dockerfile: SearXNG, SSH setup)
+    ```
+    It's better to consolidate new `apt-get install` commands into the existing `install_base_packagesX.sh` scripts to keep layers minimal. The `install_playwright.sh` in `agent zero full code.md` already handles `--with-deps` which is good.
+
+2.  **`docker/run/Dockerfile` (or wherever the application and its Python deps are installed):**
+    *   The existing `install_A0.sh` script handles `uv pip install -r /git/agent-zero/requirements.txt`. This is the primary place Python deps are installed.
+    *   Ensure Playwright browser binaries are installed. The `install_A0.sh` calls `install_playwright.sh` which does `playwright install --with-deps chromium`. This is good.
+    *   **Model Downloading/Caching:**
+        *   For Hugging Face models (used by `sentence-transformers`, `transformers` via `mem0` or `chatterbox`): Set `HF_HOME` environment variable to a path that can be mapped as a volume to persist downloads.
+        *   `PLAYWRIGHT_BROWSERS_PATH` is already set by `install_playwright.sh` to `/a0/tmp/playwright`. This path should be part of a volume if browser binaries are large and re-downloading on each `docker-compose up --build` is undesirable.
+
+    ```dockerfile
+    # docker/run/Dockerfile (Illustrative additions/verifications)
+    # ... (FROM, ARG BRANCH, ENV BRANCH, COPY ./fs/ /)
+
+    # Environment variables for model caches (can also be set in docker-compose.yml)
+    ENV HF_HOME=/a0/cache/huggingface 
+    ENV SENTENCE_TRANSFORMERS_HOME=/a0/cache/sentence-transformers
+    # PLAYWRIGHT_BROWSERS_PATH is set in install_playwright.sh to /a0/tmp/playwright
+
+    # pre installation steps (existing)
+    # RUN bash /ins/pre_install.sh $BRANCH
+
+    # install A0 (this runs requirements.txt and install_playwright.sh)
+    # RUN bash /ins/install_A0.sh $BRANCH
+    # ...
+
+    # After installing Python dependencies, create cache directories
+    # This should ideally be part of post_install.sh or similar,
+    # or ensure the user running the app can create them.
+    # RUN mkdir -p /a0/cache/huggingface /a0/cache/sentence-transformers /a0/tmp/playwright \
+    #     && chown -R someuser:somegroup /a0/cache /a0/tmp # If not running as root
+
+    # Ensure the work_dir and its subdirectories (like memory/mem0_data, tmp/audio_outputs) exist
+    # and have correct permissions if not running as root.
+    # RUN mkdir -p /a0/work_dir/memory/mem0_data /a0/work_dir/tmp/audio_outputs \
+    #     && chown -R appropriate_user:appropriate_group /a0/work_dir
+    # If AGENT_WORK_DIR is /root, these might be /root/memory/mem0_data etc.
+    # The application itself creates these via Path.mkdir(parents=True, exist_ok=True)
+
+    # ... (rest of run Dockerfile)
+    ```
+
+**C. Docker Compose (`docker-compose.yml` and `docker-compose.cuda.yml`):**
+
+*   **Environment Variables:** Pass all necessary API keys and configurations from the host's `.env` file (or directly in `docker-compose.yml` for non-sensitive defaults).
+*   **Volumes:**
+    *   Persist Hugging Face model cache: `- ./agent-zero/cache/huggingface:/a0/cache/huggingface`
+    *   Persist Sentence Transformers cache: `- ./agent-zero/cache/sentence-transformers:/a0/cache/sentence-transformers`
+    *   Persist Playwright browsers: `- ./agent-zero/tmp/playwright:/a0/tmp/playwright`
+    *   Persist Mem0 data: `- ./agent-zero/work_dir/memory/mem0_data:/a0/work_dir/memory/mem0_data` (adjust path based on `AGENT_WORK_DIR` and `MEM0_PERSISTENCE_DIR_BASE`)
+    *   Persist TTS/VC outputs: `- ./agent-zero/work_dir/tmp/audio_outputs:/a0/work_dir/tmp/audio_outputs`
+    *   The existing volume `./agent-zero:/a0` maps the whole application code.
+    *   The existing volume `./agent-zero/work_dir:/root` (in `docker-compose.cuda.yml`) or a similar one for `work_dir` if `AGENT_WORK_DIR` is not `/root`.
+
+    ```yaml
+    # docker-compose.yml (Illustrative additions/changes)
+    services:
+      agent-zero:
+        container_name: agent-zero
+        image: frdel/agent-zero:latest # Or your local build tag
+        # build: # If building locally
+        #   context: .
+        #   dockerfile: docker/run/Dockerfile
+        #   args:
+        #     BRANCH: main # Or development
+        volumes:
+          - ./agent-zero:/a0 # Maps entire app code + subdirs created by app
+          # If AGENT_WORK_DIR is 'work_dir' (relative to /a0), these are subdirs of the above:
+          # - ./agent-zero/work_dir/memory/mem0_data:/a0/work_dir/memory/mem0_data 
+          # - ./agent-zero/work_dir/tmp/audio_outputs:/a0/work_dir/tmp/audio_outputs
+          # - ./agent-zero/tmp/playwright:/a0/tmp/playwright # Playwright browsers
+          # If AGENT_WORK_DIR is /root as in cuda compose file:
+          # This line already maps work_dir contents if AGENT_WORK_DIR is effectively /root for the app logic.
+          # The paths like /a0/work_dir/memory... would need to be /root/memory... in Python code, or AGENT_WORK_DIR set to /root.
+          # Let's assume AGENT_WORK_DIR is set to /a0/work_dir for consistency if the main app is in /a0.
+          # Or, if using the volume from docker-compose.cuda.yml:
+          # - ./agent-zero/work_dir:/root # Agent Zero's work_dir for user files etc.
+          # Then Python code paths would be e.g. /root/memory/mem0_data
+
+          # For persistent model caches (paths inside container match ENV vars)
+          - ./agent-zero-cache/huggingface:/a0/cache/huggingface 
+          - ./agent-zero-cache/sentence-transformers:/a0/cache/sentence-transformers
+          - ./agent-zero-cache/playwright_browsers:/a0/tmp/playwright # Persist downloaded browsers
+          
+          # For persistent application data (adjust paths based on AGENT_WORK_DIR)
+          # If AGENT_WORK_DIR maps to /a0/work_dir (default for local dev)
+          - ./agent-zero-data/work_dir:/a0/work_dir 
+          # This would make MEM0_PERSISTENCE_DIR_BASE="memory/mem0_data" resolve to /a0/work_dir/memory/mem0_data
+          # and CHATTERBOX_OUTPUT_DIR_RELATIVE="tmp/audio_outputs" to /a0/work_dir/tmp/audio_outputs
+
+        ports:
+          - "50080:80" # As in existing compose
+        env_file:
+          - .env # Load API keys and configurations from .env file
+        environment:
+          # Override or set additional env vars here if not in .env
+          - PYTHONUNBUFFERED=1
+          - HF_HOME=/a0/cache/huggingface # Match Dockerfile ENV and volume
+          - SENTENCE_TRANSFORMERS_HOME=/a0/cache/sentence-transformers # Match
+          - PLAYWRIGHT_BROWSERS_PATH=/a0/tmp/playwright # Match
+          # AGENT_WORK_DIR should be set here to match Python code's expectations
+          # If Python code uses files.get_abs_path(os.getenv("AGENT_WORK_DIR", "work_dir"))
+          # and the app is in /a0, then AGENT_WORK_DIR="work_dir" maps to /a0/work_dir.
+          - AGENT_WORK_DIR=work_dir # This means persistence dir is relative to /a0/work_dir
+        # restart: unless-stopped # Optional
+    ```
+
+    **For `docker-compose.cuda.yml`:**
+    Similar changes for volumes and environment variables would apply. The key difference is GPU access.
+    The volume `- ./agent-zero/work_dir:/root` implies `AGENT_WORK_DIR` should be `/root` in the Python code or env var for that setup. If so, paths for `MEM0_PERSISTENCE_DIR_BASE` and `CHATTERBOX_OUTPUT_DIR_RELATIVE` in `.env` or Python defaults should be relative to `/root`.
+    For consistency, it's often better to have `AGENT_WORK_DIR` point to a subdirectory within `/a0` (like `/a0/work_dir`) and mount that.
+
+    Let's assume we standardize on `AGENT_WORK_DIR=work_dir` which resolves to `/a0/work_dir` inside the container for both CPU and GPU setups. The `/root` volume in `docker-compose.cuda.yml` might be for other user-specific files or shell history, distinct from the application's primary `work_dir`. If they are meant to be the same, then `AGENT_WORK_DIR` should be set to `/root` when using that compose file.
+
+    Revised volume for `work_dir` to be consistent:
+    ```yaml
+    # docker-compose.yml and docker-compose.cuda.yml
+    volumes:
+      - ./agent-zero:/a0 # App code
+      - ./agent-zero-data/app_work_dir:/a0/work_dir # For general app work_dir
+      - ./agent-zero-cache/huggingface:/a0/cache/huggingface
+      - ./agent-zero-cache/sentence-transformers:/a0/cache/sentence-transformers
+      - ./agent-zero-cache/playwright_browsers:/a0/tmp/playwright
+    environment:
+      - AGENT_WORK_DIR=/a0/work_dir # Explicitly set work_dir path
+    ```
+    This way, `MEM0_PERSISTENCE_DIR_BASE="memory/mem0_data"` in `.env` becomes `/a0/work_dir/memory/mem0_data`.
+
+**Dependencies/Prerequisites:**
+*   All previous tasks.
+*   A comprehensive `requirements.txt` including all new libraries.
+*   An updated `.env.example` and a corresponding `.env` file with necessary credentials and configurations.
+
+**Integration with Agent Zero:**
+*   The Docker environment is now fully configured to support all new tools and their dependencies.
+*   Model caches and persistent data (like Mem0's store, TTS outputs) are mapped to host volumes, ensuring data survives container restarts and rebuilds (for cache).
+*   All necessary configurations are passed as environment variables.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Ensuring `torch`, `torchaudio`, `librosa`, `perth`, `s3tokenizer`, `chatterbox-tts` are in `requirements.txt`.
+*   Handling potential CUDA setup for `torch` in `docker-compose.cuda.yml` (already present via `NVIDIA_VISIBLE_DEVICES`).
+*   `CHATTERBOX_DEVICE` env var is passed.
+*   Model downloads by Chatterbox (if from Hugging Face) would benefit from `HF_HOME` volume mapping.
+
+**Docker Compatibility:**
+*   This task is *all about* Docker compatibility.
+
+**Summary of Task 37:**
+This task comprehensively updates the Docker configuration (`Dockerfile`s and `docker-compose.yml`) to support the fully upgraded Agent Zero. It includes installing all new Python and system dependencies, setting up environment variables for configuration, and defining volumes for persistent model caches and application data. This ensures the "Phoenix" version of Agent Zero can be built and run reliably in a containerized environment, both for CPU and potentially GPU operations.
+
+Please confirm to proceed.

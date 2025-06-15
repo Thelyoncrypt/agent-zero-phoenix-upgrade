@@ -1,0 +1,628 @@
+## Task 26: Integrate Mem0's Graph Memory Capabilities (Conceptual/Placeholder) into `MemoryAgentTool`
+
+**Focus:**
+This task aims to start integrating the *concept* of graph memory, as inspired by Mem0, into the `MemoryAgentTool`. Since the actual `mem0` Python library's specific graph capabilities and how they are exposed might vary or require a separate graph database, this task will focus on:
+1.  Adding placeholder structures and methods to `python/agents/memory_agent/memory.py` for graph-related operations (e.g., adding entities/relationships, querying graph).
+2.  Exposing these conceptual graph memory actions through the `MemoryAgentTool`.
+3.  The actual graph construction (e.g., using an LLM for entity/relation extraction) and storage in a graph database (like Neo4j or an in-memory graph library like `networkx`) are complex and will be largely placeholders or very basic simulations for now.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt` (Optional, for a basic in-memory graph):**
+    *   If we want a very basic in-memory graph simulation, `networkx` can be added. If we are purely placeholder, no new dependency. Let's add `networkx` for a slightly more tangible placeholder.
+
+    ```
+# requirements.txt
+    # ... (existing requirements)
+    networkx
+```
+
+2.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Enhance `Mem0MemorySystem` (or the `BaseMemory` it might inherit from if we refactor) to include a placeholder for a graph store and methods for graph operations.
+
+    ```python
+# python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional, Tuple
+    import uuid
+    import numpy as np
+    
+    try:
+        from mem0 import Memory as Mem0Client
+        # If mem0 client has distinct graph capabilities, we'd use them.
+        # For now, we'll simulate graph features alongside its existing vector store.
+        MEM0_AVAILABLE = True
+    except ImportError:
+        # ... (placeholder Mem0Client as before) ...
+        MEM0_AVAILABLE = False
+        class Mem0Client: # type: ignore
+            def __init__(self, *args, **kwargs): print("Mem0Client (Placeholder): mem0 library not installed.")
+            async def add(self, *args, **kwargs): return [{"id": str(uuid.uuid4()), "status": "placeholder_add"}]
+            async def search(self, *args, **kwargs): return [{"id": str(uuid.uuid4()), "text": "placeholder_search_result", "score": 0.0, "metadata":{}}]
+            async def update(self, *args, **kwargs): return {"id": kwargs.get("memory_id"), "status": "placeholder_update"}
+            async def delete(self, *args, **kwargs): return {"id": kwargs.get("memory_id"), "status": "placeholder_delete"}
+            async def get_all(self, *args, **kwargs): return [{"id": str(uuid.uuid4()), "text": "placeholder_all_memories"}]
+            # Add mock graph methods if Mem0Client placeholder is used
+            async def add_kg_triplets(self, *args, **kwargs): return {"status": "placeholder_kg_add", "triplets_added": 0}
+            async def search_kg(self, *args, **kwargs): return [{"head": "mock_entity", "relation": "mock_rel", "tail": "mock_value", "score":0.1}]
+
+
+    try:
+        import networkx as nx
+        NETWORKX_AVAILABLE = True
+    except ImportError:
+        NETWORKX_AVAILABLE = False
+        print("Mem0MemorySystem: networkx library not found. Graph memory simulation will be very basic.")
+
+    class Mem0MemorySystem:
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None):
+            self.agent_id = agent_id
+            
+            if not MEM0_AVAILABLE:
+                print(f"Mem0MemorySystem: mem0 library not available for agent_id: {agent_id}")
+                self._mem0_client = Mem0Client() # Placeholder
+            else:
+                try:
+                    # Assuming mem0's config might include graph store details or LLM for graph extraction
+                    self._mem0_client = Mem0Client(config=config) 
+                    print(f"Mem0MemorySystem: Initialized real mem0.Memory client for agent_id scope: {self.agent_id}")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error initializing real mem0.Memory client: {e}. Falling back to placeholder.")
+                    self._mem0_client = Mem0Client()
+
+            # Placeholder for in-memory graph using networkx
+            if NETWORKX_AVAILABLE:
+                self.graph_store = nx.MultiDiGraph() # Store (head, tail, relation_type, properties)
+                print(f"Mem0MemorySystem: Initialized networkx in-memory graph for {self.agent_id}.")
+            else:
+                self.graph_store = None # Or a simple list of dicts if networkx is not available
+                self.graph_store_list_fallback: List[Dict[str,Any]] = []
+
+
+        # ... (add_messages, add_generic_memory, search, update, delete, get_all from Task 18)
+        # These primarily interact with mem0's (potentially vector-based) store via self._mem0_client.
+
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            """
+            Adds explicit knowledge graph triplets.
+            Each triplet: {"head": str, "relation": str, "tail": str, "properties": Optional[Dict]}
+            In real Mem0, this might involve specific API calls or data structuring.
+            Here, we simulate adding to our networkx graph or list fallback.
+            """
+            target_user_id = user_id_override or self.agent_id
+            print(f"Mem0MemorySystem: Adding {len(triplets)} KG triplets for user '{target_user_id}'.")
+            
+            added_count = 0
+            if self.graph_store is not None and NETWORKX_AVAILABLE:
+                for triplet in triplets:
+                    head = triplet.get("head")
+                    relation = triplet.get("relation")
+                    tail = triplet.get("tail")
+                    props = triplet.get("properties", {})
+                    if head and relation and tail:
+                        # Add nodes if they don't exist (can add properties to nodes too)
+                        if not self.graph_store.has_node(head): self.graph_store.add_node(head, type="entity", user_id=target_user_id)
+                        if not self.graph_store.has_node(tail): self.graph_store.add_node(tail, type="entity", user_id=target_user_id)
+                        # Add edge with relation type and properties
+                        self.graph_store.add_edge(head, tail, key=relation, relation_type=relation, user_id=target_user_id, **props)
+                        added_count += 1
+            elif self.graph_store is None and not NETWORKX_AVAILABLE: # list fallback
+                for triplet in triplets:
+                    triplet["user_id"] = target_user_id
+                    self.graph_store_list_fallback.append(triplet)
+                    added_count += 1
+            else: # If mem0 client itself has a graph method
+                # results = await self._mem0_client.add_kg_triplets(triplets=triplets, user_id=target_user_id)
+                # added_count = results.get("triplets_added", 0) # Fictional response
+                print("Mem0MemorySystem: Actual mem0 graph triplet addition not implemented in this mock layer.")
+                pass
+
+
+            return {"status": "success", "triplets_added": added_count}
+
+        async def search_knowledge_graph(self, query_entity: Optional[str] = None, 
+                                         relation_type: Optional[str] = None, 
+                                         target_entity: Optional[str] = None,
+                                         user_id_override: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+            """
+            Searches the knowledge graph based on provided components of a triplet.
+            (e.g., find all relations for an entity, find entities connected by a relation).
+            This is a very simplified graph query.
+            """
+            target_user_id = user_id_override or self.agent_id
+            print(f"Mem0MemorySystem: Searching KG for user '{target_user_id}'. Query: E:{query_entity}, R:{relation_type}, T:{target_entity}")
+            
+            results = []
+            if self.graph_store is not None and NETWORKX_AVAILABLE:
+                if query_entity and not relation_type and not target_entity: # Find outgoing relations
+                    if self.graph_store.has_node(query_entity):
+                        for u, v, data in self.graph_store.out_edges(query_entity, data=True):
+                            if data.get("user_id") == target_user_id or target_user_id is None : # Rudimentary scoping
+                                results.append({"head": u, "relation": data.get("relation_type", "unknown"), "tail": v, "properties": data})
+                elif query_entity and relation_type and not target_entity: # Find tails for head and relation
+                    if self.graph_store.has_node(query_entity):
+                        for u, v, data in self.graph_store.out_edges(query_entity, data=True):
+                             if (data.get("user_id") == target_user_id or target_user_id is None) and data.get("relation_type") == relation_type:
+                                results.append({"head": u, "relation": data.get("relation_type"), "tail": v, "properties": data})
+                # Add more query patterns as needed (e.g., (None, relation, tail), (head, None, tail))
+                else: # Fallback: just return some neighbors if a query entity is given
+                    if query_entity and self.graph_store.has_node(query_entity):
+                        for neighbor in list(nx.neighbors(self.graph_store, query_entity))[:limit]: # type: ignore
+                            # Find edges between query_entity and neighbor
+                            for u, v, data in self.graph_store.edges(query_entity, data=True):
+                                if v == neighbor and (data.get("user_id") == target_user_id or target_user_id is None):
+                                    results.append({"head": u, "relation": data.get("relation_type", "related_to"), "tail": v, "properties": data})
+                                    break # Assuming one type of relation for simplicity or take first
+            elif self.graph_store is None and not NETWORKX_AVAILABLE: # list fallback
+                 for triplet in self.graph_store_list_fallback:
+                     match = True
+                     if triplet.get("user_id") != target_user_id and target_user_id is not None: continue
+                     if query_entity and triplet.get("head") != query_entity: match = False
+                     if relation_type and triplet.get("relation") != relation_type: match = False
+                     if target_entity and triplet.get("tail") != target_entity: match = False
+                     if match: results.append(triplet)
+            else: # If mem0 client itself has a graph search method
+                # results = await self._mem0_client.search_kg(entity=query_entity, relation=relation_type, limit=limit, user_id=target_user_id)
+                print("Mem0MemorySystem: Actual mem0 graph search not implemented in this mock layer.")
+                pass
+
+            return results[:limit]
+```
+
+3.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Add new actions `add_triplets` and `search_graph` to the `execute` method.
+    *   Implement corresponding private helper methods (`_add_triplets`, `_search_graph`).
+
+    ```python
+# python/tools/memory_agent_tool.py
+    # ... (imports and __init__ as in Task 18)
+
+    class MemoryAgentTool(Tool):
+        # ... (__init__, _emit_memory_event methods as before)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            user_id_for_op = kwargs.get("user_id", self.memory_system.agent_id) 
+
+            try:
+                if action == "add":
+                    # ... (as in Task 18)
+                    messages = kwargs.get("messages"); data_to_add = kwargs.get("data")
+                    memory_id_arg = kwargs.get("memory_id"); metadata_arg = kwargs.get("metadata")
+                    if messages: return await self._add_from_messages(messages, user_id_for_op)
+                    elif data_to_add is not None: return await self._add_generic_memory(data_to_add, memory_id_arg, user_id_for_op, metadata_arg)
+                    else: return ToolResponse("Error: 'messages' or 'data' required for 'add'.", error=True)
+
+                elif action == "search":
+                    # ... (as in Task 18)
+                    query = kwargs.get("query"); limit = kwargs.get("limit", 5)
+                    if not query: return ToolResponse("Error: 'query' required.", error=True)
+                    return await self._search_memory(query, user_id_for_op, limit)
+                
+                elif action == "update":
+                    # ... (as in Task 18)
+                    memory_id_arg = kwargs.get("memory_id"); new_data = kwargs.get("data"); new_metadata = kwargs.get("metadata")
+                    if not memory_id_arg or new_data is None: return ToolResponse("Error: 'memory_id' and 'data' required.", error=True)
+                    return await self._update_memory(memory_id_arg, new_data, user_id_for_op, new_metadata)
+                    
+                elif action == "delete":
+                    # ... (as in Task 18)
+                    memory_id_arg = kwargs.get("memory_id")
+                    if not memory_id_arg: return ToolResponse("Error: 'memory_id' required.", error=True)
+                    return await self._delete_memory(memory_id_arg, user_id_for_op)
+
+                elif action == "get_all":
+                     return await self._get_all_memories(user_id_for_op)
+
+                # New Graph Actions
+                elif action == "add_triplets":
+                    triplets = kwargs.get("triplets") # List of {"head": "...", "relation": "...", "tail": "..."}
+                    if not triplets or not isinstance(triplets, list):
+                        return ToolResponse("Error: 'triplets' (list of dicts) is required for add_triplets.", error=True)
+                    return await self._add_triplets(triplets, user_id_for_op)
+
+                elif action == "search_graph":
+                    query_entity = kwargs.get("entity")
+                    relation_type = kwargs.get("relation")
+                    target_entity = kwargs.get("target") # Name consistent with search_knowledge_graph
+                    limit = kwargs.get("limit", 10)
+                    if not query_entity and not relation_type and not target_entity:
+                        return ToolResponse("Error: At least one of 'entity', 'relation', or 'target' must be provided for search_graph.", error=True)
+                    return await self._search_graph(query_entity, relation_type, target_entity, user_id_for_op, limit)
+                
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+            # ... (exception handling as before)
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error: {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id_for_op": user_id_for_op})
+                return ToolResponse(message=error_message, error=True)
+
+        # ... (_add_from_messages, _add_generic_memory, _search_memory, _update_memory, _delete_memory, _get_all_memories as in Task 18)
+        
+        # New private helper methods for graph operations
+        async def _add_triplets(self, triplets: List[Dict[str, Any]], user_id_for_op: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("add_triplets", "starting", {"triplet_count": len(triplets), "user_id": user_id_for_op})
+            result = await self.memory_system.add_knowledge_graph_triplets(triplets, user_id_override=user_id_for_op)
+            status = "completed" if result.get("status") == "success" else "failed"
+            await self._emit_memory_event("add_triplets", status, {**result, "user_id": user_id_for_op})
+            return ToolResponse(message=f"Add triplets {status}. Added: {result.get('triplets_added', 0)}", data=result)
+
+        async def _search_graph(self, query_entity: Optional[str], relation_type: Optional[str], 
+                                target_entity: Optional[str], user_id_for_op: Optional[str], limit: int) -> ToolResponse:
+            query_details = {"entity": query_entity, "relation": relation_type, "target": target_entity, "limit": limit, "user_id": user_id_for_op}
+            await self._emit_memory_event("search_graph", "processing", query_details)
+            results = await self.memory_system.search_knowledge_graph(
+                query_entity, relation_type, target_entity, user_id_override=user_id_for_op, limit=limit
+            )
+            await self._emit_memory_event("search_graph", "completed", {"query": query_details, "results_count": len(results)})
+            return ToolResponse(message=json.dumps(results), data=results)
+```
+
+4.  **Update `prompts/default/agent.system.tools.md`:**
+    *   Add new actions `add_triplets` and `search_graph` to `memory_agent_tool`'s description.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing memory_agent_tool description)
+    #   For "add_triplets":
+    #     triplets: list[dict] - List of KG triplets. Each dict: {"head": str, "relation": str, "tail": str, "properties": Optional[dict]}.
+    #   For "search_graph":
+    #     entity: string - (Optional) An entity to search for connections to/from.
+    #     relation: string - (Optional) A specific relation type to filter by.
+    #     target: string - (Optional) A target entity for a specific relation.
+    #     limit: int - (Optional, default 10) Max graph search results.
+    # Example for adding KG triplets:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { 
+    #     "action": "add_triplets", 
+    #     "triplets": [{"head": "User123", "relation": "likes", "tail": "Pizza"}, {"head": "Pizza", "relation": "is_a", "tail": "Food"}],
+    #     "user_id": "user123"
+    #   }
+    # }
+    # Example for graph search:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "search_graph", "entity": "User123", "relation": "likes", "user_id": "user123" }
+    # }
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-25 completed.
+*   `mem0` library installed (as per Task 18).
+*   `networkx` added to `requirements.txt` and installed for the in-memory graph simulation.
+*   `OPENAI_API_KEY` set if `mem0` or our `EmbeddingGenerator` uses it for graph-related LLM tasks (e.g., entity/relation extraction, which is not yet implemented but a future step for Mem0).
+
+**Integration with Agent Zero:**
+*   `Mem0MemorySystem` now includes a basic in-memory graph store (using `networkx` or a list fallback) and methods to add/query triplets.
+*   `MemoryAgentTool` exposes these graph functionalities as new actions (`add_triplets`, `search_graph`).
+*   The agent can now instruct the tool to store and retrieve simple knowledge graph structures.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `networkx` to `requirements.txt`.
+*   No other new system-level dependencies are expected for this conceptual graph integration.
+
+**Summary of Task 26:**
+This task introduces placeholder support for graph memory capabilities within the `MemoryAgentTool`, inspired by Mem0. It adds actions for explicitly adding and querying simple knowledge graph triplets. The actual storage is a basic in-memory simulation using `networkx` (or a list if `networkx` isn't available). This sets the stage for potentially integrating more advanced graph features from `mem0` or other graph databases later, and for having the agent reason over or build these graph structures. The LLM-driven extraction of entities/relations from text to populate the graph is not yet part of this task.
+
+Please confirm to proceed.Okay, let's proceed with Task 26.
+
+## Task 26: Integrate Mem0's Graph Memory Capabilities (Conceptual/Placeholder) into `MemoryAgentTool`
+
+**Focus:**
+This task aims to start integrating the *concept* of graph memory, as inspired by Mem0, into the `MemoryAgentTool`. Since the actual `mem0` Python library's specific graph capabilities and how they are exposed might vary or require a separate graph database, this task will focus on:
+1.  Adding placeholder structures and methods to `python/agents/memory_agent/memory.py` for graph-related operations (e.g., adding entities/relationships, querying graph).
+2.  Exposing these conceptual graph memory actions through the `MemoryAgentTool`.
+3.  The actual graph construction (e.g., using an LLM for entity/relation extraction) and storage in a graph database (like Neo4j or an in-memory graph library like `networkx`) are complex and will be largely placeholders or very basic simulations for now.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt` (Optional, for a basic in-memory graph):**
+    *   If we want a very basic in-memory graph simulation, `networkx` can be added. If we are purely placeholder, no new dependency. Let's add `networkx` for a slightly more tangible placeholder.
+
+    ```
+    # requirements.txt
+    # ... (existing requirements)
+    networkx
+    ```
+
+2.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Enhance `Mem0MemorySystem` (or the `BaseMemory` it might inherit from if we refactor) to include a placeholder for a graph store and methods for graph operations.
+
+    ```python
+    # python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional, Tuple
+    import uuid
+    import numpy as np
+    
+    try:
+        from mem0 import Memory as Mem0Client
+        # If mem0 client has distinct graph capabilities, we'd use them.
+        # For now, we'll simulate graph features alongside its existing vector store.
+        MEM0_AVAILABLE = True
+    except ImportError:
+        # ... (placeholder Mem0Client as before) ...
+        MEM0_AVAILABLE = False
+        class Mem0Client: # type: ignore
+            def __init__(self, *args, **kwargs): print("Mem0Client (Placeholder): mem0 library not installed.")
+            async def add(self, *args, **kwargs): return [{"id": str(uuid.uuid4()), "status": "placeholder_add"}]
+            async def search(self, *args, **kwargs): return [{"id": str(uuid.uuid4()), "text": "placeholder_search_result", "score": 0.0, "metadata":{}}]
+            async def update(self, *args, **kwargs): return {"id": kwargs.get("memory_id"), "status": "placeholder_update"}
+            async def delete(self, *args, **kwargs): return {"id": kwargs.get("memory_id"), "status": "placeholder_delete"}
+            async def get_all(self, *args, **kwargs): return [{"id": str(uuid.uuid4()), "text": "placeholder_all_memories"}]
+            # Add mock graph methods if Mem0Client placeholder is used
+            async def add_kg_triplets(self, *args, **kwargs): return {"status": "placeholder_kg_add", "triplets_added": 0}
+            async def search_kg(self, *args, **kwargs): return [{"head": "mock_entity", "relation": "mock_rel", "tail": "mock_value", "score":0.1}]
+
+
+    try:
+        import networkx as nx
+        NETWORKX_AVAILABLE = True
+    except ImportError:
+        NETWORKX_AVAILABLE = False
+        print("Mem0MemorySystem: networkx library not found. Graph memory simulation will be very basic.")
+
+    class Mem0MemorySystem:
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None):
+            self.agent_id = agent_id
+            
+            if not MEM0_AVAILABLE:
+                print(f"Mem0MemorySystem: mem0 library not available for agent_id: {agent_id}")
+                self._mem0_client = Mem0Client() # Placeholder
+            else:
+                try:
+                    # Assuming mem0's config might include graph store details or LLM for graph extraction
+                    self._mem0_client = Mem0Client(config=config) 
+                    print(f"Mem0MemorySystem: Initialized real mem0.Memory client for agent_id scope: {self.agent_id}")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error initializing real mem0.Memory client: {e}. Falling back to placeholder.")
+                    self._mem0_client = Mem0Client()
+
+            # Placeholder for in-memory graph using networkx
+            if NETWORKX_AVAILABLE:
+                self.graph_store = nx.MultiDiGraph() # Store (head, tail, relation_type, properties)
+                print(f"Mem0MemorySystem: Initialized networkx in-memory graph for {self.agent_id}.")
+            else:
+                self.graph_store = None # Or a simple list of dicts if networkx is not available
+                self.graph_store_list_fallback: List[Dict[str,Any]] = []
+
+
+        # ... (add_messages, add_generic_memory, search, update, delete, get_all from Task 18)
+        # These primarily interact with mem0's (potentially vector-based) store via self._mem0_client.
+
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            """
+            Adds explicit knowledge graph triplets.
+            Each triplet: {"head": str, "relation": str, "tail": str, "properties": Optional[Dict]}
+            In real Mem0, this might involve specific API calls or data structuring.
+            Here, we simulate adding to our networkx graph or list fallback.
+            """
+            target_user_id = user_id_override or self.agent_id
+            print(f"Mem0MemorySystem: Adding {len(triplets)} KG triplets for user '{target_user_id}'.")
+            
+            added_count = 0
+            if self.graph_store is not None and NETWORKX_AVAILABLE:
+                for triplet in triplets:
+                    head = triplet.get("head")
+                    relation = triplet.get("relation")
+                    tail = triplet.get("tail")
+                    props = triplet.get("properties", {})
+                    if head and relation and tail:
+                        # Add nodes if they don't exist (can add properties to nodes too)
+                        if not self.graph_store.has_node(head): self.graph_store.add_node(head, type="entity", user_id=target_user_id)
+                        if not self.graph_store.has_node(tail): self.graph_store.add_node(tail, type="entity", user_id=target_user_id)
+                        # Add edge with relation type and properties
+                        self.graph_store.add_edge(head, tail, key=relation, relation_type=relation, user_id=target_user_id, **props)
+                        added_count += 1
+            elif self.graph_store is None and not NETWORKX_AVAILABLE: # list fallback
+                for triplet in triplets:
+                    triplet["user_id"] = target_user_id
+                    self.graph_store_list_fallback.append(triplet)
+                    added_count += 1
+            else: # If mem0 client itself has a graph method
+                # results = await self._mem0_client.add_kg_triplets(triplets=triplets, user_id=target_user_id)
+                # added_count = results.get("triplets_added", 0) # Fictional response
+                print("Mem0MemorySystem: Actual mem0 graph triplet addition not implemented in this mock layer.")
+                pass
+
+
+            return {"status": "success", "triplets_added": added_count}
+
+        async def search_knowledge_graph(self, query_entity: Optional[str] = None, 
+                                         relation_type: Optional[str] = None, 
+                                         target_entity: Optional[str] = None,
+                                         user_id_override: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+            """
+            Searches the knowledge graph based on provided components of a triplet.
+            (e.g., find all relations for an entity, find entities connected by a relation).
+            This is a very simplified graph query.
+            """
+            target_user_id = user_id_override or self.agent_id
+            print(f"Mem0MemorySystem: Searching KG for user '{target_user_id}'. Query: E:{query_entity}, R:{relation_type}, T:{target_entity}")
+            
+            results = []
+            if self.graph_store is not None and NETWORKX_AVAILABLE:
+                if query_entity and not relation_type and not target_entity: # Find outgoing relations
+                    if self.graph_store.has_node(query_entity):
+                        for u, v, data in self.graph_store.out_edges(query_entity, data=True):
+                            if data.get("user_id") == target_user_id or target_user_id is None : # Rudimentary scoping
+                                results.append({"head": u, "relation": data.get("relation_type", "unknown"), "tail": v, "properties": data})
+                elif query_entity and relation_type and not target_entity: # Find tails for head and relation
+                    if self.graph_store.has_node(query_entity):
+                        for u, v, data in self.graph_store.out_edges(query_entity, data=True):
+                             if (data.get("user_id") == target_user_id or target_user_id is None) and data.get("relation_type") == relation_type:
+                                results.append({"head": u, "relation": data.get("relation_type"), "tail": v, "properties": data})
+                # Add more query patterns as needed (e.g., (None, relation, tail), (head, None, tail))
+                else: # Fallback: just return some neighbors if a query entity is given
+                    if query_entity and self.graph_store.has_node(query_entity):
+                        for neighbor in list(nx.neighbors(self.graph_store, query_entity))[:limit]: # type: ignore
+                            # Find edges between query_entity and neighbor
+                            for u, v, data in self.graph_store.edges(query_entity, data=True):
+                                if v == neighbor and (data.get("user_id") == target_user_id or target_user_id is None):
+                                    results.append({"head": u, "relation": data.get("relation_type", "related_to"), "tail": v, "properties": data})
+                                    break # Assuming one type of relation for simplicity or take first
+            elif self.graph_store is None and not NETWORKX_AVAILABLE: # list fallback
+                 for triplet in self.graph_store_list_fallback:
+                     match = True
+                     if triplet.get("user_id") != target_user_id and target_user_id is not None: continue
+                     if query_entity and triplet.get("head") != query_entity: match = False
+                     if relation_type and triplet.get("relation") != relation_type: match = False
+                     if target_entity and triplet.get("tail") != target_entity: match = False
+                     if match: results.append(triplet)
+            else: # If mem0 client itself has a graph search method
+                # results = await self._mem0_client.search_kg(entity=query_entity, relation=relation_type, limit=limit, user_id=target_user_id)
+                print("Mem0MemorySystem: Actual mem0 graph search not implemented in this mock layer.")
+                pass
+
+            return results[:limit]
+    ```
+
+3.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Add new actions `add_triplets` and `search_graph` to the `execute` method.
+    *   Implement corresponding private helper methods (`_add_triplets`, `_search_graph`).
+
+    ```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports and __init__ as in Task 18)
+
+    class MemoryAgentTool(Tool):
+        # ... (__init__, _emit_memory_event methods as before)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            user_id_for_op = kwargs.get("user_id", self.memory_system.agent_id) 
+
+            try:
+                if action == "add":
+                    # ... (as in Task 18)
+                    messages = kwargs.get("messages"); data_to_add = kwargs.get("data")
+                    memory_id_arg = kwargs.get("memory_id"); metadata_arg = kwargs.get("metadata")
+                    if messages: return await self._add_from_messages(messages, user_id_for_op)
+                    elif data_to_add is not None: return await self._add_generic_memory(data_to_add, memory_id_arg, user_id_for_op, metadata_arg)
+                    else: return ToolResponse("Error: 'messages' or 'data' required for 'add'.", error=True)
+
+                elif action == "search":
+                    # ... (as in Task 18)
+                    query = kwargs.get("query"); limit = kwargs.get("limit", 5)
+                    if not query: return ToolResponse("Error: 'query' required.", error=True)
+                    return await self._search_memory(query, user_id_for_op, limit)
+                
+                elif action == "update":
+                    # ... (as in Task 18)
+                    memory_id_arg = kwargs.get("memory_id"); new_data = kwargs.get("data"); new_metadata = kwargs.get("metadata")
+                    if not memory_id_arg or new_data is None: return ToolResponse("Error: 'memory_id' and 'data' required.", error=True)
+                    return await self._update_memory(memory_id_arg, new_data, user_id_for_op, new_metadata)
+                    
+                elif action == "delete":
+                    # ... (as in Task 18)
+                    memory_id_arg = kwargs.get("memory_id")
+                    if not memory_id_arg: return ToolResponse("Error: 'memory_id' required.", error=True)
+                    return await self._delete_memory(memory_id_arg, user_id_for_op)
+
+                elif action == "get_all":
+                     return await self._get_all_memories(user_id_for_op)
+
+                # New Graph Actions
+                elif action == "add_triplets":
+                    triplets = kwargs.get("triplets") # List of {"head": "...", "relation": "...", "tail": "..."}
+                    if not triplets or not isinstance(triplets, list):
+                        return ToolResponse("Error: 'triplets' (list of dicts) is required for add_triplets.", error=True)
+                    return await self._add_triplets(triplets, user_id_for_op)
+
+                elif action == "search_graph":
+                    query_entity = kwargs.get("entity")
+                    relation_type = kwargs.get("relation")
+                    target_entity = kwargs.get("target") # Name consistent with search_knowledge_graph
+                    limit = kwargs.get("limit", 10)
+                    if not query_entity and not relation_type and not target_entity:
+                        return ToolResponse("Error: At least one of 'entity', 'relation', or 'target' must be provided for search_graph.", error=True)
+                    return await self._search_graph(query_entity, relation_type, target_entity, user_id_for_op, limit)
+                
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+            # ... (exception handling as before)
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error: {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id_for_op": user_id_for_op})
+                return ToolResponse(message=error_message, error=True)
+
+        # ... (_add_from_messages, _add_generic_memory, _search_memory, _update_memory, _delete_memory, _get_all_memories as in Task 18)
+        
+        # New private helper methods for graph operations
+        async def _add_triplets(self, triplets: List[Dict[str, Any]], user_id_for_op: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("add_triplets", "starting", {"triplet_count": len(triplets), "user_id": user_id_for_op})
+            result = await self.memory_system.add_knowledge_graph_triplets(triplets, user_id_override=user_id_for_op)
+            status = "completed" if result.get("status") == "success" else "failed"
+            await self._emit_memory_event("add_triplets", status, {**result, "user_id": user_id_for_op})
+            return ToolResponse(message=f"Add triplets {status}. Added: {result.get('triplets_added', 0)}", data=result)
+
+        async def _search_graph(self, query_entity: Optional[str], relation_type: Optional[str], 
+                                target_entity: Optional[str], user_id_for_op: Optional[str], limit: int) -> ToolResponse:
+            query_details = {"entity": query_entity, "relation": relation_type, "target": target_entity, "limit": limit, "user_id": user_id_for_op}
+            await self._emit_memory_event("search_graph", "processing", query_details)
+            results = await self.memory_system.search_knowledge_graph(
+                query_entity, relation_type, target_entity, user_id_override=user_id_for_op, limit=limit
+            )
+            await self._emit_memory_event("search_graph", "completed", {"query": query_details, "results_count": len(results)})
+            return ToolResponse(message=json.dumps(results), data=results)
+
+    ```
+
+4.  **Update `prompts/default/agent.system.tools.md`:**
+    *   Add new actions `add_triplets` and `search_graph` to `memory_agent_tool`'s description.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing memory_agent_tool description)
+    #   For "add_triplets":
+    #     triplets: list[dict] - List of KG triplets. Each dict: {"head": str, "relation": str, "tail": str, "properties": Optional[dict]}.
+    #   For "search_graph":
+    #     entity: string - (Optional) An entity to search for connections to/from.
+    #     relation: string - (Optional) A specific relation type to filter by.
+    #     target: string - (Optional) A target entity for a specific relation.
+    #     limit: int - (Optional, default 10) Max graph search results.
+    # Example for adding KG triplets:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { 
+    #     "action": "add_triplets", 
+    #     "triplets": [{"head": "User123", "relation": "likes", "tail": "Pizza"}, {"head": "Pizza", "relation": "is_a", "tail": "Food"}],
+    #     "user_id": "user123"
+    #   }
+    # }
+    # Example for graph search:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "search_graph", "entity": "User123", "relation": "likes", "user_id": "user123" }
+    # }
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-25 completed.
+*   `mem0` library installed (as per Task 18).
+*   `networkx` added to `requirements.txt` and installed for the in-memory graph simulation.
+*   `OPENAI_API_KEY` set if `mem0` or our `EmbeddingGenerator` uses it for graph-related LLM tasks (e.g., entity/relation extraction, which is not yet implemented but a future step for Mem0).
+
+**Integration with Agent Zero:**
+*   `Mem0MemorySystem` now includes a basic in-memory graph store (using `networkx` or a list fallback) and methods to add/query triplets.
+*   `MemoryAgentTool` exposes these graph functionalities as new actions (`add_triplets`, `search_graph`).
+*   The agent can now instruct the tool to store and retrieve simple knowledge graph structures.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `networkx` to `requirements.txt`.
+*   No other new system-level dependencies are expected for this conceptual graph integration.
+
+**Summary of Task 26:**
+This task introduces placeholder support for graph memory capabilities within the `MemoryAgentTool`, inspired by Mem0. It adds actions for explicitly adding and querying simple knowledge graph triplets. The actual storage is a basic in-memory simulation using `networkx` (or a list if `networkx` isn't available). This sets the stage for potentially integrating more advanced graph features from `mem0` or other graph databases later, and for having the agent reason over or build these graph structures. The LLM-driven extraction of entities/relations from text to populate the graph is not yet part of this task.
+
+Please confirm to proceed.

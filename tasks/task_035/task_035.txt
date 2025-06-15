@@ -1,0 +1,447 @@
+## Task 35: Implement `GENERATIVE_UI` Event Emission Concept and Placeholder
+
+**Focus:**
+This task introduces the concept of `GENERATIVE_UI` events from the AG-UI protocol. This event type allows the agent to request the frontend to render dynamic UI components (e.g., forms, buttons, custom visualizations). For this task, we will:
+1.  Add a placeholder mechanism in the `Agent` for deciding when to request generative UI.
+2.  Implement the emission of a `GENERATIVE_UI` event with a basic payload (e.g., requesting a simple form).
+3.  The actual rendering on the client-side and handling of client-side UI interactions that send data back to the agent are beyond the scope of this backend task but the backend will be ready to send such requests.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` class):**
+    *   Add a method or logic within `monologue` or a tool's response processing that can decide to request a UI component.
+    *   Use `_emit_stream_event` to send the `GENERATIVE_UI` event.
+
+    ```python
+# agent.py
+    # ... (imports, including StreamEventType)
+
+    class Agent:
+        # ... (existing methods)
+
+        async def _request_generative_ui(self, component_name: str, component_props: Dict[str, Any], 
+                                         request_id: Optional[str] = None) -> str:
+            """
+            Emits a GENERATIVE_UI event to request the frontend to render a component.
+            Returns a request_id that the frontend should use when sending back data from this UI.
+            """
+            ui_request_id = request_id or f"ui_req_{str(uuid.uuid4())}"
+            payload = {
+                "request_id": ui_request_id,
+                "component_name": component_name, # e.g., "user_feedback_form", "data_table_viewer"
+                "properties": component_props,     # Data to initialize the component
+                "status": "request_render"
+            }
+            await self._emit_stream_event(StreamEventType.GENERATIVE_UI, payload)
+            print(f"Agent {self.agent_name}: Requested generative UI '{component_name}' with ID '{ui_request_id}'.")
+            return ui_request_id
+
+        async def monologue(self) -> Optional[str]:
+            # ... (existing monologue loop)
+
+            while self.iteration_no < self.max_iterations:
+                # ... (intervention checks, thoughts, LLM call)
+
+                # --- Tool Call section or specific agent logic ---
+                # Example: After a tool call, the agent decides it needs user input via a form
+                if tool_name == "some_data_analysis_tool" and tool_response and tool_response.data:
+                    analysis_summary = tool_response.data.get("summary")
+                    if tool_response.data.get("needs_clarification_via_form"):
+                        form_fields = [
+                            {"name": "param1", "label": "Parameter 1", "type": "text", "default": "valueA"},
+                            {"name": "param2", "label": "Confirm Option", "type": "boolean", "default": True}
+                        ]
+                        ui_prompt = f"Analysis complete: {analysis_summary}. Please provide clarification using the form below for next steps."
+                        
+                        # Emit the event to render a form
+                        ui_request_id = await self._request_generative_ui(
+                            component_name="clarification_form",
+                            component_props={"title": "Clarification Needed", "fields": form_fields, "submit_button_text": "Submit Clarification"},
+                        )
+                        
+                        # Agent now needs to pause and wait for the UI interaction result.
+                        # This is similar to HUMAN_INTERVENTION.
+                        intervention_prompt = f"{ui_prompt} (Awaiting form submission with ID: {ui_request_id})"
+                        self.context.request_intervention(intervention_prompt)
+                        await self._emit_stream_event(
+                            StreamEventType.HUMAN_INTERVENTION, # Signal general pause
+                            {"prompt": intervention_prompt, "status": "required", "ui_request_id": ui_request_id}
+                        )
+                        await self._check_and_handle_intervention() # This will pause
+                        # When resumed, the next user message should ideally contain the form data,
+                        # possibly identified by the ui_request_id.
+                        continue # Restart loop to process form data
+
+                # ... (handling of 'response' tool and other logic)
+            # ... (end of monologue)
+            return None
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None,
+                                           ui_response_data: Optional[Dict[str, Any]] = None): # New param for UI data
+            """
+            Processes a message. If ui_response_data is present, it's data from a generative UI component.
+            """
+            # ... (existing state update from incoming_state)
+            print(f"Agent {self.agent_name}: process_streamed_message. Role='{role}', Content='{content[:50]}...'")
+            
+            if ui_response_data:
+                ui_request_id = ui_response_data.get("ui_request_id")
+                form_data = ui_response_data.get("data")
+                print(f"Agent {self.agent_name}: Received UI response for request_id '{ui_request_id}': {form_data}")
+                await self._emit_stream_event(
+                    StreamEventType.GENERATIVE_UI,
+                    {"request_id": ui_request_id, "data_received": form_data, "status": "response_received"}
+                )
+                # Store this UI response data in context or history for the agent to use
+                # This could be a special type of message in history or directly used.
+                # For now, let's log it and if intervention was active, resolve it.
+                self.hist_add_message( # Add a new message type or use system/tool_result
+                    role="system", # Or a custom "ui_response" role
+                    message_type="ui_response", # Custom field
+                    content=f"Data received from UI component (ID: {ui_request_id}): {json.dumps(form_data)}"
+                )
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "ui_response_added", "ui_request_id": ui_request_id})
+
+                if self.context.intervention_needed and self.context.intervention_prompt and ui_request_id in self.context.intervention_prompt:
+                    print(f"Agent {self.agent_name}: UI response received, resolving intervention for {ui_request_id}.")
+                    self.context.resolve_intervention()
+            
+            # ... (rest of process_streamed_message logic from Task 34 for regular messages)
+            # If it was a regular user message (not ui_response_data)
+            if not ui_response_data and role.lower() == "user":
+                if self.context.intervention_needed:
+                    self.context.resolve_intervention()
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj)
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "user_message_added", "content_preview": content[:50]})
+            
+            # Trigger monologue if it's a user message or if a UI response should trigger further processing
+            if role.lower() == "user" or ui_response_data:
+                return await self.monologue()
+            
+            return None
+```
+    **Key changes in `agent.py`:**
+    *   `Agent._request_generative_ui`: New helper method to construct and emit `GENERATIVE_UI` events. It returns a `ui_request_id`.
+    *   `Agent.monologue`: Example logic shows how an agent might decide to request a form (e.g., after a tool call). It then uses `_request_generative_ui` and subsequently requests `HUMAN_INTERVENTION` to pause and wait for the UI data.
+    *   `Agent.process_streamed_message`: Modified to accept an optional `ui_response_data` parameter. If this is present, it means the incoming "message" from the client is actually data submitted from a generative UI component. It logs this data, adds it to history (or context), and resolves any related intervention.
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method needs to be aware that an incoming message from the client might contain `ui_response_data`.
+    *   If `input_data` (from `RunAgentInput`) contains a special field like `uiResponse`, it should be passed to `agent.process_streamed_message`.
+
+    ```python
+# python/tools/stream_protocol_tool.py
+    # ... (imports)
+
+    class StreamProtocolTool(Tool):
+        # ... (__init__ and other methods)
+
+        async def _handle_input(self, input_data: Dict[str, Any]): # input_data is parsed RunAgentInput
+            """Process incoming frontend input (RunAgentInput schema)"""
+            try:
+                run_input = RunAgentInput(
+                    thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                    messages=input_data.get("messages", []), # Standard messages
+                    state=input_data.get("state"),
+                    user_id=input_data.get("userId"),
+                    metadata=input_data.get("metadata", {})
+                )
+                
+                # AG-UI Spec: Data from generative UI components might come back via a standard message
+                # with a special role or metadata, or as a dedicated event type from client to server.
+                # For this example, let's assume if `messages` contains an item with role="ui_response",
+                # or if `input_data` has a top-level `uiResponse` field.
+                # Let's check for a top-level `uiResponse` in the raw `input_data` for now.
+                
+                ui_response_payload = input_data.get("uiResponse") # Custom field in RunAgentInput or a separate message type
+
+                self.agent.set_thread_id(run_input.thread_id)
+                if run_input.user_id: self.agent.set_user_id(run_input.user_id)
+
+                if ui_response_payload and isinstance(ui_response_payload, dict):
+                    print(f"StreamProtocolTool: Detected uiResponse in input_data: {ui_response_payload}")
+                    # Process this as a UI response, content might be empty if data is purely structured
+                    await self.agent.process_streamed_message(
+                        content=json.dumps(ui_response_payload.get("data", {})), # Represent data as string for content
+                        role="ui_response", # Custom role to distinguish
+                        attachments=None,
+                        incoming_state=run_input.state, # Client might send state with UI response
+                        ui_response_data=ui_response_payload # Pass the structured UI response
+                    )
+                    # If there were also regular messages in this RunAgentInput, process them too
+                    # Or, assume RunAgentInput with uiResponse doesn't also have regular messages.
+                    # For now, let's assume they are mutually exclusive or uiResponse takes precedence for this input.
+                
+                elif run_input.messages: # Process regular messages
+                    for i, message_data in enumerate(run_input.messages):
+                        state_to_pass = run_input.state if i == 0 and not ui_response_payload else None
+                        await self.agent.process_streamed_message(
+                            content=message_data.get("content", ""),
+                            role=message_data.get("role", "user").lower(),
+                            attachments=message_data.get("attachments"),
+                            incoming_state=state_to_pass,
+                            ui_response_data=None # Not a UI response if in messages list like this
+                        )
+                elif run_input.state is not None and not ui_response_payload: # Only state update, no messages
+                    await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push_no_message")
+                
+                # ... (Tool's local active_threads management & session start as before)
+                return self.agent_response({
+                    "success": True, "thread_id": run_input.thread_id, 
+                    "messages_processed": len(run_input.messages),
+                    "ui_response_processed": bool(ui_response_payload),
+                    "state_applied": bool(run_input.state is not None)
+                })
+            except Exception as e:
+                # ... (error handling)
+                return self.agent_response(f"Input processing error: {str(e)}", error=True)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-34 completed.
+*   `HUMAN_INTERVENTION` logic is in place for pausing/resuming the agent.
+*   `StreamProtocolTool` and `Agent` can exchange information.
+
+**Integration with Agent Zero:**
+*   The `Agent` can now decide to request dynamic UI components from the frontend by emitting a `GENERATIVE_UI` event. This payload includes a `component_name` and `properties` for the UI to render, and a `request_id`.
+*   After requesting UI, the agent typically pauses (using the `HUMAN_INTERVENTION` mechanism) to await user interaction with that UI.
+*   The `StreamProtocolTool` is updated to recognize incoming data from such UI components (e.g., via a special field in `RunAgentInput` or a specific message role).
+*   `Agent.process_streamed_message` is updated to handle this `ui_response_data`, making it available to the agent's logic and resolving the intervention.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, a generative UI component could be used, for example, to allow the user to select a TTS voice or adjust TTS parameters before speech generation. The agent would request this form, and the TTS tool would later use the submitted values.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 35:**
+This task introduces the capability for the Agent Zero backend to request dynamic UI rendering from an AG-UI compliant frontend. The agent can emit `GENERATIVE_UI` events specifying what component to render and its properties. It then typically pauses for user interaction. The system is also prepared to receive data back from these UI components, allowing for more complex and interactive agent workflows. The actual UI rendering and client-side logic are outside the scope of these backend tasks.
+
+Please confirm to proceed.Okay, let's proceed with Task 35.
+
+## Task 35: Implement `GENERATIVE_UI` Event Emission Concept and Placeholder
+
+**Focus:**
+This task introduces the concept of `GENERATIVE_UI` events from the AG-UI protocol. This event type allows the agent to request the frontend to render dynamic UI components (e.g., forms, buttons, custom visualizations). For this task, we will:
+1.  Add a placeholder mechanism in the `Agent` for deciding when to request generative UI.
+2.  Implement the emission of a `GENERATIVE_UI` event with a basic payload (e.g., requesting a simple form).
+3.  The actual rendering on the client-side and handling of client-side UI interactions that send data back to the agent are beyond the scope of this backend task but the backend will be ready to send such requests.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` class):**
+    *   Add a method or logic within `monologue` or a tool's response processing that can decide to request a UI component.
+    *   Use `_emit_stream_event` to send the `GENERATIVE_UI` event.
+
+    ```python
+    # agent.py
+    # ... (imports, including StreamEventType)
+
+    class Agent:
+        # ... (existing methods)
+
+        async def _request_generative_ui(self, component_name: str, component_props: Dict[str, Any], 
+                                         request_id: Optional[str] = None) -> str:
+            """
+            Emits a GENERATIVE_UI event to request the frontend to render a component.
+            Returns a request_id that the frontend should use when sending back data from this UI.
+            """
+            ui_request_id = request_id or f"ui_req_{str(uuid.uuid4())}"
+            payload = {
+                "request_id": ui_request_id,
+                "component_name": component_name, # e.g., "user_feedback_form", "data_table_viewer"
+                "properties": component_props,     # Data to initialize the component
+                "status": "request_render"
+            }
+            await self._emit_stream_event(StreamEventType.GENERATIVE_UI, payload)
+            print(f"Agent {self.agent_name}: Requested generative UI '{component_name}' with ID '{ui_request_id}'.")
+            return ui_request_id
+
+        async def monologue(self) -> Optional[str]:
+            # ... (existing monologue loop)
+
+            while self.iteration_no < self.max_iterations:
+                # ... (intervention checks, thoughts, LLM call)
+
+                # --- Tool Call section or specific agent logic ---
+                # Example: After a tool call, the agent decides it needs user input via a form
+                if tool_name == "some_data_analysis_tool" and tool_response and tool_response.data:
+                    analysis_summary = tool_response.data.get("summary")
+                    if tool_response.data.get("needs_clarification_via_form"):
+                        form_fields = [
+                            {"name": "param1", "label": "Parameter 1", "type": "text", "default": "valueA"},
+                            {"name": "param2", "label": "Confirm Option", "type": "boolean", "default": True}
+                        ]
+                        ui_prompt = f"Analysis complete: {analysis_summary}. Please provide clarification using the form below for next steps."
+                        
+                        # Emit the event to render a form
+                        ui_request_id = await self._request_generative_ui(
+                            component_name="clarification_form",
+                            component_props={"title": "Clarification Needed", "fields": form_fields, "submit_button_text": "Submit Clarification"},
+                        )
+                        
+                        # Agent now needs to pause and wait for the UI interaction result.
+                        # This is similar to HUMAN_INTERVENTION.
+                        intervention_prompt = f"{ui_prompt} (Awaiting form submission with ID: {ui_request_id})"
+                        self.context.request_intervention(intervention_prompt)
+                        await self._emit_stream_event(
+                            StreamEventType.HUMAN_INTERVENTION, # Signal general pause
+                            {"prompt": intervention_prompt, "status": "required", "ui_request_id": ui_request_id}
+                        )
+                        await self._check_and_handle_intervention() # This will pause
+                        # When resumed, the next user message should ideally contain the form data,
+                        # possibly identified by the ui_request_id.
+                        continue # Restart loop to process form data
+
+                # ... (handling of 'response' tool and other logic)
+            # ... (end of monologue)
+            return None
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None,
+                                           ui_response_data: Optional[Dict[str, Any]] = None): # New param for UI data
+            """
+            Processes a message. If ui_response_data is present, it's data from a generative UI component.
+            """
+            # ... (existing state update from incoming_state)
+            print(f"Agent {self.agent_name}: process_streamed_message. Role='{role}', Content='{content[:50]}...'")
+            
+            if ui_response_data:
+                ui_request_id = ui_response_data.get("ui_request_id")
+                form_data = ui_response_data.get("data")
+                print(f"Agent {self.agent_name}: Received UI response for request_id '{ui_request_id}': {form_data}")
+                await self._emit_stream_event(
+                    StreamEventType.GENERATIVE_UI,
+                    {"request_id": ui_request_id, "data_received": form_data, "status": "response_received"}
+                )
+                # Store this UI response data in context or history for the agent to use
+                # This could be a special type of message in history or directly used.
+                # For now, let's log it and if intervention was active, resolve it.
+                self.hist_add_message( # Add a new message type or use system/tool_result
+                    role="system", # Or a custom "ui_response" role
+                    message_type="ui_response", # Custom field
+                    content=f"Data received from UI component (ID: {ui_request_id}): {json.dumps(form_data)}"
+                )
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "ui_response_added", "ui_request_id": ui_request_id})
+
+                if self.context.intervention_needed and self.context.intervention_prompt and ui_request_id in self.context.intervention_prompt:
+                    print(f"Agent {self.agent_name}: UI response received, resolving intervention for {ui_request_id}.")
+                    self.context.resolve_intervention()
+            
+            # ... (rest of process_streamed_message logic from Task 34 for regular messages)
+            # If it was a regular user message (not ui_response_data)
+            if not ui_response_data and role.lower() == "user":
+                if self.context.intervention_needed:
+                    self.context.resolve_intervention()
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj)
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "user_message_added", "content_preview": content[:50]})
+            
+            # Trigger monologue if it's a user message or if a UI response should trigger further processing
+            if role.lower() == "user" or ui_response_data:
+                return await self.monologue()
+            
+            return None
+    ```
+    **Key changes in `agent.py`:**
+    *   `Agent._request_generative_ui`: New helper method to construct and emit `GENERATIVE_UI` events. It returns a `ui_request_id`.
+    *   `Agent.monologue`: Example logic shows how an agent might decide to request a form (e.g., after a tool call). It then uses `_request_generative_ui` and subsequently requests `HUMAN_INTERVENTION` to pause and wait for the UI data.
+    *   `Agent.process_streamed_message`: Modified to accept an optional `ui_response_data` parameter. If this is present, it means the incoming "message" from the client is actually data submitted from a generative UI component. It logs this data, adds it to history (or context), and resolves any related intervention.
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method needs to be aware that an incoming message from the client might contain `ui_response_data`.
+    *   If `input_data` (from `RunAgentInput`) contains a special field like `uiResponse`, it should be passed to `agent.process_streamed_message`.
+
+    ```python
+    # python/tools/stream_protocol_tool.py
+    # ... (imports)
+
+    class StreamProtocolTool(Tool):
+        # ... (__init__ and other methods)
+
+        async def _handle_input(self, input_data: Dict[str, Any]): # input_data is parsed RunAgentInput
+            """Process incoming frontend input (RunAgentInput schema)"""
+            try:
+                run_input = RunAgentInput(
+                    thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                    messages=input_data.get("messages", []), # Standard messages
+                    state=input_data.get("state"),
+                    user_id=input_data.get("userId"),
+                    metadata=input_data.get("metadata", {})
+                )
+                
+                # AG-UI Spec: Data from generative UI components might come back via a standard message
+                # with a special role or metadata, or as a dedicated event type from client to server.
+                # For this example, let's assume if `messages` contains an item with role="ui_response",
+                # or if `input_data` has a top-level `uiResponse` field.
+                # Let's check for a top-level `uiResponse` in the raw `input_data` for now.
+                
+                ui_response_payload = input_data.get("uiResponse") # Custom field in RunAgentInput or a separate message type
+
+                self.agent.set_thread_id(run_input.thread_id)
+                if run_input.user_id: self.agent.set_user_id(run_input.user_id)
+
+                if ui_response_payload and isinstance(ui_response_payload, dict):
+                    print(f"StreamProtocolTool: Detected uiResponse in input_data: {ui_response_payload}")
+                    # Process this as a UI response, content might be empty if data is purely structured
+                    await self.agent.process_streamed_message(
+                        content=json.dumps(ui_response_payload.get("data", {})), # Represent data as string for content
+                        role="ui_response", # Custom role to distinguish
+                        attachments=None,
+                        incoming_state=run_input.state, # Client might send state with UI response
+                        ui_response_data=ui_response_payload # Pass the structured UI response
+                    )
+                    # If there were also regular messages in this RunAgentInput, process them too
+                    # Or, assume RunAgentInput with uiResponse doesn't also have regular messages.
+                    # For now, let's assume they are mutually exclusive or uiResponse takes precedence for this input.
+                
+                elif run_input.messages: # Process regular messages
+                    for i, message_data in enumerate(run_input.messages):
+                        state_to_pass = run_input.state if i == 0 and not ui_response_payload else None
+                        await self.agent.process_streamed_message(
+                            content=message_data.get("content", ""),
+                            role=message_data.get("role", "user").lower(),
+                            attachments=message_data.get("attachments"),
+                            incoming_state=state_to_pass,
+                            ui_response_data=None # Not a UI response if in messages list like this
+                        )
+                elif run_input.state is not None and not ui_response_payload: # Only state update, no messages
+                    await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push_no_message")
+                
+                # ... (Tool's local active_threads management & session start as before)
+                return self.agent_response({
+                    "success": True, "thread_id": run_input.thread_id, 
+                    "messages_processed": len(run_input.messages),
+                    "ui_response_processed": bool(ui_response_payload),
+                    "state_applied": bool(run_input.state is not None)
+                })
+            except Exception as e:
+                # ... (error handling)
+                return self.agent_response(f"Input processing error: {str(e)}", error=True)
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-34 completed.
+*   `HUMAN_INTERVENTION` logic is in place for pausing/resuming the agent.
+*   `StreamProtocolTool` and `Agent` can exchange information.
+
+**Integration with Agent Zero:**
+*   The `Agent` can now decide to request dynamic UI components from the frontend by emitting a `GENERATIVE_UI` event. This payload includes a `component_name` and `properties` for the UI to render, and a `request_id`.
+*   After requesting UI, the agent typically pauses (using the `HUMAN_INTERVENTION` mechanism) to await user interaction with that UI.
+*   The `StreamProtocolTool` is updated to recognize incoming data from such UI components (e.g., via a special field in `RunAgentInput` or a specific message role).
+*   `Agent.process_streamed_message` is updated to handle this `ui_response_data`, making it available to the agent's logic and resolving the intervention.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, a generative UI component could be used, for example, to allow the user to select a TTS voice or adjust TTS parameters before speech generation. The agent would request this form, and the TTS tool would later use the submitted values.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 35:**
+This task introduces the capability for the Agent Zero backend to request dynamic UI rendering from an AG-UI compliant frontend. The agent can emit `GENERATIVE_UI` events specifying what component to render and its properties. It then typically pauses for user interaction. The system is also prepared to receive data back from these UI components, allowing for more complex and interactive agent workflows. The actual UI rendering and client-side logic are outside the scope of these backend tasks.
+
+Please confirm to proceed.

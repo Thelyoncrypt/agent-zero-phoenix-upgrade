@@ -1,0 +1,482 @@
+## Task 27: Integrate Mem0's LLM-based Memory Processing (Conceptual - Summarization)
+
+**Focus:**
+This task aims to conceptually integrate LLM-based memory processing into the `MemoryAgentTool`, specifically focusing on a placeholder for memory summarization, a common feature in advanced memory systems like Mem0.
+1.  Add a new action `summarize_memory` to `MemoryAgentTool`.
+2.  In `Mem0MemorySystem`, implement a placeholder method that would take a memory ID or query, retrieve the memory, and then (conceptually) use an LLM to summarize its content. For now, the LLM call will be a simple mock.
+3.  This allows the agent to request condensed versions of stored memories.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Add `summarize_memory_content` method to `Mem0MemorySystem`.
+
+    ```python
+# python/agents/memory_agent/memory.py
+    # ... (imports as in Task 26, ensure OpenAI client is available if we make a real LLM call)
+    import os
+    from openai import OpenAI, APIError, RateLimitError # If making a direct LLM call
+    # ... (Mem0Client placeholder or real import)
+    # ... (networkx placeholder or real import)
+
+    class Mem0MemorySystem:
+        # ... (__init__ and other methods from Task 26)
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None):
+            self.agent_id = agent_id
+            
+            if not MEM0_AVAILABLE:
+                # ... (placeholder client init)
+                self._mem0_client = Mem0Client() 
+                self._llm_client_for_summary = None # No LLM if mem0 not available
+            else:
+                try:
+                    self._mem0_client = Mem0Client(config=config)
+                    # Initialize a separate OpenAI client for summarization if mem0 doesn't expose it directly
+                    # or if we want different model/params for summarization.
+                    # This assumes OPENAI_API_KEY is set.
+                    self._llm_client_for_summary = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                    self.summary_llm_model = os.getenv("OPENAI_MODEL_SUMMARY", "gpt-4o-mini") # Specific model for summary
+                    print(f"Mem0MemorySystem: Initialized real mem0.Memory client and LLM for summary ({self.summary_llm_model}) for agent_id scope: {self.agent_id}")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error initializing: {e}. Some features might be placeholder.")
+                    self._mem0_client = Mem0Client()
+                    self._llm_client_for_summary = None
+
+            # ... (graph_store initialization)
+
+        # ... (add_messages, add_generic_memory, search, update, delete, get_all, add_knowledge_graph_triplets, search_knowledge_graph)
+
+        async def summarize_memory_content(self, memory_id: Optional[str] = None, query_for_context: Optional[str] = None, user_id_override: Optional[str] = None) -> Optional[str]:
+            """
+            Retrieves a memory (or memories related to a query) and generates a summary using an LLM.
+            If memory_id is given, summarizes that specific memory.
+            If query_for_context is given, searches for relevant memories and summarizes them collectively.
+            """
+            target_user_id = user_id_override or self.agent_id
+            print(f"Mem0MemorySystem: Summarizing memory for user '{target_user_id}'. ID: {memory_id}, Query: {query_for_context}")
+
+            if not self._llm_client_for_summary and MEM0_AVAILABLE: # Only if real mem0 is expected
+                print("Mem0MemorySystem: LLM client for summarization not available. Cannot summarize.")
+                return "Summarization service not available."
+            
+            if not MEM0_AVAILABLE and self._llm_client_for_summary is None: # Full placeholder mode
+                return "Mock summary: This is a brief overview of the requested memory content."
+
+
+            text_to_summarize = ""
+            if memory_id:
+                memory_item = await self.get(memory_id) # Assuming get is part of BaseMemory / Mem0Client
+                if memory_item:
+                    text_to_summarize = memory_item.get("text_for_embedding") or str(memory_item.get("data"))
+                else:
+                    return f"Memory with ID '{memory_id}' not found."
+            elif query_for_context:
+                # Retrieve relevant memories first
+                # mem0's search already returns text content
+                relevant_memories = await self.search(query=query_for_context, user_id_override=target_user_id, limit=3) # Limit context for summary
+                if relevant_memories:
+                    text_to_summarize = "\n\n---\n\n".join([mem.get("text", str(mem.get("data",""))) for mem in relevant_memories if mem.get("text") or mem.get("data")])
+                else:
+                    return "No relevant memories found for the query to summarize."
+            else:
+                return "Either memory_id or query_for_context must be provided for summarization."
+
+            if not text_to_summarize or not text_to_summarize.strip():
+                return "No content found to summarize for the given criteria."
+
+            # Simple truncation for very long texts before sending to LLM
+            max_summary_input_len = 4000 # Characters
+            if len(text_to_summarize) > max_summary_input_len:
+                text_to_summarize = text_to_summarize[:max_summary_input_len] + "..."
+                print(f"Mem0MemorySystem: Truncated text for summarization to {max_summary_input_len} chars.")
+
+            prompt = f"Please provide a concise summary of the following text:\n\nTEXT:\n\"\"\"\n{text_to_summarize}\n\"\"\"\n\nSUMMARY:"
+            messages = [
+                {"role": "system", "content": "You are an expert at summarizing text concisely."},
+                {"role": "user", "content": prompt}
+            ]
+
+            try:
+                response = await asyncio.to_thread(
+                    self._llm_client_for_summary.chat.completions.create,
+                    model=self.summary_llm_model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=150 # Limit summary length
+                )
+                summary = response.choices[0].message.content.strip()
+                print(f"Mem0MemorySystem: Generated summary: '{summary[:100]}...'")
+                return summary
+            except Exception as e:
+                print(f"Mem0MemorySystem: Error during LLM call for summarization: {e}")
+                return f"Could not generate summary due to an error: {str(e)}"
+```
+
+2.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Add a new action `summarize_memory` to the `execute` method.
+    *   Implement the corresponding private helper method `_summarize_memory`.
+
+    ```python
+# python/tools/memory_agent_tool.py
+    # ... (imports and __init__ as in Task 26)
+
+    class MemoryAgentTool(Tool):
+        # ... (__init__, _emit_memory_event, other action handlers as in Task 26)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            user_id_for_op = kwargs.get("user_id", self.memory_system.agent_id) 
+
+            try:
+                if action == "add":
+                    # ...
+                    pass
+                elif action == "search":
+                    # ...
+                    pass
+                elif action == "update":
+                    # ...
+                    pass
+                elif action == "delete":
+                    # ...
+                    pass
+                elif action == "get_all":
+                     # ...
+                    pass
+                elif action == "add_triplets":
+                    # ...
+                    pass
+                elif action == "search_graph":
+                    # ...
+                    pass
+                
+                # New Action for Summarization
+                elif action == "summarize_memory":
+                    memory_id_arg = kwargs.get("memory_id")
+                    query_for_context_arg = kwargs.get("query_for_context")
+                    if not memory_id_arg and not query_for_context_arg:
+                        return ToolResponse("Error: 'memory_id' or 'query_for_context' is required for summarize_memory.", error=True)
+                    return await self._summarize_memory(memory_id_arg, query_for_context_arg, user_id_for_op)
+
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+            # ... (exception handling as before)
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error: {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id_for_op": user_id_for_op})
+                return ToolResponse(message=error_message, error=True)
+
+
+        # ... (existing private helper methods _add_from_messages, etc.)
+
+        # New private helper method for summarization
+        async def _summarize_memory(self, memory_id: Optional[str], query_for_context: Optional[str], user_id_for_op: Optional[str]) -> ToolResponse:
+            details_for_event = {"user_id": user_id_for_op}
+            if memory_id: details_for_event["memory_id"] = memory_id
+            if query_for_context: details_for_event["query_for_context"] = query_for_context
+            
+            await self._emit_memory_event("summarize_memory", "processing", details_for_event)
+            
+            summary = await self.memory_system.summarize_memory_content(
+                memory_id=memory_id, 
+                query_for_context=query_for_context, 
+                user_id_override=user_id_for_op
+            )
+            
+            if summary and "Could not generate summary" not in summary and "not found" not in summary and "service not available" not in summary:
+                status = "completed"
+                response_message = "Memory summarized successfully."
+            else:
+                status = "failed"
+                response_message = summary or "Failed to generate summary."
+
+            await self._emit_memory_event("summarize_memory", status, {**details_for_event, "summary_length": len(summary or "")})
+            return ToolResponse(message=response_message, data={"summary": summary} if status == "completed" else None, error=(status=="failed"))
+```
+
+3.  **Update `prompts/default/agent.system.tools.md`:**
+    *   Add the new `summarize_memory` action to `memory_agent_tool`'s description.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing memory_agent_tool description including add_triplets, search_graph)
+    #   For "summarize_memory":
+    #     memory_id: string - (Optional) ID of a specific memory to summarize.
+    #     query_for_context: string - (Optional if memory_id provided) A query to find relevant memories to summarize collectively.
+    #     user_id: string - (Optional) User context for the memory.
+    # Example for summarizing a specific memory:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "summarize_memory", "memory_id": "mem_xyz123", "user_id": "user123" }
+    # }
+    # Example for summarizing memories based on a query:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "summarize_memory", "query_for_context": "meetings about Project Phoenix", "user_id": "user123" }
+    # }
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-26 completed.
+*   `mem0` library installed (or its placeholder if `MEM0_AVAILABLE` is false).
+*   `openai` library installed and `OPENAI_API_KEY` (and optionally `OPENAI_MODEL_SUMMARY`) configured if `MEM0_AVAILABLE` is true and its internal LLM features are used, or if our `Mem0MemorySystem` directly calls an LLM for summarization.
+
+**Integration with Agent Zero:**
+*   `Mem0MemorySystem` now has a `summarize_memory_content` method that (conceptually or actually, depending on `MEM0_AVAILABLE` and `_llm_client_for_summary`) uses an LLM to summarize stored memory content.
+*   `MemoryAgentTool` exposes this as a `summarize_memory` action.
+*   The agent can now request summaries of its memories, which can be useful for condensing information or providing overviews.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. The summary produced is textual.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond what `mem0` and `openai` already require.
+*   Ensure `OPENAI_API_KEY` (and `OPENAI_MODEL_SUMMARY` if used) are available in the Docker environment.
+
+**Summary of Task 27:**
+This task introduces a conceptual LLM-based summarization capability to the `MemoryAgentTool`. The `Mem0MemorySystem` can now (at least in placeholder or via a direct LLM call) generate summaries of specific memories or collections of memories retrieved by a query. This adds another layer of intelligent processing to the memory system, allowing the agent to work with more condensed information when appropriate. Actual reliance on `mem0`'s internal summarization or graph LLM features would require deeper integration with the `mem0` library's specific APIs for those functionalities if they are distinct from its basic `add`/`search` calls.
+
+Please confirm to proceed.Okay, let's proceed with Task 27.
+
+## Task 27: Integrate Mem0's LLM-based Memory Processing (Conceptual - Summarization)
+
+**Focus:**
+This task aims to conceptually integrate LLM-based memory processing into the `MemoryAgentTool`, specifically focusing on a placeholder for memory summarization, a common feature in advanced memory systems like Mem0.
+1.  Add a new action `summarize_memory` to `MemoryAgentTool`.
+2.  In `Mem0MemorySystem`, implement a placeholder method that would take a memory ID or query, retrieve the memory, and then (conceptually) use an LLM to summarize its content. For now, the LLM call will be a simple mock.
+3.  This allows the agent to request condensed versions of stored memories.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Add `summarize_memory_content` method to `Mem0MemorySystem`.
+
+    ```python
+    # python/agents/memory_agent/memory.py
+    # ... (imports as in Task 26, ensure OpenAI client is available if we make a real LLM call)
+    import os
+    from openai import OpenAI, APIError, RateLimitError # If making a direct LLM call
+    # ... (Mem0Client placeholder or real import)
+    # ... (networkx placeholder or real import)
+
+    class Mem0MemorySystem:
+        # ... (__init__ and other methods from Task 26)
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None):
+            self.agent_id = agent_id
+            
+            if not MEM0_AVAILABLE:
+                # ... (placeholder client init)
+                self._mem0_client = Mem0Client() 
+                self._llm_client_for_summary = None # No LLM if mem0 not available
+            else:
+                try:
+                    self._mem0_client = Mem0Client(config=config)
+                    # Initialize a separate OpenAI client for summarization if mem0 doesn't expose it directly
+                    # or if we want different model/params for summarization.
+                    # This assumes OPENAI_API_KEY is set.
+                    self._llm_client_for_summary = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                    self.summary_llm_model = os.getenv("OPENAI_MODEL_SUMMARY", "gpt-4o-mini") # Specific model for summary
+                    print(f"Mem0MemorySystem: Initialized real mem0.Memory client and LLM for summary ({self.summary_llm_model}) for agent_id scope: {self.agent_id}")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error initializing: {e}. Some features might be placeholder.")
+                    self._mem0_client = Mem0Client()
+                    self._llm_client_for_summary = None
+
+            # ... (graph_store initialization)
+
+        # ... (add_messages, add_generic_memory, search, update, delete, get_all, add_knowledge_graph_triplets, search_knowledge_graph)
+
+        async def summarize_memory_content(self, memory_id: Optional[str] = None, query_for_context: Optional[str] = None, user_id_override: Optional[str] = None) -> Optional[str]:
+            """
+            Retrieves a memory (or memories related to a query) and generates a summary using an LLM.
+            If memory_id is given, summarizes that specific memory.
+            If query_for_context is given, searches for relevant memories and summarizes them collectively.
+            """
+            target_user_id = user_id_override or self.agent_id
+            print(f"Mem0MemorySystem: Summarizing memory for user '{target_user_id}'. ID: {memory_id}, Query: {query_for_context}")
+
+            if not self._llm_client_for_summary and MEM0_AVAILABLE: # Only if real mem0 is expected
+                print("Mem0MemorySystem: LLM client for summarization not available. Cannot summarize.")
+                return "Summarization service not available."
+            
+            if not MEM0_AVAILABLE and self._llm_client_for_summary is None: # Full placeholder mode
+                return "Mock summary: This is a brief overview of the requested memory content."
+
+
+            text_to_summarize = ""
+            if memory_id:
+                memory_item = await self.get(memory_id) # Assuming get is part of BaseMemory / Mem0Client
+                if memory_item:
+                    text_to_summarize = memory_item.get("text_for_embedding") or str(memory_item.get("data"))
+                else:
+                    return f"Memory with ID '{memory_id}' not found."
+            elif query_for_context:
+                # Retrieve relevant memories first
+                # mem0's search already returns text content
+                relevant_memories = await self.search(query=query_for_context, user_id_override=target_user_id, limit=3) # Limit context for summary
+                if relevant_memories:
+                    text_to_summarize = "\n\n---\n\n".join([mem.get("text", str(mem.get("data",""))) for mem in relevant_memories if mem.get("text") or mem.get("data")])
+                else:
+                    return "No relevant memories found for the query to summarize."
+            else:
+                return "Either memory_id or query_for_context must be provided for summarization."
+
+            if not text_to_summarize or not text_to_summarize.strip():
+                return "No content found to summarize for the given criteria."
+
+            # Simple truncation for very long texts before sending to LLM
+            max_summary_input_len = 4000 # Characters
+            if len(text_to_summarize) > max_summary_input_len:
+                text_to_summarize = text_to_summarize[:max_summary_input_len] + "..."
+                print(f"Mem0MemorySystem: Truncated text for summarization to {max_summary_input_len} chars.")
+
+            prompt = f"Please provide a concise summary of the following text:\n\nTEXT:\n\"\"\"\n{text_to_summarize}\n\"\"\"\n\nSUMMARY:"
+            messages = [
+                {"role": "system", "content": "You are an expert at summarizing text concisely."},
+                {"role": "user", "content": prompt}
+            ]
+
+            try:
+                response = await asyncio.to_thread(
+                    self._llm_client_for_summary.chat.completions.create,
+                    model=self.summary_llm_model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=150 # Limit summary length
+                )
+                summary = response.choices[0].message.content.strip()
+                print(f"Mem0MemorySystem: Generated summary: '{summary[:100]}...'")
+                return summary
+            except Exception as e:
+                print(f"Mem0MemorySystem: Error during LLM call for summarization: {e}")
+                return f"Could not generate summary due to an error: {str(e)}"
+
+    ```
+
+2.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Add a new action `summarize_memory` to the `execute` method.
+    *   Implement the corresponding private helper method `_summarize_memory`.
+
+    ```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports and __init__ as in Task 26)
+
+    class MemoryAgentTool(Tool):
+        # ... (__init__, _emit_memory_event, other action handlers as in Task 26)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            user_id_for_op = kwargs.get("user_id", self.memory_system.agent_id) 
+
+            try:
+                if action == "add":
+                    # ...
+                    pass
+                elif action == "search":
+                    # ...
+                    pass
+                elif action == "update":
+                    # ...
+                    pass
+                elif action == "delete":
+                    # ...
+                    pass
+                elif action == "get_all":
+                     # ...
+                    pass
+                elif action == "add_triplets":
+                    # ...
+                    pass
+                elif action == "search_graph":
+                    # ...
+                    pass
+                
+                # New Action for Summarization
+                elif action == "summarize_memory":
+                    memory_id_arg = kwargs.get("memory_id")
+                    query_for_context_arg = kwargs.get("query_for_context")
+                    if not memory_id_arg and not query_for_context_arg:
+                        return ToolResponse("Error: 'memory_id' or 'query_for_context' is required for summarize_memory.", error=True)
+                    return await self._summarize_memory(memory_id_arg, query_for_context_arg, user_id_for_op)
+
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+            # ... (exception handling as before)
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error: {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id_for_op": user_id_for_op})
+                return ToolResponse(message=error_message, error=True)
+
+
+        # ... (existing private helper methods _add_from_messages, etc.)
+
+        # New private helper method for summarization
+        async def _summarize_memory(self, memory_id: Optional[str], query_for_context: Optional[str], user_id_for_op: Optional[str]) -> ToolResponse:
+            details_for_event = {"user_id": user_id_for_op}
+            if memory_id: details_for_event["memory_id"] = memory_id
+            if query_for_context: details_for_event["query_for_context"] = query_for_context
+            
+            await self._emit_memory_event("summarize_memory", "processing", details_for_event)
+            
+            summary = await self.memory_system.summarize_memory_content(
+                memory_id=memory_id, 
+                query_for_context=query_for_context, 
+                user_id_override=user_id_for_op
+            )
+            
+            if summary and "Could not generate summary" not in summary and "not found" not in summary and "service not available" not in summary:
+                status = "completed"
+                response_message = "Memory summarized successfully."
+            else:
+                status = "failed"
+                response_message = summary or "Failed to generate summary."
+
+            await self._emit_memory_event("summarize_memory", status, {**details_for_event, "summary_length": len(summary or "")})
+            return ToolResponse(message=response_message, data={"summary": summary} if status == "completed" else None, error=(status=="failed"))
+    ```
+
+3.  **Update `prompts/default/agent.system.tools.md`:**
+    *   Add the new `summarize_memory` action to `memory_agent_tool`'s description.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing memory_agent_tool description including add_triplets, search_graph)
+    #   For "summarize_memory":
+    #     memory_id: string - (Optional) ID of a specific memory to summarize.
+    #     query_for_context: string - (Optional if memory_id provided) A query to find relevant memories to summarize collectively.
+    #     user_id: string - (Optional) User context for the memory.
+    # Example for summarizing a specific memory:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "summarize_memory", "memory_id": "mem_xyz123", "user_id": "user123" }
+    # }
+    # Example for summarizing memories based on a query:
+    # {
+    #   "tool_name": "memory_agent_tool",
+    #   "tool_args": { "action": "summarize_memory", "query_for_context": "meetings about Project Phoenix", "user_id": "user123" }
+    # }
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-26 completed.
+*   `mem0` library installed (or its placeholder if `MEM0_AVAILABLE` is false).
+*   `openai` library installed and `OPENAI_API_KEY` (and optionally `OPENAI_MODEL_SUMMARY`) configured if `MEM0_AVAILABLE` is true and its internal LLM features are used, or if our `Mem0MemorySystem` directly calls an LLM for summarization.
+
+**Integration with Agent Zero:**
+*   `Mem0MemorySystem` now has a `summarize_memory_content` method that (conceptually or actually, depending on `MEM0_AVAILABLE` and `_llm_client_for_summary`) uses an LLM to summarize stored memory content.
+*   `MemoryAgentTool` exposes this as a `summarize_memory` action.
+*   The agent can now request summaries of its memories, which can be useful for condensing information or providing overviews.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. The summary produced is textual.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond what `mem0` and `openai` already require.
+*   Ensure `OPENAI_API_KEY` (and `OPENAI_MODEL_SUMMARY` if used) are available in the Docker environment.
+
+**Summary of Task 27:**
+This task introduces a conceptual LLM-based summarization capability to the `MemoryAgentTool`. The `Mem0MemorySystem` can now (at least in placeholder or via a direct LLM call) generate summaries of specific memories or collections of memories retrieved by a query. This adds another layer of intelligent processing to the memory system, allowing the agent to work with more condensed information when appropriate. Actual reliance on `mem0`'s internal summarization or graph LLM features would require deeper integration with the `mem0` library's specific APIs for those functionalities if they are distinct from its basic `add`/`search` calls.
+
+Please confirm to proceed.

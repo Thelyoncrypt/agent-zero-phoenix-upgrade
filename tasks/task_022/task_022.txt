@@ -1,0 +1,663 @@
+## Task 21: Implement Real Logic for `WebCrawlerTool` - Hierarchical Chunking and Integration with `KnowledgeAgentTool` for Ingestion
+
+**Focus:**
+This task completes the `WebCrawlerTool`'s core pipeline by:
+1.  Implementing a more sophisticated hierarchical markdown chunking strategy in `python/agents/web_crawler/chunker.py`, similar to what was described for `crawl4AI-agent-v2/insert_docs.py`.
+2.  Modifying the `WebCrawlerTool._process_and_ingest_crawled_doc` method to use this improved chunker.
+3.  Actually calling the `KnowledgeAgentTool`'s `ingest_chunks` action with the generated chunks and their metadata. This will leverage the real embedding generation (Task 14) and Supabase storage (Task 16) capabilities of the `KnowledgeAgentTool`.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/web_crawler/chunker.py`:**
+    *   Implement `HierarchicalChunker.chunk_document` with logic to split by headers (`#`, `##`, `###`) first, then by character length if necessary.
+
+    ```python
+# python/agents/web_crawler/chunker.py
+    import re
+    from typing import List, Dict, Any
+
+    class HierarchicalChunker:
+        """
+        Chunks markdown content hierarchically by headers, then by max length.
+        """
+        def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 0): # Overlap less critical for header-based
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap # Not used in this hierarchical version yet, but kept for compatibility
+            print(f"HierarchicalChunker: Initialized with chunk_size: {chunk_size}")
+
+        def _split_by_header_level(self, markdown_text: str, header_prefix: str) -> List[str]:
+            """Splits text by a specific markdown header level (e.g., '# ', '## ')."""
+            # Regex to find headers, ensuring they are at the beginning of a line
+            parts = re.split(fr"(^{re.escape(header_prefix)}.+)$", markdown_text, flags=re.MULTILINE)
+            chunks = []
+            current_header = ""
+            for i, part in enumerate(parts):
+                if re.match(fr"^{re.escape(header_prefix)}.+", part):
+                    current_header = part.strip()
+                elif part.strip(): # This is content under the current_header or before any header
+                    if current_header: # Content associated with a header
+                        chunks.append(f"{current_header}\n{part.strip()}")
+                    elif not chunks: # Content before the first header of this level
+                        chunks.append(part.strip())
+                    else: # Content likely orphaned, append to previous chunk if small enough
+                        if chunks and len(chunks[-1]) + len(part) < self.chunk_size * 1.5 : # Allow some leeway
+                             chunks[-1] += f"\n{part.strip()}"
+                        else:
+                             chunks.append(part.strip())
+
+            # If no headers of this level were found, return the original text as one chunk
+            return chunks if chunks else [markdown_text.strip()]
+
+
+        def _split_by_char_limit(self, text_segment: str) -> List[str]:
+            """Splits a text segment by character limit if it's too long."""
+            if len(text_segment) <= self.chunk_size:
+                return [text_segment]
+            
+            # Simple character-based splitting with overlap (can be improved with sentence awareness)
+            # For now, direct split similar to TextChunker in foundational-rag-agent
+            split_chunks = []
+            start = 0
+            while start < len(text_segment):
+                end = start + self.chunk_size
+                split_chunks.append(text_segment[start:end])
+                start += self.chunk_size - self.chunk_overlap # Apply overlap here if desired
+                if start >= len(text_segment) and end < len(text_segment) : # Ensure last part is captured
+                    if text_segment[start:].strip(): split_chunks.append(text_segment[start:])
+                elif end >= len(text_segment): # If end already reached or passed length
+                    break
+            return [c.strip() for c in split_chunks if c.strip()]
+
+
+        async def chunk_document(self, processed_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+            """
+            Chunks a processed document's markdown content.
+            processed_doc: dict with "url", "title", "markdown", "metadata"
+            """
+            markdown_content = processed_doc.get("markdown", "")
+            source_url = processed_doc.get("url", "unknown_source")
+            doc_title = processed_doc.get("title", "Untitled Document")
+            base_metadata = processed_doc.get("metadata", {}) # e.g., {"original_url": ..., "crawl_depth": ...}
+
+            print(f"HierarchicalChunker: Chunking document from {source_url} (Title: {doc_title})")
+            
+            if not markdown_content or not markdown_content.strip():
+                print(f"HierarchicalChunker: No markdown content to chunk for {source_url}.")
+                return []
+
+            final_chunks_data: List[Dict[str, Any]] = []
+            
+            # Split by H1
+            h1_sections = self._split_by_header_level(markdown_content, "# ")
+            if len(h1_sections) == 1 and markdown_content.startswith("# "): # Only one H1 section is the whole doc
+                pass # Proceed to H2 within this section
+            elif not any(s.startswith("# ") for s in h1_sections) and h1_sections: # No H1s at all
+                 h1_sections = [markdown_content] # Treat whole doc as one section for H2/H3 splitting
+            
+            chunk_index_counter = 0
+            for h1_text in h1_sections:
+                current_h1_title = h1_text.splitlines()[0].lstrip('# ').strip() if h1_text.startswith("# ") else ""
+                
+                # Split by H2 within H1 section
+                h2_sections = self._split_by_header_level(h1_text, "## ")
+                if len(h2_sections) == 1 and h1_text.startswith("## "): # Only one H2 section means h1_text was actually an H2 block
+                     pass
+                elif not any(s.startswith("## ") for s in h2_sections) and h2_sections:
+                     h2_sections = [h1_text]
+
+                for h2_text in h2_sections:
+                    current_h2_title = h2_text.splitlines()[0].lstrip('## ').strip() if h2_text.startswith("## ") else ""
+                    
+                    # Split by H3 within H2 section
+                    h3_sections = self._split_by_header_level(h2_text, "### ")
+                    if len(h3_sections) == 1 and h2_text.startswith("### "):
+                        pass
+                    elif not any(s.startswith("### ") for s in h3_sections) and h3_sections:
+                        h3_sections = [h2_text]
+
+                    for h3_text_segment in h3_sections:
+                        current_h3_title = h3_text_segment.splitlines()[0].lstrip('### ').strip() if h3_text_segment.startswith("### ") else ""
+                        
+                        # Now, if h3_text_segment is still too large, split by character limit
+                        char_split_sub_chunks = self._split_by_char_limit(h3_text_segment)
+                        
+                        for sub_chunk_text in char_split_sub_chunks:
+                            if not sub_chunk_text.strip():
+                                continue
+
+                            headers_info = []
+                            if current_h1_title: headers_info.append(f"H1: {current_h1_title}")
+                            if current_h2_title and current_h2_title != current_h1_title : headers_info.append(f"H2: {current_h2_title}")
+                            if current_h3_title and current_h3_title != current_h2_title: headers_info.append(f"H3: {current_h3_title}")
+                            
+                            chunk_metadata = {
+                                **base_metadata, # original_url, crawl_depth
+                                "source_url": source_url, # Redundant but good for direct use
+                                "document_title": doc_title,
+                                "chunk_index": chunk_index_counter,
+                                "headers": "; ".join(headers_info) if headers_info else "General Content",
+                                "char_count": len(sub_chunk_text)
+                            }
+                            
+                            final_chunks_data.append({
+                                "id": f"{source_url}_chunk_{chunk_index_counter}", # Unique ID for the chunk
+                                "text": sub_chunk_text,
+                                "metadata": chunk_metadata
+                                # Embedding will be added by KnowledgeAgentTool
+                            })
+                            chunk_index_counter += 1
+            
+            print(f"HierarchicalChunker: Generated {len(final_chunks_data)} chunks for {source_url}.")
+            return final_chunks_data
+```
+
+2.  **Modify `python/tools/web_crawler_tool.py`:**
+    *   Update `_process_and_ingest_crawled_doc` to call the real `KnowledgeAgentTool.ingest_chunks` action.
+    *   Ensure the data passed to `ingest_chunks` matches what `KnowledgeAgentTool` expects (list of dicts with "id", "text", "metadata"; "embedding" will be added by `KnowledgeAgentTool`).
+
+    ```python
+# python/tools/web_crawler_tool.py
+    # ... (imports and __init__ as in Task 20)
+
+    # Ensure HierarchicalChunker is imported
+    from agents.web_crawler.chunker import HierarchicalChunker
+
+    class WebCrawlerTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="web_crawler_tool", 
+                             description="Crawls websites, sitemaps, or markdown files, processes content, and ingests it into the knowledge base.",
+                             args_schema=None,
+                             **kwargs)
+            self.crawler = DocumentCrawler(headless_browser=self.agent.config.get("browser_headless", True)) # Use actual DocumentCrawler
+            self.processor = DocumentProcessor()
+            # Chunker is initialized in execute based on args for flexibility
+            print(f"WebCrawlerTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        # ... (_emit_crawl_event method same)
+
+        async def _process_and_ingest_crawled_doc(self, crawl_result: Any, chunker_instance: HierarchicalChunker) -> int: # Changed raw_doc_data to crawl_result
+            """Helper to process a single Crawl4AI result, chunk it, and ingest via KnowledgeAgentTool."""
+            if not crawl_result.success:
+                msg = f"Skipping failed crawl for {crawl_result.url}: {crawl_result.error_message}"
+                print(f"WebCrawlerTool: {msg}")
+                await self._emit_crawl_event("page_processing", "error", {"url": crawl_result.url, "error": crawl_result.error_message})
+                return 0
+
+            processed_doc_dict = await self.processor.process_document(crawl_result)
+            
+            if not processed_doc_dict.get("markdown"):
+                msg = f"No markdown content after processing {crawl_result.url}"
+                print(f"WebCrawlerTool: {msg}")
+                await self._emit_crawl_event("page_processing", "warning", {"url": crawl_result.url, "message": msg})
+                return 0
+                
+            # Use the passed chunker_instance
+            chunks_with_metadata_and_ids = await chunker_instance.chunk_document(processed_doc_dict)
+            
+            if not chunks_with_metadata_and_ids:
+                msg = f"No chunks generated for {crawl_result.url}"
+                print(f"WebCrawlerTool: {msg}")
+                await self._emit_crawl_event("chunking", "warning", {"url": crawl_result.url, "message": msg})
+                return 0
+
+            # Actual ingestion via KnowledgeAgentTool
+            # KnowledgeAgentTool._ingest_chunks expects `chunks_data` where each item has "text", "metadata", "id", and optionally "embedding".
+            # Our chunker_instance.chunk_document already returns this format.
+            
+            print(f"WebCrawlerTool: Attempting to ingest {len(chunks_with_metadata_and_ids)} chunks for {crawl_result.url} via KnowledgeAgentTool.")
+            await self._emit_crawl_event("ingestion_knowledge_agent", "starting", {"url": crawl_result.url, "chunk_count": len(chunks_with_metadata_and_ids)})
+            
+            try:
+                # Call the KnowledgeAgentTool
+                # The `chunks_data` from `HierarchicalChunker` should be suitable.
+                # Embedding generation will happen inside KnowledgeAgentTool if not provided.
+                ingestion_response = await self.agent.call_tool(
+                    "knowledge_agent_tool", 
+                    {
+                        "action": "ingest_chunks", 
+                        "chunks_data": chunks_with_metadata_and_ids
+                    }
+                )
+                if ingestion_response and not ingestion_response.error:
+                    ingested_count = ingestion_response.data.get("count", 0) if ingestion_response.data else 0
+                    print(f"WebCrawlerTool: KnowledgeAgentTool ingested {ingested_count} chunks for {crawl_result.url}.")
+                    await self._emit_crawl_event("ingestion_knowledge_agent", "completed", {"url": crawl_result.url, "ingested_count": ingested_count, "response": ingestion_response.message})
+                    return ingested_count
+                else:
+                    error_msg = ingestion_response.message if ingestion_response else "Unknown ingestion error"
+                    print(f"WebCrawlerTool: KnowledgeAgentTool ingestion failed for {crawl_result.url}: {error_msg}")
+                    await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": error_msg})
+                    return 0
+            except Exception as e:
+                import traceback
+                error_msg = f"Exception calling KnowledgeAgentTool for {crawl_result.url}: {e}\n{traceback.format_exc()}"
+                print(f"WebCrawlerTool: {error_msg}")
+                await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": str(e)})
+                return 0
+        
+        # Modify execute to instantiate chunker with args.chunk_size
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            chunk_size = int(kwargs.get("chunk_size", 1000)) # Ensure it's int
+            # Overlap can also be a parameter if HierarchicalChunker uses it
+            chunker_instance = HierarchicalChunker(chunk_size=chunk_size) 
+            
+            # ... (rest of existing execute method, but pass chunker_instance to _process_and_ingest_crawled_doc)
+            # Example for _crawl_site:
+            # async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
+            #    chunks_ingested = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+            #    ...
+            try:
+                if action == "crawl_site":
+                    url = kwargs.get("url")
+                    max_depth = int(kwargs.get("max_depth", 3))
+                    max_pages = int(kwargs.get("max_pages", 100))
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    
+                    await self._emit_crawl_event("crawl_site", "starting", {"url": url, "max_depth": max_depth, "max_pages": max_pages})
+                    total_chunks_ingested = 0; pages_processed_count = 0
+                    async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                        if crawl_result_obj.success: pages_processed_count += 1
+                        if pages_processed_count % 5 == 0: # Emit progress periodically
+                             await self._emit_crawl_event("crawl_site", "progress", {"url": url, "pages_processed": pages_processed_count, "chunks_ingested_so_far": total_chunks_ingested})
+                    summary = f"Site crawl completed for {url}. Processed {pages_processed_count} pages, ingested {total_chunks_ingested} chunks."
+                    await self._emit_crawl_event("crawl_site", "completed", {"url": url, "pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+
+                elif action == "crawl_sitemap":
+                    sitemap_url_param = kwargs.get("sitemap_url")
+                    urls_param = kwargs.get("urls")
+                    if not sitemap_url_param and not urls_param:
+                        return ToolResponse("Error: 'sitemap_url' or 'urls' list is required.", error=True)
+                    
+                    urls_to_crawl = urls_param if urls_param else sitemap_url_param # crawler.crawl_sitemap_urls handles parsing if sitemap_url_param is a string
+
+                    await self._emit_crawl_event("crawl_sitemap", "starting", {"source_info": sitemap_url_param or f"{len(urls_to_crawl)} URLs"})
+                    total_chunks_ingested = 0; pages_processed_count = 0
+                    async for crawl_result_obj in self.crawler.crawl_sitemap_urls(urls_to_crawl):
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                        if crawl_result_obj.success: pages_processed_count +=1
+                        if isinstance(urls_to_crawl, list) and pages_processed_count % 5 == 0:
+                             await self._emit_crawl_event("crawl_sitemap", "progress", {"processed_urls": pages_processed_count, "total_urls_in_list": len(urls_to_crawl), "chunks_ingested_so_far": total_chunks_ingested})
+                    summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, ingested {total_chunks_ingested} chunks."
+                    await self._emit_crawl_event("crawl_sitemap", "completed", {"processed_urls": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+
+                elif action == "crawl_markdown_file_url":
+                    url = kwargs.get("url")
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    await self._emit_crawl_event("crawl_markdown_file_url", "starting", {"url": url})
+                    total_chunks_ingested = 0
+                    async for crawl_result_obj in self.crawler.crawl_markdown_file_url(url): # Expects an async generator
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                    summary = f"Markdown file crawl completed for {url}. Ingested {total_chunks_ingested} chunks."
+                    await self._emit_crawl_event("crawl_markdown_file_url", "completed", {"url": url, "total_chunks_ingested": total_chunks_ingested})
+                    return ToolResponse(message=summary, data={"total_chunks_ingested": total_chunks_ingested})
+                else:
+                    return ToolResponse(f"Unknown WebCrawlerTool action: {action}", error=True)
+            except Exception as e: # Top-level try-except in execute
+                import traceback
+                error_message = f"WebCrawlerTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_crawl_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-20 completed.
+*   `KnowledgeAgentTool` (Task 16 & 17) is functional for `ingest_chunks` action, including real embedding generation and Supabase storage.
+*   `WebCrawlerTool` (Task 20) is functional for fetching web content and basic processing.
+*   Standard Python libraries (`re`).
+
+**Integration with Agent Zero:**
+*   `HierarchicalChunker` provides a more intelligent way to split markdown content, preserving structure where possible.
+*   `WebCrawlerTool` now uses this improved chunker.
+*   The crucial change is that `WebCrawlerTool` now **calls `KnowledgeAgentTool`'s "ingest_chunks" action**, thereby completing the pipeline from web crawl to knowledge base storage.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies are introduced by these specific changes to chunking logic.
+*   Ensure all previous dependencies (`crawl4ai`, `openai`, `supabase`, etc.) are correctly installed in the Docker image.
+
+**Summary of Task 21:**
+This task makes the `WebCrawlerTool` significantly more effective by implementing hierarchical markdown chunking and, most importantly, integrating it with the `KnowledgeAgentTool` for actual data ingestion. Now, when the `WebCrawlerTool` crawls a site, the processed and chunked content will be sent to the `KnowledgeAgentTool`, which will then generate embeddings and store them in Supabase. This completes a major part of the RAG pipeline.
+
+Please confirm to proceed.Okay, let's proceed with Task 21.
+
+## Task 21: Implement Real Logic for `WebCrawlerTool` - Hierarchical Chunking and Integration with `KnowledgeAgentTool` for Ingestion
+
+**Focus:**
+This task completes the `WebCrawlerTool`'s core pipeline by:
+1.  Implementing a more sophisticated hierarchical markdown chunking strategy in `python/agents/web_crawler/chunker.py`, similar to what was described for `crawl4AI-agent-v2/insert_docs.py`.
+2.  Modifying the `WebCrawlerTool._process_and_ingest_crawled_doc` method to use this improved chunker.
+3.  Actually calling the `KnowledgeAgentTool`'s `ingest_chunks` action with the generated chunks and their metadata. This will leverage the real embedding generation (Task 14) and Supabase storage (Task 16) capabilities of the `KnowledgeAgentTool`.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/web_crawler/chunker.py`:**
+    *   Implement `HierarchicalChunker.chunk_document` with logic to split by headers (`#`, `##`, `###`) first, then by character length if necessary.
+
+    ```python
+    # python/agents/web_crawler/chunker.py
+    import re
+    from typing import List, Dict, Any
+
+    class HierarchicalChunker:
+        """
+        Chunks markdown content hierarchically by headers, then by max length.
+        """
+        def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 0): # Overlap less critical for header-based
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap # Not used in this hierarchical version yet, but kept for compatibility
+            print(f"HierarchicalChunker: Initialized with chunk_size: {chunk_size}")
+
+        def _split_by_header_level(self, markdown_text: str, header_prefix: str) -> List[str]:
+            """Splits text by a specific markdown header level (e.g., '# ', '## ')."""
+            # Regex to find headers, ensuring they are at the beginning of a line
+            parts = re.split(fr"(^{re.escape(header_prefix)}.+)$", markdown_text, flags=re.MULTILINE)
+            chunks = []
+            current_header = ""
+            for i, part in enumerate(parts):
+                if re.match(fr"^{re.escape(header_prefix)}.+", part):
+                    current_header = part.strip()
+                elif part.strip(): # This is content under the current_header or before any header
+                    if current_header: # Content associated with a header
+                        chunks.append(f"{current_header}\n{part.strip()}")
+                    elif not chunks: # Content before the first header of this level
+                        chunks.append(part.strip())
+                    else: # Content likely orphaned, append to previous chunk if small enough
+                        if chunks and len(chunks[-1]) + len(part) < self.chunk_size * 1.5 : # Allow some leeway
+                             chunks[-1] += f"\n{part.strip()}"
+                        else:
+                             chunks.append(part.strip())
+
+            # If no headers of this level were found, return the original text as one chunk
+            return chunks if chunks else [markdown_text.strip()]
+
+
+        def _split_by_char_limit(self, text_segment: str) -> List[str]:
+            """Splits a text segment by character limit if it's too long."""
+            if len(text_segment) <= self.chunk_size:
+                return [text_segment]
+            
+            # Simple character-based splitting with overlap (can be improved with sentence awareness)
+            # For now, direct split similar to TextChunker in foundational-rag-agent
+            split_chunks = []
+            start = 0
+            while start < len(text_segment):
+                end = start + self.chunk_size
+                split_chunks.append(text_segment[start:end])
+                start += self.chunk_size - self.chunk_overlap # Apply overlap here if desired
+                if start >= len(text_segment) and end < len(text_segment) : # Ensure last part is captured
+                    if text_segment[start:].strip(): split_chunks.append(text_segment[start:])
+                elif end >= len(text_segment): # If end already reached or passed length
+                    break
+            return [c.strip() for c in split_chunks if c.strip()]
+
+
+        async def chunk_document(self, processed_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+            """
+            Chunks a processed document's markdown content.
+            processed_doc: dict with "url", "title", "markdown", "metadata"
+            """
+            markdown_content = processed_doc.get("markdown", "")
+            source_url = processed_doc.get("url", "unknown_source")
+            doc_title = processed_doc.get("title", "Untitled Document")
+            base_metadata = processed_doc.get("metadata", {}) # e.g., {"original_url": ..., "crawl_depth": ...}
+
+            print(f"HierarchicalChunker: Chunking document from {source_url} (Title: {doc_title})")
+            
+            if not markdown_content or not markdown_content.strip():
+                print(f"HierarchicalChunker: No markdown content to chunk for {source_url}.")
+                return []
+
+            final_chunks_data: List[Dict[str, Any]] = []
+            
+            # Split by H1
+            h1_sections = self._split_by_header_level(markdown_content, "# ")
+            if len(h1_sections) == 1 and markdown_content.startswith("# "): # Only one H1 section is the whole doc
+                pass # Proceed to H2 within this section
+            elif not any(s.startswith("# ") for s in h1_sections) and h1_sections: # No H1s at all
+                 h1_sections = [markdown_content] # Treat whole doc as one section for H2/H3 splitting
+            
+            chunk_index_counter = 0
+            for h1_text in h1_sections:
+                current_h1_title = h1_text.splitlines()[0].lstrip('# ').strip() if h1_text.startswith("# ") else ""
+                
+                # Split by H2 within H1 section
+                h2_sections = self._split_by_header_level(h1_text, "## ")
+                if len(h2_sections) == 1 and h1_text.startswith("## "): # Only one H2 section means h1_text was actually an H2 block
+                     pass
+                elif not any(s.startswith("## ") for s in h2_sections) and h2_sections:
+                     h2_sections = [h1_text]
+
+                for h2_text in h2_sections:
+                    current_h2_title = h2_text.splitlines()[0].lstrip('## ').strip() if h2_text.startswith("## ") else ""
+                    
+                    # Split by H3 within H2 section
+                    h3_sections = self._split_by_header_level(h2_text, "### ")
+                    if len(h3_sections) == 1 and h2_text.startswith("### "):
+                        pass
+                    elif not any(s.startswith("### ") for s in h3_sections) and h3_sections:
+                        h3_sections = [h2_text]
+
+                    for h3_text_segment in h3_sections:
+                        current_h3_title = h3_text_segment.splitlines()[0].lstrip('### ').strip() if h3_text_segment.startswith("### ") else ""
+                        
+                        # Now, if h3_text_segment is still too large, split by character limit
+                        char_split_sub_chunks = self._split_by_char_limit(h3_text_segment)
+                        
+                        for sub_chunk_text in char_split_sub_chunks:
+                            if not sub_chunk_text.strip():
+                                continue
+
+                            headers_info = []
+                            if current_h1_title: headers_info.append(f"H1: {current_h1_title}")
+                            if current_h2_title and current_h2_title != current_h1_title : headers_info.append(f"H2: {current_h2_title}")
+                            if current_h3_title and current_h3_title != current_h2_title: headers_info.append(f"H3: {current_h3_title}")
+                            
+                            chunk_metadata = {
+                                **base_metadata, # original_url, crawl_depth
+                                "source_url": source_url, # Redundant but good for direct use
+                                "document_title": doc_title,
+                                "chunk_index": chunk_index_counter,
+                                "headers": "; ".join(headers_info) if headers_info else "General Content",
+                                "char_count": len(sub_chunk_text)
+                            }
+                            
+                            final_chunks_data.append({
+                                "id": f"{source_url}_chunk_{chunk_index_counter}", # Unique ID for the chunk
+                                "text": sub_chunk_text,
+                                "metadata": chunk_metadata
+                                # Embedding will be added by KnowledgeAgentTool
+                            })
+                            chunk_index_counter += 1
+            
+            print(f"HierarchicalChunker: Generated {len(final_chunks_data)} chunks for {source_url}.")
+            return final_chunks_data
+
+    ```
+
+2.  **Modify `python/tools/web_crawler_tool.py`:**
+    *   Update `_process_and_ingest_crawled_doc` to call the real `KnowledgeAgentTool.ingest_chunks` action.
+    *   Ensure the data passed to `ingest_chunks` matches what `KnowledgeAgentTool` expects (list of dicts with "id", "text", "metadata"; "embedding" will be added by `KnowledgeAgentTool`).
+
+    ```python
+    # python/tools/web_crawler_tool.py
+    # ... (imports and __init__ as in Task 20)
+
+    # Ensure HierarchicalChunker is imported
+    from agents.web_crawler.chunker import HierarchicalChunker
+
+    class WebCrawlerTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="web_crawler_tool", 
+                             description="Crawls websites, sitemaps, or markdown files, processes content, and ingests it into the knowledge base.",
+                             args_schema=None,
+                             **kwargs)
+            self.crawler = DocumentCrawler(headless_browser=self.agent.config.get("browser_headless", True)) # Use actual DocumentCrawler
+            self.processor = DocumentProcessor()
+            # Chunker is initialized in execute based on args for flexibility
+            print(f"WebCrawlerTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        # ... (_emit_crawl_event method same)
+
+        async def _process_and_ingest_crawled_doc(self, crawl_result: Any, chunker_instance: HierarchicalChunker) -> int: # Changed raw_doc_data to crawl_result
+            """Helper to process a single Crawl4AI result, chunk it, and ingest via KnowledgeAgentTool."""
+            if not crawl_result.success:
+                msg = f"Skipping failed crawl for {crawl_result.url}: {crawl_result.error_message}"
+                print(f"WebCrawlerTool: {msg}")
+                await self._emit_crawl_event("page_processing", "error", {"url": crawl_result.url, "error": crawl_result.error_message})
+                return 0
+
+            processed_doc_dict = await self.processor.process_document(crawl_result)
+            
+            if not processed_doc_dict.get("markdown"):
+                msg = f"No markdown content after processing {crawl_result.url}"
+                print(f"WebCrawlerTool: {msg}")
+                await self._emit_crawl_event("page_processing", "warning", {"url": crawl_result.url, "message": msg})
+                return 0
+                
+            # Use the passed chunker_instance
+            chunks_with_metadata_and_ids = await chunker_instance.chunk_document(processed_doc_dict)
+            
+            if not chunks_with_metadata_and_ids:
+                msg = f"No chunks generated for {crawl_result.url}"
+                print(f"WebCrawlerTool: {msg}")
+                await self._emit_crawl_event("chunking", "warning", {"url": crawl_result.url, "message": msg})
+                return 0
+
+            # Actual ingestion via KnowledgeAgentTool
+            # KnowledgeAgentTool._ingest_chunks expects `chunks_data` where each item has "text", "metadata", "id", and optionally "embedding".
+            # Our chunker_instance.chunk_document already returns this format.
+            
+            print(f"WebCrawlerTool: Attempting to ingest {len(chunks_with_metadata_and_ids)} chunks for {crawl_result.url} via KnowledgeAgentTool.")
+            await self._emit_crawl_event("ingestion_knowledge_agent", "starting", {"url": crawl_result.url, "chunk_count": len(chunks_with_metadata_and_ids)})
+            
+            try:
+                # Call the KnowledgeAgentTool
+                # The `chunks_data` from `HierarchicalChunker` should be suitable.
+                # Embedding generation will happen inside KnowledgeAgentTool if not provided.
+                ingestion_response = await self.agent.call_tool(
+                    "knowledge_agent_tool", 
+                    {
+                        "action": "ingest_chunks", 
+                        "chunks_data": chunks_with_metadata_and_ids
+                    }
+                )
+                if ingestion_response and not ingestion_response.error:
+                    ingested_count = ingestion_response.data.get("count", 0) if ingestion_response.data else 0
+                    print(f"WebCrawlerTool: KnowledgeAgentTool ingested {ingested_count} chunks for {crawl_result.url}.")
+                    await self._emit_crawl_event("ingestion_knowledge_agent", "completed", {"url": crawl_result.url, "ingested_count": ingested_count, "response": ingestion_response.message})
+                    return ingested_count
+                else:
+                    error_msg = ingestion_response.message if ingestion_response else "Unknown ingestion error"
+                    print(f"WebCrawlerTool: KnowledgeAgentTool ingestion failed for {crawl_result.url}: {error_msg}")
+                    await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": error_msg})
+                    return 0
+            except Exception as e:
+                import traceback
+                error_msg = f"Exception calling KnowledgeAgentTool for {crawl_result.url}: {e}\n{traceback.format_exc()}"
+                print(f"WebCrawlerTool: {error_msg}")
+                await self._emit_crawl_event("ingestion_knowledge_agent", "error", {"url": crawl_result.url, "error": str(e)})
+                return 0
+        
+        # Modify execute to instantiate chunker with args.chunk_size
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            chunk_size = int(kwargs.get("chunk_size", 1000)) # Ensure it's int
+            # Overlap can also be a parameter if HierarchicalChunker uses it
+            chunker_instance = HierarchicalChunker(chunk_size=chunk_size) 
+            
+            # ... (rest of existing execute method, but pass chunker_instance to _process_and_ingest_crawled_doc)
+            # Example for _crawl_site:
+            # async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
+            #    chunks_ingested = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+            #    ...
+            try:
+                if action == "crawl_site":
+                    url = kwargs.get("url")
+                    max_depth = int(kwargs.get("max_depth", 3))
+                    max_pages = int(kwargs.get("max_pages", 100))
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    
+                    await self._emit_crawl_event("crawl_site", "starting", {"url": url, "max_depth": max_depth, "max_pages": max_pages})
+                    total_chunks_ingested = 0; pages_processed_count = 0
+                    async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                        if crawl_result_obj.success: pages_processed_count += 1
+                        if pages_processed_count % 5 == 0: # Emit progress periodically
+                             await self._emit_crawl_event("crawl_site", "progress", {"url": url, "pages_processed": pages_processed_count, "chunks_ingested_so_far": total_chunks_ingested})
+                    summary = f"Site crawl completed for {url}. Processed {pages_processed_count} pages, ingested {total_chunks_ingested} chunks."
+                    await self._emit_crawl_event("crawl_site", "completed", {"url": url, "pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+
+                elif action == "crawl_sitemap":
+                    sitemap_url_param = kwargs.get("sitemap_url")
+                    urls_param = kwargs.get("urls")
+                    if not sitemap_url_param and not urls_param:
+                        return ToolResponse("Error: 'sitemap_url' or 'urls' list is required.", error=True)
+                    
+                    urls_to_crawl = urls_param if urls_param else sitemap_url_param # crawler.crawl_sitemap_urls handles parsing if sitemap_url_param is a string
+
+                    await self._emit_crawl_event("crawl_sitemap", "starting", {"source_info": sitemap_url_param or f"{len(urls_to_crawl)} URLs"})
+                    total_chunks_ingested = 0; pages_processed_count = 0
+                    async for crawl_result_obj in self.crawler.crawl_sitemap_urls(urls_to_crawl):
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                        if crawl_result_obj.success: pages_processed_count +=1
+                        if isinstance(urls_to_crawl, list) and pages_processed_count % 5 == 0:
+                             await self._emit_crawl_event("crawl_sitemap", "progress", {"processed_urls": pages_processed_count, "total_urls_in_list": len(urls_to_crawl), "chunks_ingested_so_far": total_chunks_ingested})
+                    summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, ingested {total_chunks_ingested} chunks."
+                    await self._emit_crawl_event("crawl_sitemap", "completed", {"processed_urls": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+                    return ToolResponse(message=summary, data={"pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested})
+
+                elif action == "crawl_markdown_file_url":
+                    url = kwargs.get("url")
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    await self._emit_crawl_event("crawl_markdown_file_url", "starting", {"url": url})
+                    total_chunks_ingested = 0
+                    async for crawl_result_obj in self.crawler.crawl_markdown_file_url(url): # Expects an async generator
+                        chunks_i = await self._process_and_ingest_crawled_doc(crawl_result_obj, chunker_instance)
+                        total_chunks_ingested += chunks_i
+                    summary = f"Markdown file crawl completed for {url}. Ingested {total_chunks_ingested} chunks."
+                    await self._emit_crawl_event("crawl_markdown_file_url", "completed", {"url": url, "total_chunks_ingested": total_chunks_ingested})
+                    return ToolResponse(message=summary, data={"total_chunks_ingested": total_chunks_ingested})
+                else:
+                    return ToolResponse(f"Unknown WebCrawlerTool action: {action}", error=True)
+            except Exception as e: # Top-level try-except in execute
+                import traceback
+                error_message = f"WebCrawlerTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_crawl_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-20 completed.
+*   `KnowledgeAgentTool` (Task 16 & 17) is functional for `ingest_chunks` action, including real embedding generation and Supabase storage.
+*   `WebCrawlerTool` (Task 20) is functional for fetching web content and basic processing.
+*   Standard Python libraries (`re`).
+
+**Integration with Agent Zero:**
+*   `HierarchicalChunker` provides a more intelligent way to split markdown content, preserving structure where possible.
+*   `WebCrawlerTool` now uses this improved chunker.
+*   The crucial change is that `WebCrawlerTool` now **calls `KnowledgeAgentTool`'s "ingest_chunks" action**, thereby completing the pipeline from web crawl to knowledge base storage.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies are introduced by these specific changes to chunking logic.
+*   Ensure all previous dependencies (`crawl4ai`, `openai`, `supabase`, etc.) are correctly installed in the Docker image.
+
+**Summary of Task 21:**
+This task makes the `WebCrawlerTool` significantly more effective by implementing hierarchical markdown chunking and, most importantly, integrating it with the `KnowledgeAgentTool` for actual data ingestion. Now, when the `WebCrawlerTool` crawls a site, the processed and chunked content will be sent to the `KnowledgeAgentTool`, which will then generate embeddings and store them in Supabase. This completes a major part of the RAG pipeline.
+
+Please confirm to proceed.

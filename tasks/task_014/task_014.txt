@@ -1,0 +1,751 @@
+## Task 14: Implement Real Logic for `KnowledgeAgentTool` - Embedding and Basic Storage
+
+**Focus:**
+This task transitions the `KnowledgeAgentTool` and its components (`EmbeddingGenerator`, `DatabaseManager`) from placeholder logic to a more functional implementation. It will integrate OpenAI for generating embeddings and set up the `DatabaseManager` to perform basic in-memory storage of these embeddings and associated text. Full Supabase/pgvector integration is deferred, but the structure for storing and searching vectorized data will be established.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add `openai` (if not already present from other RAG agent considerations).
+    *   Add `numpy` (often needed for embedding manipulation, though OpenAI client might return lists).
+
+    ```
+# requirements.txt
+    # ... (existing requirements)
+    openai>=1.0.0  # Ensure a version compatible with current OpenAI API
+    numpy
+```
+
+2.  **Update `.env.example` and ensure `.env` is configured:**
+    *   `OPENAI_API_KEY` is crucial.
+    *   `EMBEDDING_MODEL` (e.g., `text-embedding-3-small`) should be set.
+
+3.  **Modify `python/agents/knowledge_agent/embeddings.py`:**
+    *   Implement `EmbeddingGenerator` to use the OpenAI API.
+
+    ```python
+# python/agents/knowledge_agent/embeddings.py
+    import os
+    import time
+    from typing import List, Optional
+    from openai import OpenAI, APIError, RateLimitError # Use new OpenAI client
+    from dotenv import load_dotenv
+    from pathlib import Path
+
+    # Load environment variables from the project root .env file
+    project_root = Path(__file__).resolve().parents[2] # Adjusted to go up to project root
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    class EmbeddingGenerator:
+        """
+        Generates embeddings for text using OpenAI API.
+        """
+        def __init__(self, model_name: Optional[str] = None, api_key: Optional[str] = None):
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+            self.model = model_name or os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+            
+            if not self.api_key:
+                raise ValueError("OpenAI API key must be provided via OPENAI_API_KEY environment variable or argument.")
+            
+            self.client = OpenAI(api_key=self.api_key)
+            # Get embedding dimension dynamically if possible, or hardcode based on model
+            # For "text-embedding-3-small", it's 1536. For "text-embedding-ada-002", it's also 1536.
+            # For "text-embedding-3-large", it's 3072.
+            # This is important if we allow model switching.
+            if self.model == "text-embedding-3-large":
+                self.embedding_dim = 3072
+            else: # Default for ada-002 and 3-small
+                self.embedding_dim = 1536
+            print(f"EmbeddingGenerator: Initialized with OpenAI model '{self.model}', dimension {self.embedding_dim}.")
+
+        def _create_zero_embedding(self) -> List[float]:
+            return [0.0] * self.embedding_dim
+
+        async def generate_single_embedding(self, text: str, max_retries: int = 3) -> List[float]:
+            """Generates an embedding for a single text string with retry logic."""
+            if not text or not text.strip():
+                print("EmbeddingGenerator: Empty text provided, returning zero embedding.")
+                return self._create_zero_embedding()
+
+            # OpenAI's recommended replacement for newlines
+            text = text.replace("\n", " ") 
+            
+            # Max tokens for embedding models like text-embedding-ada-002 is 8191.
+            # Truncate if necessary (though chunking should prevent overly long texts).
+            # A simple character limit might be too naive due to tokenization differences.
+            # For now, let's assume chunks are reasonably sized.
+
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.embeddings.create, # Use asyncio.to_thread for sync SDK call
+                        input=[text], # API expects a list of strings
+                        model=self.model
+                    )
+                    return response.data[0].embedding
+                except RateLimitError as rle:
+                    wait_time = (2 ** attempt) + random.random() # Exponential backoff
+                    print(f"EmbeddingGenerator: Rate limit hit (attempt {attempt+1}/{max_retries}). Retrying in {wait_time:.2f}s. Error: {rle}")
+                    await asyncio.sleep(wait_time)
+                except APIError as apie:
+                    print(f"EmbeddingGenerator: OpenAI APIError (attempt {attempt+1}/{max_retries}): {apie}. Input text (first 100 chars): '{text[:100]}'")
+                    if "InvalidRequestError" in str(apie) and "maximum context length" in str(apie).lower():
+                        print("Input text likely too long. Returning zero embedding.")
+                        return self._create_zero_embedding() # Or handle by truncating text
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + random.random())
+                    else:
+                        print("EmbeddingGenerator: All retry attempts failed due to APIError. Returning zero embedding.")
+                        return self._create_zero_embedding()
+                except Exception as e: # Catch other unexpected errors
+                    print(f"EmbeddingGenerator: Unexpected error (attempt {attempt+1}/{max_retries}): {e}. Input: '{text[:100]}'")
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + random.random())
+                    else:
+                        print("EmbeddingGenerator: All retry attempts failed. Returning zero embedding.")
+                        return self._create_zero_embedding()
+            return self._create_zero_embedding() # Should be unreachable if max_retries > 0
+
+        async def generate_embeddings(self, texts: List[str], batch_size: int = 20) -> List[List[float]]: # OpenAI batch limit often around 2048 items
+            """Generates embeddings for a list of texts in batches."""
+            if not texts:
+                return []
+            
+            all_embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i+batch_size]
+                batch_texts_processed = [text.replace("\n", " ") if text and text.strip() else " " for text in batch_texts] # Replace empty with space
+                
+                print(f"EmbeddingGenerator: Processing batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1} with {len(batch_texts)} texts.")
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.embeddings.create,
+                        input=batch_texts_processed,
+                        model=self.model
+                    )
+                    embeddings = [data.embedding for data in response.data]
+                    all_embeddings.extend(embeddings)
+                except Exception as e:
+                    print(f"EmbeddingGenerator: Error embedding batch, processing individually. Error: {e}")
+                    # Fallback to individual processing for this batch on error
+                    for text in batch_texts: # Original batch_texts for individual processing
+                        all_embeddings.append(await self.generate_single_embedding(text))
+                await asyncio.sleep(0.1) # Small delay to respect potential rate limits even with batching
+
+            return all_embeddings
+```
+
+4.  **Modify `python/agents/knowledge_agent/database.py`:**
+    *   Update `DatabaseManager` to use `numpy` for basic cosine similarity for mock search.
+    *   The `store_chunks` method will now expect `embedding` to be a list of floats.
+
+    ```python
+# python/agents/knowledge_agent/database.py
+    from typing import List, Dict, Any, Optional
+    import numpy as np # For cosine similarity
+
+    def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+        """Computes cosine similarity between two vectors."""
+        vec1 = np.array(v1)
+        vec2 = np.array(v2)
+        if vec1.shape != vec2.shape or vec1.ndim != 1:
+            # This can happen if one of the embeddings is a zero vector of different length due to an error
+            print(f"Warning: cosine_similarity received vectors of mismatched shapes/dims. v1: {vec1.shape}, v2: {vec2.shape}")
+            return 0.0 
+        
+        dot_product = np.dot(vec1, vec2)
+        norm_v1 = np.linalg.norm(vec1)
+        norm_v2 = np.linalg.norm(vec2)
+        if norm_v1 == 0 or norm_v2 == 0:
+            return 0.0
+        return dot_product / (norm_v1 * norm_v2)
+
+    class DatabaseManager:
+        """
+        Manages interaction with the vector database (mocked in-memory).
+        """
+        def __init__(self):
+            self.documents: List[Dict[str, Any]] = [] # id, content, embedding_vector (List[float]), metadata
+            print("DatabaseManager (Mock with basic search) initialized.")
+
+        async def store_chunks(self, chunks_data: List[Dict[str, Any]]) -> List[str]:
+            """
+            Stores chunks with their embeddings and metadata.
+            chunks_data: list of dicts, each like {"text": str, "embedding": List[float], "metadata": Dict, "id": str}
+            """
+            stored_ids = []
+            for i, chunk_info in enumerate(chunks_data):
+                doc_id = chunk_info.get("id", f"mem_doc_{len(self.documents) + i}")
+                if not chunk_info.get("embedding"):
+                    print(f"DatabaseManager (Mock): Skipping chunk '{doc_id}' due to missing embedding.")
+                    continue
+
+                self.documents.append({
+                    "id": doc_id,
+                    "content": chunk_info.get("text"),
+                    "embedding_vector": chunk_info.get("embedding"),
+                    "metadata": chunk_info.get("metadata", {})
+                })
+                stored_ids.append(doc_id)
+            print(f"DatabaseManager (Mock): Stored {len(stored_ids)} chunks.")
+            return stored_ids
+
+        async def semantic_search(self, query_embedding: List[float], limit: int, filter_metadata: Optional[Dict] = None) -> List[Dict[str, Any]]:
+            """Performs semantic search using cosine similarity."""
+            print(f"DatabaseManager (Mock): Semantic search (limit {limit}, filter {filter_metadata}). Query emb dim: {len(query_embedding)}")
+            
+            if not query_embedding or sum(abs(x) for x in query_embedding) == 0: # Check for zero/empty embedding
+                print("DatabaseManager (Mock): Query embedding is zero or empty. Returning no results.")
+                return []
+
+            candidate_docs = []
+            for doc in self.documents:
+                if not doc.get("embedding_vector"): # Skip docs without embeddings
+                    continue
+
+                # Apply metadata filter
+                passes_filter = True
+                if filter_metadata:
+                    for key, value in filter_metadata.items():
+                        if doc["metadata"].get(key) != value:
+                            passes_filter = False
+                            break
+                if not passes_filter:
+                    continue
+
+                similarity = cosine_similarity(query_embedding, doc["embedding_vector"])
+                candidate_docs.append({**doc, "similarity_score": float(similarity)})
+            
+            # Sort by similarity (descending) and take top N
+            candidate_docs.sort(key=lambda d: d["similarity_score"], reverse=True)
+            results = candidate_docs[:limit]
+            
+            # Reformat for consistency with foundational-rag-agent's expected output
+            # (which includes 'content' and 'metadata' at top level of each result item)
+            formatted_results = []
+            for res in results:
+                formatted_results.append({
+                    "id": res["id"], # Keep original ID
+                    "content": res["content"],
+                    "metadata": res["metadata"],
+                    "similarity": res["similarity_score"] # Use the calculated score
+                })
+
+            print(f"DatabaseManager (Mock): Found {len(formatted_results)} results for semantic search.")
+            return formatted_results
+
+        # ... (get_all_sources method remains the same as Task 7)
+        async def get_all_sources(self) -> List[str]:
+            sources = set()
+            for doc in self.documents:
+                if doc["metadata"] and "source_url" in doc["metadata"]: # Changed to source_url if that's what WebCrawler provides
+                    sources.add(doc["metadata"]["source_url"])
+                elif doc["metadata"] and "source" in doc["metadata"]: # Fallback
+                    sources.add(doc["metadata"]["source"])
+            return list(sources)
+```
+
+5.  **Modify `python/tools/knowledge_agent_tool.py`:**
+    *   Update `_ingest_chunks` to call the real `EmbeddingGenerator` if embeddings are not provided in `chunks_data`.
+    *   Update `_query_kb` and `_raw_search` to use the real `EmbeddingGenerator` for the query.
+
+    ```python
+# python/tools/knowledge_agent_tool.py
+    # ... (imports and __init__ mostly same as Task 7)
+
+    class KnowledgeAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="knowledge_agent_tool",
+                             description="Manages and queries a knowledge base using RAG principles.",
+                             args_schema=None, 
+                             **kwargs)
+            self.db_manager = DatabaseManager() # Mock DB for now
+            self.embed_generator = EmbeddingGenerator() # Real EmbeddingGenerator
+            self.retriever = InformationRetriever(self.db_manager, self.embed_generator) # Uses real embed gen
+            self.rag_agent_logic = KnowledgeRAGAgent(self.db_manager, self.retriever) 
+            print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} with REAL EmbeddingGenerator.")
+
+        # ... (_emit_knowledge_event method same)
+        async def _emit_knowledge_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            event_type = StreamEventType.KNOWLEDGE_RESULT if status == "completed" else StreamEventType.PROGRESS_UPDATE
+            payload = {"source_tool": "knowledge_agent", "action": action_name, "status": status}
+            if details: payload.update(details)
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(event_type, payload)
+            else:
+                print(f"KnowledgeAgentTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+
+        async def _ingest_chunks(self, chunks_data: List[Dict[str, Any]]) -> ToolResponse:
+            """
+            Ingests chunks. If embeddings are not provided, generates them.
+            chunks_data: List of dicts, each like {"text": str, "metadata": Dict, "id": str}. 
+                         "embedding" (List[float]) is optional.
+            """
+            await self._emit_knowledge_event("ingest_chunks", "starting", {"chunk_count_received": len(chunks_data)})
+            
+            texts_to_embed = []
+            indices_needing_embedding = []
+
+            for i, chunk_d in enumerate(chunks_data):
+                if "embedding" not in chunk_d or not chunk_d["embedding"]:
+                    text_to_embed = chunk_d.get("text")
+                    if not text_to_embed or not text_to_embed.strip():
+                         err_msg = f"Chunk {i} (id: {chunk_d.get('id')}) has no text to embed."
+                         await self._emit_knowledge_event("ingest_chunks", "error", {"message": err_msg})
+                         # Skip this chunk or handle error more gracefully
+                         print(f"KnowledgeAgentTool: {err_msg}")
+                         continue 
+                    texts_to_embed.append(text_to_embed)
+                    indices_needing_embedding.append(i)
+            
+            if texts_to_embed:
+                print(f"KnowledgeAgentTool: Generating embeddings for {len(texts_to_embed)} chunks.")
+                generated_embeddings = await self.embed_generator.generate_embeddings(texts_to_embed)
+                if len(generated_embeddings) != len(indices_needing_embedding):
+                    msg = "Error: Mismatch in generated embeddings count."
+                    await self._emit_knowledge_event("ingest_chunks", "error", {"message": msg})
+                    return ToolResponse(msg, error=True)
+                
+                for original_idx, embedding in zip(indices_needing_embedding, generated_embeddings):
+                    chunks_data[original_idx]["embedding"] = embedding
+            
+            # Filter out chunks that still lack embeddings (e.g., if text was empty and embedding failed)
+            valid_chunks_data = [cd for cd in chunks_data if cd.get("embedding")]
+
+            if not valid_chunks_data:
+                msg = "No valid chunks with embeddings to ingest."
+                await self._emit_knowledge_event("ingest_chunks", "error", {"message": msg})
+                return ToolResponse(msg, error=True)
+
+            result = await self.rag_agent_logic.ingest_document_chunks(valid_chunks_data)
+            
+            await self._emit_knowledge_event("ingest_chunks", "completed", result)
+            return ToolResponse(message=f"Ingested {result.get('count', 0)} chunks.", data=result)
+
+        async def _query_kb(self, query: str, limit: int) -> ToolResponse:
+            await self._emit_knowledge_event("query_kb", "processing", {"query": query})
+            
+            # RAGAgentLogic's query_knowledge_base should handle embedding the query internally via its retriever
+            rag_response = await self.rag_agent_logic.query_knowledge_base(query, limit)
+            
+            await self._emit_knowledge_event("query_kb", "completed", rag_response)
+            return ToolResponse(message=json.dumps(rag_response), data=rag_response) # Response is already a dict
+
+        async def _raw_search(self, query: str, limit: int, filter_metadata: Optional[Dict]) -> ToolResponse:
+            await self._emit_knowledge_event("raw_search", "processing", {"query": query, "filter": filter_metadata})
+            
+            query_embedding = await self.embed_generator.generate_single_embedding(query)
+            search_results = await self.db_manager.semantic_search(query_embedding, limit, filter_metadata)
+            
+            await self._emit_knowledge_event("raw_search", "completed", {"results_count": len(search_results)})
+            return ToolResponse(message=json.dumps(search_results), data=search_results) # search_results is List[Dict]
+
+        # ... (_list_sources method remains the same as Task 7)
+        async def _list_sources(self) -> ToolResponse:
+            await self._emit_knowledge_event("list_sources", "processing", {})
+            sources = await self.db_manager.get_all_sources()
+            await self._emit_knowledge_event("list_sources", "completed", {"sources": sources})
+            return ToolResponse(message=json.dumps({"sources": sources}), data={"sources": sources})
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-11 completed.
+*   `openai` and `numpy` libraries added to `requirements.txt` and installed.
+*   Valid `OPENAI_API_KEY` and `EMBEDDING_MODEL` set in the `.env` file.
+*   The `StreamProtocolTool` and agent's `_emit_stream_event` helper for event emission.
+
+**Integration with Agent Zero:**
+*   `EmbeddingGenerator` now uses the OpenAI API to generate real embeddings.
+*   `DatabaseManager` (still mock storage) uses these real embeddings for a mock cosine similarity search.
+*   `KnowledgeAgentTool` orchestrates these components for its `ingest_chunks`, `query`, and `raw_search` actions. If `chunks_data` passed to `ingest_chunks` lacks embeddings, it will generate them.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `openai` and `numpy` to `requirements.txt`. The Docker build process will install them.
+*   Ensure the `.env` file (or environment variables passed to Docker) contains `OPENAI_API_KEY` and `EMBEDDING_MODEL`.
+
+**Summary of Task 14:**
+This task brings the `KnowledgeAgentTool` closer to a functional RAG system by implementing real embedding generation using OpenAI. While the `DatabaseManager` still uses an in-memory mock for storage and search, the search logic now performs a (mocked) cosine similarity comparison using real embeddings. The `_ingest_chunks` action can now also generate embeddings if they are not pre-supplied. This sets the stage for integrating a persistent vector database like Supabase/pgvector.
+
+Please confirm to proceed.Okay, let's proceed with Task 14.
+
+## Task 14: Implement Real Logic for `KnowledgeAgentTool` - Embedding and Basic Storage
+
+**Focus:**
+This task transitions the `KnowledgeAgentTool` and its components (`EmbeddingGenerator`, `DatabaseManager`) from placeholder logic to a more functional implementation. It will integrate OpenAI for generating embeddings and set up the `DatabaseManager` to perform basic in-memory storage of these embeddings and associated text. Full Supabase/pgvector integration is deferred, but the structure for storing and searching vectorized data will be established.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add `openai` (if not already present from other RAG agent considerations).
+    *   Add `numpy` (often needed for embedding manipulation, though OpenAI client might return lists).
+
+    ```
+    # requirements.txt
+    # ... (existing requirements)
+    openai>=1.0.0  # Ensure a version compatible with current OpenAI API
+    numpy
+    ```
+
+2.  **Update `.env.example` and ensure `.env` is configured:**
+    *   `OPENAI_API_KEY` is crucial.
+    *   `EMBEDDING_MODEL` (e.g., `text-embedding-3-small`) should be set.
+
+3.  **Modify `python/agents/knowledge_agent/embeddings.py`:**
+    *   Implement `EmbeddingGenerator` to use the OpenAI API.
+
+    ```python
+    # python/agents/knowledge_agent/embeddings.py
+    import os
+    import time
+    from typing import List, Optional
+    from openai import OpenAI, APIError, RateLimitError # Use new OpenAI client
+    from dotenv import load_dotenv
+    from pathlib import Path
+
+    # Load environment variables from the project root .env file
+    project_root = Path(__file__).resolve().parents[2] # Adjusted to go up to project root
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    class EmbeddingGenerator:
+        """
+        Generates embeddings for text using OpenAI API.
+        """
+        def __init__(self, model_name: Optional[str] = None, api_key: Optional[str] = None):
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+            self.model = model_name or os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+            
+            if not self.api_key:
+                raise ValueError("OpenAI API key must be provided via OPENAI_API_KEY environment variable or argument.")
+            
+            self.client = OpenAI(api_key=self.api_key)
+            # Get embedding dimension dynamically if possible, or hardcode based on model
+            # For "text-embedding-3-small", it's 1536. For "text-embedding-ada-002", it's also 1536.
+            # For "text-embedding-3-large", it's 3072.
+            # This is important if we allow model switching.
+            if self.model == "text-embedding-3-large":
+                self.embedding_dim = 3072
+            else: # Default for ada-002 and 3-small
+                self.embedding_dim = 1536
+            print(f"EmbeddingGenerator: Initialized with OpenAI model '{self.model}', dimension {self.embedding_dim}.")
+
+        def _create_zero_embedding(self) -> List[float]:
+            return [0.0] * self.embedding_dim
+
+        async def generate_single_embedding(self, text: str, max_retries: int = 3) -> List[float]:
+            """Generates an embedding for a single text string with retry logic."""
+            if not text or not text.strip():
+                print("EmbeddingGenerator: Empty text provided, returning zero embedding.")
+                return self._create_zero_embedding()
+
+            # OpenAI's recommended replacement for newlines
+            text = text.replace("\n", " ") 
+            
+            # Max tokens for embedding models like text-embedding-ada-002 is 8191.
+            # Truncate if necessary (though chunking should prevent overly long texts).
+            # A simple character limit might be too naive due to tokenization differences.
+            # For now, let's assume chunks are reasonably sized.
+
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.embeddings.create, # Use asyncio.to_thread for sync SDK call
+                        input=[text], # API expects a list of strings
+                        model=self.model
+                    )
+                    return response.data[0].embedding
+                except RateLimitError as rle:
+                    wait_time = (2 ** attempt) + random.random() # Exponential backoff
+                    print(f"EmbeddingGenerator: Rate limit hit (attempt {attempt+1}/{max_retries}). Retrying in {wait_time:.2f}s. Error: {rle}")
+                    await asyncio.sleep(wait_time)
+                except APIError as apie:
+                    print(f"EmbeddingGenerator: OpenAI APIError (attempt {attempt+1}/{max_retries}): {apie}. Input text (first 100 chars): '{text[:100]}'")
+                    if "InvalidRequestError" in str(apie) and "maximum context length" in str(apie).lower():
+                        print("Input text likely too long. Returning zero embedding.")
+                        return self._create_zero_embedding() # Or handle by truncating text
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + random.random())
+                    else:
+                        print("EmbeddingGenerator: All retry attempts failed due to APIError. Returning zero embedding.")
+                        return self._create_zero_embedding()
+                except Exception as e: # Catch other unexpected errors
+                    print(f"EmbeddingGenerator: Unexpected error (attempt {attempt+1}/{max_retries}): {e}. Input: '{text[:100]}'")
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + random.random())
+                    else:
+                        print("EmbeddingGenerator: All retry attempts failed. Returning zero embedding.")
+                        return self._create_zero_embedding()
+            return self._create_zero_embedding() # Should be unreachable if max_retries > 0
+
+        async def generate_embeddings(self, texts: List[str], batch_size: int = 20) -> List[List[float]]: # OpenAI batch limit often around 2048 items
+            """Generates embeddings for a list of texts in batches."""
+            if not texts:
+                return []
+            
+            all_embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i+batch_size]
+                batch_texts_processed = [text.replace("\n", " ") if text and text.strip() else " " for text in batch_texts] # Replace empty with space
+                
+                print(f"EmbeddingGenerator: Processing batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1} with {len(batch_texts)} texts.")
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.embeddings.create,
+                        input=batch_texts_processed,
+                        model=self.model
+                    )
+                    embeddings = [data.embedding for data in response.data]
+                    all_embeddings.extend(embeddings)
+                except Exception as e:
+                    print(f"EmbeddingGenerator: Error embedding batch, processing individually. Error: {e}")
+                    # Fallback to individual processing for this batch on error
+                    for text in batch_texts: # Original batch_texts for individual processing
+                        all_embeddings.append(await self.generate_single_embedding(text))
+                await asyncio.sleep(0.1) # Small delay to respect potential rate limits even with batching
+
+            return all_embeddings
+
+    ```
+
+4.  **Modify `python/agents/knowledge_agent/database.py`:**
+    *   Update `DatabaseManager` to use `numpy` for basic cosine similarity for mock search.
+    *   The `store_chunks` method will now expect `embedding` to be a list of floats.
+
+    ```python
+    # python/agents/knowledge_agent/database.py
+    from typing import List, Dict, Any, Optional
+    import numpy as np # For cosine similarity
+
+    def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+        """Computes cosine similarity between two vectors."""
+        vec1 = np.array(v1)
+        vec2 = np.array(v2)
+        if vec1.shape != vec2.shape or vec1.ndim != 1:
+            # This can happen if one of the embeddings is a zero vector of different length due to an error
+            print(f"Warning: cosine_similarity received vectors of mismatched shapes/dims. v1: {vec1.shape}, v2: {vec2.shape}")
+            return 0.0 
+        
+        dot_product = np.dot(vec1, vec2)
+        norm_v1 = np.linalg.norm(vec1)
+        norm_v2 = np.linalg.norm(vec2)
+        if norm_v1 == 0 or norm_v2 == 0:
+            return 0.0
+        return dot_product / (norm_v1 * norm_v2)
+
+    class DatabaseManager:
+        """
+        Manages interaction with the vector database (mocked in-memory).
+        """
+        def __init__(self):
+            self.documents: List[Dict[str, Any]] = [] # id, content, embedding_vector (List[float]), metadata
+            print("DatabaseManager (Mock with basic search) initialized.")
+
+        async def store_chunks(self, chunks_data: List[Dict[str, Any]]) -> List[str]:
+            """
+            Stores chunks with their embeddings and metadata.
+            chunks_data: list of dicts, each like {"text": str, "embedding": List[float], "metadata": Dict, "id": str}
+            """
+            stored_ids = []
+            for i, chunk_info in enumerate(chunks_data):
+                doc_id = chunk_info.get("id", f"mem_doc_{len(self.documents) + i}")
+                if not chunk_info.get("embedding"):
+                    print(f"DatabaseManager (Mock): Skipping chunk '{doc_id}' due to missing embedding.")
+                    continue
+
+                self.documents.append({
+                    "id": doc_id,
+                    "content": chunk_info.get("text"),
+                    "embedding_vector": chunk_info.get("embedding"),
+                    "metadata": chunk_info.get("metadata", {})
+                })
+                stored_ids.append(doc_id)
+            print(f"DatabaseManager (Mock): Stored {len(stored_ids)} chunks.")
+            return stored_ids
+
+        async def semantic_search(self, query_embedding: List[float], limit: int, filter_metadata: Optional[Dict] = None) -> List[Dict[str, Any]]:
+            """Performs semantic search using cosine similarity."""
+            print(f"DatabaseManager (Mock): Semantic search (limit {limit}, filter {filter_metadata}). Query emb dim: {len(query_embedding)}")
+            
+            if not query_embedding or sum(abs(x) for x in query_embedding) == 0: # Check for zero/empty embedding
+                print("DatabaseManager (Mock): Query embedding is zero or empty. Returning no results.")
+                return []
+
+            candidate_docs = []
+            for doc in self.documents:
+                if not doc.get("embedding_vector"): # Skip docs without embeddings
+                    continue
+
+                # Apply metadata filter
+                passes_filter = True
+                if filter_metadata:
+                    for key, value in filter_metadata.items():
+                        if doc["metadata"].get(key) != value:
+                            passes_filter = False
+                            break
+                if not passes_filter:
+                    continue
+
+                similarity = cosine_similarity(query_embedding, doc["embedding_vector"])
+                candidate_docs.append({**doc, "similarity_score": float(similarity)})
+            
+            # Sort by similarity (descending) and take top N
+            candidate_docs.sort(key=lambda d: d["similarity_score"], reverse=True)
+            results = candidate_docs[:limit]
+            
+            # Reformat for consistency with foundational-rag-agent's expected output
+            # (which includes 'content' and 'metadata' at top level of each result item)
+            formatted_results = []
+            for res in results:
+                formatted_results.append({
+                    "id": res["id"], # Keep original ID
+                    "content": res["content"],
+                    "metadata": res["metadata"],
+                    "similarity": res["similarity_score"] # Use the calculated score
+                })
+
+            print(f"DatabaseManager (Mock): Found {len(formatted_results)} results for semantic search.")
+            return formatted_results
+
+        # ... (get_all_sources method remains the same as Task 7)
+        async def get_all_sources(self) -> List[str]:
+            sources = set()
+            for doc in self.documents:
+                if doc["metadata"] and "source_url" in doc["metadata"]: # Changed to source_url if that's what WebCrawler provides
+                    sources.add(doc["metadata"]["source_url"])
+                elif doc["metadata"] and "source" in doc["metadata"]: # Fallback
+                    sources.add(doc["metadata"]["source"])
+            return list(sources)
+    ```
+
+5.  **Modify `python/tools/knowledge_agent_tool.py`:**
+    *   Update `_ingest_chunks` to call the real `EmbeddingGenerator` if embeddings are not provided in `chunks_data`.
+    *   Update `_query_kb` and `_raw_search` to use the real `EmbeddingGenerator` for the query.
+
+    ```python
+    # python/tools/knowledge_agent_tool.py
+    # ... (imports and __init__ mostly same as Task 7)
+
+    class KnowledgeAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="knowledge_agent_tool",
+                             description="Manages and queries a knowledge base using RAG principles.",
+                             args_schema=None, 
+                             **kwargs)
+            self.db_manager = DatabaseManager() # Mock DB for now
+            self.embed_generator = EmbeddingGenerator() # Real EmbeddingGenerator
+            self.retriever = InformationRetriever(self.db_manager, self.embed_generator) # Uses real embed gen
+            self.rag_agent_logic = KnowledgeRAGAgent(self.db_manager, self.retriever) 
+            print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} with REAL EmbeddingGenerator.")
+
+        # ... (_emit_knowledge_event method same)
+        async def _emit_knowledge_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            event_type = StreamEventType.KNOWLEDGE_RESULT if status == "completed" else StreamEventType.PROGRESS_UPDATE
+            payload = {"source_tool": "knowledge_agent", "action": action_name, "status": status}
+            if details: payload.update(details)
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(event_type, payload)
+            else:
+                print(f"KnowledgeAgentTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+
+        async def _ingest_chunks(self, chunks_data: List[Dict[str, Any]]) -> ToolResponse:
+            """
+            Ingests chunks. If embeddings are not provided, generates them.
+            chunks_data: List of dicts, each like {"text": str, "metadata": Dict, "id": str}. 
+                         "embedding" (List[float]) is optional.
+            """
+            await self._emit_knowledge_event("ingest_chunks", "starting", {"chunk_count_received": len(chunks_data)})
+            
+            texts_to_embed = []
+            indices_needing_embedding = []
+
+            for i, chunk_d in enumerate(chunks_data):
+                if "embedding" not in chunk_d or not chunk_d["embedding"]:
+                    text_to_embed = chunk_d.get("text")
+                    if not text_to_embed or not text_to_embed.strip():
+                         err_msg = f"Chunk {i} (id: {chunk_d.get('id')}) has no text to embed."
+                         await self._emit_knowledge_event("ingest_chunks", "error", {"message": err_msg})
+                         # Skip this chunk or handle error more gracefully
+                         print(f"KnowledgeAgentTool: {err_msg}")
+                         continue 
+                    texts_to_embed.append(text_to_embed)
+                    indices_needing_embedding.append(i)
+            
+            if texts_to_embed:
+                print(f"KnowledgeAgentTool: Generating embeddings for {len(texts_to_embed)} chunks.")
+                generated_embeddings = await self.embed_generator.generate_embeddings(texts_to_embed)
+                if len(generated_embeddings) != len(indices_needing_embedding):
+                    msg = "Error: Mismatch in generated embeddings count."
+                    await self._emit_knowledge_event("ingest_chunks", "error", {"message": msg})
+                    return ToolResponse(msg, error=True)
+                
+                for original_idx, embedding in zip(indices_needing_embedding, generated_embeddings):
+                    chunks_data[original_idx]["embedding"] = embedding
+            
+            # Filter out chunks that still lack embeddings (e.g., if text was empty and embedding failed)
+            valid_chunks_data = [cd for cd in chunks_data if cd.get("embedding")]
+
+            if not valid_chunks_data:
+                msg = "No valid chunks with embeddings to ingest."
+                await self._emit_knowledge_event("ingest_chunks", "error", {"message": msg})
+                return ToolResponse(msg, error=True)
+
+            result = await self.rag_agent_logic.ingest_document_chunks(valid_chunks_data)
+            
+            await self._emit_knowledge_event("ingest_chunks", "completed", result)
+            return ToolResponse(message=f"Ingested {result.get('count', 0)} chunks.", data=result)
+
+        async def _query_kb(self, query: str, limit: int) -> ToolResponse:
+            await self._emit_knowledge_event("query_kb", "processing", {"query": query})
+            
+            # RAGAgentLogic's query_knowledge_base should handle embedding the query internally via its retriever
+            rag_response = await self.rag_agent_logic.query_knowledge_base(query, limit)
+            
+            await self._emit_knowledge_event("query_kb", "completed", rag_response)
+            return ToolResponse(message=json.dumps(rag_response), data=rag_response) # Response is already a dict
+
+        async def _raw_search(self, query: str, limit: int, filter_metadata: Optional[Dict]) -> ToolResponse:
+            await self._emit_knowledge_event("raw_search", "processing", {"query": query, "filter": filter_metadata})
+            
+            query_embedding = await self.embed_generator.generate_single_embedding(query)
+            search_results = await self.db_manager.semantic_search(query_embedding, limit, filter_metadata)
+            
+            await self._emit_knowledge_event("raw_search", "completed", {"results_count": len(search_results)})
+            return ToolResponse(message=json.dumps(search_results), data=search_results) # search_results is List[Dict]
+
+        # ... (_list_sources method remains the same as Task 7)
+        async def _list_sources(self) -> ToolResponse:
+            await self._emit_knowledge_event("list_sources", "processing", {})
+            sources = await self.db_manager.get_all_sources()
+            await self._emit_knowledge_event("list_sources", "completed", {"sources": sources})
+            return ToolResponse(message=json.dumps({"sources": sources}), data={"sources": sources})
+
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-11 completed.
+*   `openai` and `numpy` libraries added to `requirements.txt` and installed.
+*   Valid `OPENAI_API_KEY` and `EMBEDDING_MODEL` set in the `.env` file.
+*   The `StreamProtocolTool` and agent's `_emit_stream_event` helper for event emission.
+
+**Integration with Agent Zero:**
+*   `EmbeddingGenerator` now uses the OpenAI API to generate real embeddings.
+*   `DatabaseManager` (still mock storage) uses these real embeddings for a mock cosine similarity search.
+*   `KnowledgeAgentTool` orchestrates these components for its `ingest_chunks`, `query`, and `raw_search` actions. If `chunks_data` passed to `ingest_chunks` lacks embeddings, it will generate them.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `openai` and `numpy` to `requirements.txt`. The Docker build process will install them.
+*   Ensure the `.env` file (or environment variables passed to Docker) contains `OPENAI_API_KEY` and `EMBEDDING_MODEL`.
+
+**Summary of Task 14:**
+This task brings the `KnowledgeAgentTool` closer to a functional RAG system by implementing real embedding generation using OpenAI. While the `DatabaseManager` still uses an in-memory mock for storage and search, the search logic now performs a (mocked) cosine similarity comparison using real embeddings. The `_ingest_chunks` action can now also generate embeddings if they are not pre-supplied. This sets the stage for integrating a persistent vector database like Supabase/pgvector.
+
+Please confirm to proceed.

@@ -1,0 +1,550 @@
+Okay, let's proceed with Task 9.
+
+## Task 9: Implement HybridMemoryTool Structure and Placeholder Logic
+
+**Focus:**
+This task creates the `HybridMemoryTool`, which aims to combine Agent Zero's existing structured memory system (presumably `memory_load`, `memory_save`, etc. tools and their underlying vector DB via `python/helpers/memory.py`) with the capabilities of the new `MemoryAgentTool` (Mem0). For this task, we will create the tool structure and placeholder logic for storing and retrieving context. The actual sophisticated combination and ranking logic will be deferred. The tool should be callable by the agent and provide a unified interface for memory operations.
+
+**File Paths and Code Changes:**
+
+1.  **Create `python/tools/hybrid_memory_tool.py`:**
+
+    ```python
+# python/tools/hybrid_memory_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType # For potential event emission
+    # Assuming MemoryAgentTool and its mock memory system are available for import
+    from python.tools.memory_agent_tool import MemoryAgentTool 
+    # Assuming Agent Zero's existing memory tools are callable or their core logic is accessible
+    # For now, we'll simulate calling them via self.agent.call_tool if they exist as tools.
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+
+    class HybridMemoryTool(Tool):
+        """
+        Hybrid Memory Tool for Agent Zero.
+        Combines Agent Zero's existing structured memory with MemoryAgent (Mem0) capabilities.
+        Provides a unified interface for storing and retrieving context.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="hybrid_memory_tool",
+                             description="Manages a hybrid memory system, storing and retrieving information using both structured and intelligent memory approaches.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            # Instance of MemoryAgentTool (or its core logic) to interact with Mem0-like memory
+            # This assumes MemoryAgentTool has been initialized and is accessible,
+            # or we might need to initialize its core components here.
+            # For simplicity, we'll try to use the agent's ability to call other tools.
+            self.agent_id_for_memory = self.agent.get_user_id() or self.agent.get_thread_id() or "default_hybrid_user"
+            print(f"HybridMemoryTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with memory_id: {self.agent_id_for_memory}")
+
+        async def _emit_hybrid_memory_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit events related to hybrid memory operations."""
+            # Could use MEMORY_UPDATE or a new custom event type if needed
+            event_type = StreamEventType.MEMORY_UPDATE 
+            payload = {"source_system": "hybrid_memory", "action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(event_type, payload)
+            else:
+                print(f"HybridMemoryTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute HybridMemory operations.
+            
+            Args:
+                action (str): "store_interaction", "retrieve_context".
+                **kwargs: Arguments for the action.
+            """
+            user_id = kwargs.get("user_id", self.agent_id_for_memory)
+
+            try:
+                if action == "store_interaction":
+                    # interaction_data: Dict, e.g., {"type": "user_message", "content": "...", "timestamp": "...", "messages": [...]}
+                    interaction_data = kwargs.get("interaction_data")
+                    if not interaction_data or not isinstance(interaction_data, dict):
+                        return ToolResponse("Error: 'interaction_data' (dict) is required for store_interaction.", error=True)
+                    return await self._store_interaction(interaction_data, user_id)
+                
+                elif action == "retrieve_context":
+                    query = kwargs.get("query")
+                    limit = kwargs.get("limit", 5) # Results from each source
+                    if not query: return ToolResponse("Error: 'query' is required for retrieve_context.", error=True)
+                    return await self._retrieve_context(query, user_id, limit)
+                
+                else:
+                    return ToolResponse(f"Unknown HybridMemoryTool action: {action}", error=True)
+
+            except Exception as e:
+                import traceback
+                error_message = f"HybridMemoryTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_hybrid_memory_event(action, "error", {"error": str(e), "user_id": user_id})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _store_interaction(self, interaction_data: Dict[str, Any], user_id: Optional[str]) -> ToolResponse:
+            """
+            Stores an interaction in both structured (Agent Zero native) and intelligent (Mem0-like) memory.
+            interaction_data should be a dictionary, potentially including 'messages' for Mem0,
+            and 'text' or 'content' for Agent Zero's memory_save.
+            """
+            await self._emit_hybrid_memory_event("store_interaction", "starting", {"user_id": user_id})
+            
+            results = {"structured_memory_status": "not_attempted", "intelligent_memory_status": "not_attempted"}
+
+            # 1. Store in Agent Zero's structured memory (e.g., using memory_save tool)
+            try:
+                # Adapt interaction_data for memory_save tool's expected format
+                text_to_save = interaction_data.get("content", json.dumps(interaction_data)) # Fallback to full JSON
+                metadata_for_az = interaction_data.get("metadata", {})
+                metadata_for_az["source_interaction_type"] = interaction_data.get("type", "generic")
+                metadata_for_az["user_id"] = user_id # Ensure user_id is part of metadata for AZ memory if it supports it
+
+                # Call existing memory_save tool
+                # Note: self.agent.call_tool needs to be robust or this needs direct access to memory logic
+                response_az = await self.agent.call_tool(
+                    "memory_save", 
+                    {"text": text_to_save, "area": "hybrid_interaction", **metadata_for_az}
+                )
+                if response_az and not response_az.error: # Assuming call_tool returns a Response object
+                    results["structured_memory_status"] = f"success: {response_az.message}"
+                else:
+                    results["structured_memory_status"] = f"failed: {response_az.message if response_az else 'Unknown error'}"
+            except Exception as e:
+                results["structured_memory_status"] = f"error: {str(e)}"
+                print(f"HybridMemoryTool: Error storing in Agent Zero structured memory: {e}")
+
+            # 2. Store in MemoryAgent's intelligent memory (using memory_agent_tool)
+            try:
+                # Adapt interaction_data for memory_agent_tool's "add" action
+                mem0_payload = {"action": "add", "user_id": user_id}
+                if "messages" in interaction_data: # Mem0 prefers message lists
+                    mem0_payload["messages"] = interaction_data["messages"]
+                else: # Fallback to generic data
+                    mem0_payload["data"] = interaction_data 
+                
+                response_mem0 = await self.agent.call_tool("memory_agent_tool", mem0_payload)
+                if response_mem0 and not response_mem0.error:
+                    results["intelligent_memory_status"] = f"success: {response_mem0.message}"
+                else:
+                    results["intelligent_memory_status"] = f"failed: {response_mem0.message if response_mem0 else 'Unknown error'}"
+            except Exception as e:
+                results["intelligent_memory_status"] = f"error: {str(e)}"
+                print(f"HybridMemoryTool: Error storing in MemoryAgent intelligent memory: {e}")
+
+            await self._emit_hybrid_memory_event("store_interaction", "completed", {"results": results, "user_id": user_id})
+            return ToolResponse(message="Interaction processed by hybrid memory.", data=results)
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], limit: int) -> ToolResponse:
+            """
+            Retrieves and combines context from both memory systems.
+            Placeholder: currently just queries both and returns a combined list.
+            """
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": user_id})
+            
+            combined_results = {
+                "query": query,
+                "structured_results": [],
+                "intelligent_results": [],
+                "ranked_combined_context": "Placeholder: Combined context would appear here." # Placeholder for actual ranked text
+            }
+
+            # 1. Retrieve from Agent Zero's structured memory (e.g., using memory_load tool)
+            try:
+                # Note: Agent Zero's memory_load tool might have different args (e.g., threshold, filter)
+                az_mem_response = await self.agent.call_tool(
+                    "memory_load",
+                    {"query": query, "limit": limit} # Add other relevant AZ memory_load args if needed
+                )
+                if az_mem_response and not az_mem_response.error and az_mem_response.message:
+                    # Assuming message is a JSON string of results or a list of dicts
+                    try:
+                        az_results = json.loads(az_mem_response.message) if isinstance(az_mem_response.message, str) else az_mem_response.message
+                        combined_results["structured_results"] = az_results if isinstance(az_results, list) else [az_results]
+                    except json.JSONDecodeError:
+                         combined_results["structured_results"] = [{"error": "Failed to parse AZ memory response", "raw": az_mem_response.message}]
+                elif az_mem_response and az_mem_response.error:
+                     combined_results["structured_results"] = [{"error": az_mem_response.message}]
+
+            except Exception as e:
+                print(f"HybridMemoryTool: Error retrieving from Agent Zero structured memory: {e}")
+                combined_results["structured_results"] = [{"error": str(e)}]
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (using memory_agent_tool)
+            try:
+                mem0_response = await self.agent.call_tool(
+                    "memory_agent_tool",
+                    {"action": "search", "query": query, "user_id": user_id, "limit": limit}
+                )
+                if mem0_response and not mem0_response.error and mem0_response.data: # Assuming data field holds the list
+                    combined_results["intelligent_results"] = mem0_response.data
+                elif mem0_response and mem0_response.error:
+                    combined_results["intelligent_results"] = [{"error": mem0_response.message}]
+
+            except Exception as e:
+                print(f"HybridMemoryTool: Error retrieving from MemoryAgent intelligent memory: {e}")
+                combined_results["intelligent_results"] = [{"error": str(e)}]
+            
+            # Placeholder for actual combination and ranking logic
+            # For now, just concatenating content for the ranked_combined_context
+            ranked_text_parts = []
+            for res_list_key in ["structured_results", "intelligent_results"]:
+                for item in combined_results.get(res_list_key, []):
+                    if isinstance(item, dict) and "content" in item:
+                        ranked_text_parts.append(str(item["content"])) # Mem0 search result might be dict
+                    elif isinstance(item, dict) and "text" in item: # Agent Zero memory_load might have 'text'
+                         ranked_text_parts.append(str(item["text"]))
+                    elif isinstance(item, str): # If memory_load just returns string
+                        ranked_text_parts.append(item)
+
+
+            if ranked_text_parts:
+                combined_results["ranked_combined_context"] = "\n".join(ranked_text_parts)[:2000] # Truncate for now
+            else:
+                combined_results["ranked_combined_context"] = "No relevant information found in either memory system."
+
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", {"query": query, "retrieved_count": len(combined_results["structured_results"]) + len(combined_results["intelligent_results"]), "user_id": user_id})
+            return ToolResponse(message="Context retrieved from hybrid memory.", data=combined_results)
+```
+
+2.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `hybrid_memory_tool`.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing tools including memory_agent_tool)
+
+    ### hybrid_memory_tool:
+    # Manages a hybrid memory system, combining structured and intelligent memory.
+    # Use this tool for general memory storage and retrieval related to the ongoing conversation or user.
+    # Arguments:
+    #   action: string - "store_interaction", "retrieve_context".
+    #   user_id: string - (Optional) Identifier for the user context.
+    #   For "store_interaction":
+    #     interaction_data: dict - Data about the interaction. 
+    #       Should include 'content' (string) for structured memory, 
+    #       and can include 'messages' (list of dicts like [{"role": "user", "content": "..."}]) for intelligent memory.
+    #       Example: {"type": "user_query", "content": "User asked about X", "messages": [{"role": "user", "content": "What about X?"}], "timestamp": "..."}
+    #   For "retrieve_context":
+    #     query: string - The query to retrieve relevant context for.
+    #     limit: int - (Optional, default 5) Max results from each memory source.
+    # Example for storing an interaction:
+    # {
+    #   "tool_name": "hybrid_memory_tool",
+    #   "tool_args": { 
+    #     "action": "store_interaction", 
+    #     "interaction_data": { "type": "agent_response", "content": "Agent found solution Y", "messages": [{"role": "assistant", "content": "Solution Y is..."}] },
+    #     "user_id": "user456"
+    #   }
+    # }
+    # Example for retrieving context:
+    # {
+    #   "tool_name": "hybrid_memory_tool",
+    #   "tool_args": { "action": "retrieve_context", "query": "solutions for problem X", "user_id": "user456" }
+    # }
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-8 completed.
+*   `StreamProtocolTool` for event emission.
+*   `MemoryAgentTool` (at least its placeholder structure) and Agent Zero's existing memory tools (`memory_save`, `memory_load`) must be callable by `self.agent.call_tool`. This implies that `Agent._call_tool` can find and execute these tools.
+*   The `Agent` class has methods like `get_user_id()`, `get_thread_id()`, and `_emit_stream_event()`.
+
+**Integration with Agent Zero:**
+*   `HybridMemoryTool` is added to `python/tools/`.
+*   It acts as a higher-level memory management tool.
+*   It internally calls other tools (`memory_save`, `memory_load` from Agent Zero's native system, and `memory_agent_tool` for Mem0-like capabilities). This requires `Agent.call_tool` to be functional and accessible.
+*   It emits `MEMORY_UPDATE` events (or a more specific hybrid memory event type if desired) via the agent.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for this placeholder tool.
+*   Ensure the new tool file `python/tools/hybrid_memory_tool.py` is included in the Docker image.
+
+**Summary of Task 9:**
+This task establishes the `HybridMemoryTool`, providing a unified interface for memory operations. It sets up placeholder logic to delegate storage and retrieval tasks to both Agent Zero's native memory system (via existing tools like `memory_save`/`memory_load`) and the new `MemoryAgentTool` (Mem0-like system). The actual sophisticated logic for combining and ranking results from these diverse memory sources is deferred, but the structure for such a system is now in place. This tool will be critical for providing comprehensive and relevant context to the agent.
+
+Please confirm to proceed.Okay, let's proceed with Task 9.
+
+## Task 9: Implement HybridMemoryTool Structure and Placeholder Logic
+
+**Focus:**
+This task creates the `HybridMemoryTool`, which aims to combine Agent Zero's existing structured memory system (presumably `memory_load`, `memory_save`, etc. tools and their underlying vector DB via `python/helpers/memory.py`) with the capabilities of the new `MemoryAgentTool` (Mem0). For this task, we will create the tool structure and placeholder logic for storing and retrieving context. The actual sophisticated combination and ranking logic will be deferred. The tool should be callable by the agent and provide a unified interface for memory operations.
+
+**File Paths and Code Changes:**
+
+1.  **Create `python/tools/hybrid_memory_tool.py`:**
+
+    ```python
+    # python/tools/hybrid_memory_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType # For potential event emission
+    # Assuming MemoryAgentTool and its mock memory system are available for import
+    from python.tools.memory_agent_tool import MemoryAgentTool 
+    # Assuming Agent Zero's existing memory tools are callable or their core logic is accessible
+    # For now, we'll simulate calling them via self.agent.call_tool if they exist as tools.
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+
+    class HybridMemoryTool(Tool):
+        """
+        Hybrid Memory Tool for Agent Zero.
+        Combines Agent Zero's existing structured memory with MemoryAgent (Mem0) capabilities.
+        Provides a unified interface for storing and retrieving context.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="hybrid_memory_tool",
+                             description="Manages a hybrid memory system, storing and retrieving information using both structured and intelligent memory approaches.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            # Instance of MemoryAgentTool (or its core logic) to interact with Mem0-like memory
+            # This assumes MemoryAgentTool has been initialized and is accessible,
+            # or we might need to initialize its core components here.
+            # For simplicity, we'll try to use the agent's ability to call other tools.
+            self.agent_id_for_memory = self.agent.get_user_id() or self.agent.get_thread_id() or "default_hybrid_user"
+            print(f"HybridMemoryTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with memory_id: {self.agent_id_for_memory}")
+
+        async def _emit_hybrid_memory_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit events related to hybrid memory operations."""
+            # Could use MEMORY_UPDATE or a new custom event type if needed
+            event_type = StreamEventType.MEMORY_UPDATE 
+            payload = {"source_system": "hybrid_memory", "action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(event_type, payload)
+            else:
+                print(f"HybridMemoryTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute HybridMemory operations.
+            
+            Args:
+                action (str): "store_interaction", "retrieve_context".
+                **kwargs: Arguments for the action.
+            """
+            user_id = kwargs.get("user_id", self.agent_id_for_memory)
+
+            try:
+                if action == "store_interaction":
+                    # interaction_data: Dict, e.g., {"type": "user_message", "content": "...", "timestamp": "...", "messages": [...]}
+                    interaction_data = kwargs.get("interaction_data")
+                    if not interaction_data or not isinstance(interaction_data, dict):
+                        return ToolResponse("Error: 'interaction_data' (dict) is required for store_interaction.", error=True)
+                    return await self._store_interaction(interaction_data, user_id)
+                
+                elif action == "retrieve_context":
+                    query = kwargs.get("query")
+                    limit = kwargs.get("limit", 5) # Results from each source
+                    if not query: return ToolResponse("Error: 'query' is required for retrieve_context.", error=True)
+                    return await self._retrieve_context(query, user_id, limit)
+                
+                else:
+                    return ToolResponse(f"Unknown HybridMemoryTool action: {action}", error=True)
+
+            except Exception as e:
+                import traceback
+                error_message = f"HybridMemoryTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_hybrid_memory_event(action, "error", {"error": str(e), "user_id": user_id})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _store_interaction(self, interaction_data: Dict[str, Any], user_id: Optional[str]) -> ToolResponse:
+            """
+            Stores an interaction in both structured (Agent Zero native) and intelligent (Mem0-like) memory.
+            interaction_data should be a dictionary, potentially including 'messages' for Mem0,
+            and 'text' or 'content' for Agent Zero's memory_save.
+            """
+            await self._emit_hybrid_memory_event("store_interaction", "starting", {"user_id": user_id})
+            
+            results = {"structured_memory_status": "not_attempted", "intelligent_memory_status": "not_attempted"}
+
+            # 1. Store in Agent Zero's structured memory (e.g., using memory_save tool)
+            try:
+                # Adapt interaction_data for memory_save tool's expected format
+                text_to_save = interaction_data.get("content", json.dumps(interaction_data)) # Fallback to full JSON
+                metadata_for_az = interaction_data.get("metadata", {})
+                metadata_for_az["source_interaction_type"] = interaction_data.get("type", "generic")
+                metadata_for_az["user_id"] = user_id # Ensure user_id is part of metadata for AZ memory if it supports it
+
+                # Call existing memory_save tool
+                # Note: self.agent.call_tool needs to be robust or this needs direct access to memory logic
+                response_az = await self.agent.call_tool(
+                    "memory_save", 
+                    {"text": text_to_save, "area": "hybrid_interaction", **metadata_for_az}
+                )
+                if response_az and not response_az.error: # Assuming call_tool returns a Response object
+                    results["structured_memory_status"] = f"success: {response_az.message}"
+                else:
+                    results["structured_memory_status"] = f"failed: {response_az.message if response_az else 'Unknown error'}"
+            except Exception as e:
+                results["structured_memory_status"] = f"error: {str(e)}"
+                print(f"HybridMemoryTool: Error storing in Agent Zero structured memory: {e}")
+
+            # 2. Store in MemoryAgent's intelligent memory (using memory_agent_tool)
+            try:
+                # Adapt interaction_data for memory_agent_tool's "add" action
+                mem0_payload = {"action": "add", "user_id": user_id}
+                if "messages" in interaction_data: # Mem0 prefers message lists
+                    mem0_payload["messages"] = interaction_data["messages"]
+                else: # Fallback to generic data
+                    mem0_payload["data"] = interaction_data 
+                
+                response_mem0 = await self.agent.call_tool("memory_agent_tool", mem0_payload)
+                if response_mem0 and not response_mem0.error:
+                    results["intelligent_memory_status"] = f"success: {response_mem0.message}"
+                else:
+                    results["intelligent_memory_status"] = f"failed: {response_mem0.message if response_mem0 else 'Unknown error'}"
+            except Exception as e:
+                results["intelligent_memory_status"] = f"error: {str(e)}"
+                print(f"HybridMemoryTool: Error storing in MemoryAgent intelligent memory: {e}")
+
+            await self._emit_hybrid_memory_event("store_interaction", "completed", {"results": results, "user_id": user_id})
+            return ToolResponse(message="Interaction processed by hybrid memory.", data=results)
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], limit: int) -> ToolResponse:
+            """
+            Retrieves and combines context from both memory systems.
+            Placeholder: currently just queries both and returns a combined list.
+            """
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": user_id})
+            
+            combined_results = {
+                "query": query,
+                "structured_results": [],
+                "intelligent_results": [],
+                "ranked_combined_context": "Placeholder: Combined context would appear here." # Placeholder for actual ranked text
+            }
+
+            # 1. Retrieve from Agent Zero's structured memory (e.g., using memory_load tool)
+            try:
+                # Note: Agent Zero's memory_load tool might have different args (e.g., threshold, filter)
+                az_mem_response = await self.agent.call_tool(
+                    "memory_load",
+                    {"query": query, "limit": limit} # Add other relevant AZ memory_load args if needed
+                )
+                if az_mem_response and not az_mem_response.error and az_mem_response.message:
+                    # Assuming message is a JSON string of results or a list of dicts
+                    try:
+                        az_results = json.loads(az_mem_response.message) if isinstance(az_mem_response.message, str) else az_mem_response.message
+                        combined_results["structured_results"] = az_results if isinstance(az_results, list) else [az_results]
+                    except json.JSONDecodeError:
+                         combined_results["structured_results"] = [{"error": "Failed to parse AZ memory response", "raw": az_mem_response.message}]
+                elif az_mem_response and az_mem_response.error:
+                     combined_results["structured_results"] = [{"error": az_mem_response.message}]
+
+            except Exception as e:
+                print(f"HybridMemoryTool: Error retrieving from Agent Zero structured memory: {e}")
+                combined_results["structured_results"] = [{"error": str(e)}]
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (using memory_agent_tool)
+            try:
+                mem0_response = await self.agent.call_tool(
+                    "memory_agent_tool",
+                    {"action": "search", "query": query, "user_id": user_id, "limit": limit}
+                )
+                if mem0_response and not mem0_response.error and mem0_response.data: # Assuming data field holds the list
+                    combined_results["intelligent_results"] = mem0_response.data
+                elif mem0_response and mem0_response.error:
+                    combined_results["intelligent_results"] = [{"error": mem0_response.message}]
+
+            except Exception as e:
+                print(f"HybridMemoryTool: Error retrieving from MemoryAgent intelligent memory: {e}")
+                combined_results["intelligent_results"] = [{"error": str(e)}]
+            
+            # Placeholder for actual combination and ranking logic
+            # For now, just concatenating content for the ranked_combined_context
+            ranked_text_parts = []
+            for res_list_key in ["structured_results", "intelligent_results"]:
+                for item in combined_results.get(res_list_key, []):
+                    if isinstance(item, dict) and "content" in item:
+                        ranked_text_parts.append(str(item["content"])) # Mem0 search result might be dict
+                    elif isinstance(item, dict) and "text" in item: # Agent Zero memory_load might have 'text'
+                         ranked_text_parts.append(str(item["text"]))
+                    elif isinstance(item, str): # If memory_load just returns string
+                        ranked_text_parts.append(item)
+
+
+            if ranked_text_parts:
+                combined_results["ranked_combined_context"] = "\n".join(ranked_text_parts)[:2000] # Truncate for now
+            else:
+                combined_results["ranked_combined_context"] = "No relevant information found in either memory system."
+
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", {"query": query, "retrieved_count": len(combined_results["structured_results"]) + len(combined_results["intelligent_results"]), "user_id": user_id})
+            return ToolResponse(message="Context retrieved from hybrid memory.", data=combined_results)
+
+    ```
+
+2.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `hybrid_memory_tool`.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing tools including memory_agent_tool)
+
+    ### hybrid_memory_tool:
+    # Manages a hybrid memory system, combining structured and intelligent memory.
+    # Use this tool for general memory storage and retrieval related to the ongoing conversation or user.
+    # Arguments:
+    #   action: string - "store_interaction", "retrieve_context".
+    #   user_id: string - (Optional) Identifier for the user context.
+    #   For "store_interaction":
+    #     interaction_data: dict - Data about the interaction. 
+    #       Should include 'content' (string) for structured memory, 
+    #       and can include 'messages' (list of dicts like [{"role": "user", "content": "..."}]) for intelligent memory.
+    #       Example: {"type": "user_query", "content": "User asked about X", "messages": [{"role": "user", "content": "What about X?"}], "timestamp": "..."}
+    #   For "retrieve_context":
+    #     query: string - The query to retrieve relevant context for.
+    #     limit: int - (Optional, default 5) Max results from each memory source.
+    # Example for storing an interaction:
+    # {
+    #   "tool_name": "hybrid_memory_tool",
+    #   "tool_args": { 
+    #     "action": "store_interaction", 
+    #     "interaction_data": { "type": "agent_response", "content": "Agent found solution Y", "messages": [{"role": "assistant", "content": "Solution Y is..."}] },
+    #     "user_id": "user456"
+    #   }
+    # }
+    # Example for retrieving context:
+    # {
+    #   "tool_name": "hybrid_memory_tool",
+    #   "tool_args": { "action": "retrieve_context", "query": "solutions for problem X", "user_id": "user456" }
+    # }
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-8 completed.
+*   `StreamProtocolTool` for event emission.
+*   `MemoryAgentTool` (at least its placeholder structure) and Agent Zero's existing memory tools (`memory_save`, `memory_load`) must be callable by `self.agent.call_tool`. This implies that `Agent._call_tool` can find and execute these tools.
+*   The `Agent` class has methods like `get_user_id()`, `get_thread_id()`, and `_emit_stream_event()`.
+
+**Integration with Agent Zero:**
+*   `HybridMemoryTool` is added to `python/tools/`.
+*   It acts as a higher-level memory management tool.
+*   It internally calls other tools (`memory_save`, `memory_load` from Agent Zero's native system, and `memory_agent_tool` for Mem0-like capabilities). This requires `Agent.call_tool` to be functional and accessible.
+*   It emits `MEMORY_UPDATE` events (or a more specific hybrid memory event type if desired) via the agent.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for this placeholder tool.
+*   Ensure the new tool file `python/tools/hybrid_memory_tool.py` is included in the Docker image.
+
+**Summary of Task 9:**
+This task establishes the `HybridMemoryTool`, providing a unified interface for memory operations. It sets up placeholder logic to delegate storage and retrieval tasks to both Agent Zero's native memory system (via existing tools like `memory_save`/`memory_load`) and the new `MemoryAgentTool` (Mem0-like system). The actual sophisticated logic for combining and ranking results from these diverse memory sources is deferred, but the structure for such a system is now in place. This tool will be critical for providing comprehensive and relevant context to the agent.
+
+Please confirm to proceed.

@@ -1,0 +1,577 @@
+## Task 30: Implement Real Logic for `ChatterboxTTSTool` - Voice Conversion (VC) Action
+
+**Focus:**
+This task implements the `convert_voice` action within the `ChatterboxTTSTool`. This involves:
+1.  Integrating the voice conversion capabilities of the `chatterbox-tts` library.
+2.  Updating `ChatterboxVCHandler` in `python/agents/tts_agent/chatterbox_handler.py` to load and use the `ChatterboxVC` model.
+3.  Ensuring the `ChatterboxTTSTool._convert_voice` method correctly calls the handler and processes the output audio (e.g., saving to file, returning base64 or path).
+4.  Applying Perth watermarking to the converted audio.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `chatterbox-tts` is in `requirements.txt` and installed (as per Task 19).**
+
+2.  **Modify `python/agents/tts_agent/chatterbox_handler.py`:**
+    *   Replace the mock `ChatterboxVCHandler` with a real one that loads and uses `chatterbox.vc.ChatterboxVC`.
+
+    ```python
+# python/agents/tts_agent/chatterbox_handler.py
+    import asyncio
+    from typing import Dict, Any, Optional, Tuple
+    import numpy as np
+    import torch
+    # import librosa # Not directly needed here, ChatterboxVC handles its audio loading
+    import tempfile
+    import os
+    from pathlib import Path
+
+    try:
+        from chatterbox.tts import ChatterboxTTS as RealChatterboxTTS, punc_norm
+        from chatterbox.vc import ChatterboxVC as RealChatterboxVC # Import VC model
+        from chatterbox.models.s3gen import S3GEN_SR 
+        CHATTERBOX_AVAILABLE = True
+    except ImportError:
+        print("ChatterboxTTSHandler/VCHandler: chatterbox-tts library not found. TTS/VC tools will not be functional.")
+        CHATTERBOX_AVAILABLE = False
+        S3GEN_SR = 24000 
+        class RealChatterboxTTS: # Placeholder
+            # ... (as in Task 19) ...
+            pass
+        class RealChatterboxVC: # Placeholder
+            def __init__(self, *args, **kwargs): self.sr = S3GEN_SR
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs): return cls()
+            def generate(self, *args, **kwargs): 
+                num_samples = int(S3GEN_SR * 2.0)
+                return torch.zeros(1, num_samples, dtype=torch.float32)
+
+
+    class ChatterboxTTSHandler:
+        # ... (implementation from Task 19 remains the same) ...
+        _model_instance: Optional[RealChatterboxTTS] = None
+        _model_lock = asyncio.Lock()
+
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR
+            print(f"ChatterboxTTSHandler: Initialized for device: {device}. Model will be loaded on first use.")
+
+        async def _ensure_model_loaded(self):
+            async with self._model_lock:
+                if not CHATTERBOX_AVAILABLE:
+                    raise RuntimeError("Chatterbox library is not installed. TTS functionality is unavailable.")
+                if ChatterboxTTSHandler._model_instance is None:
+                    print(f"ChatterboxTTSHandler: Loading ChatterboxTTS model for device '{self.device}'...")
+                    try:
+                        ChatterboxTTSHandler._model_instance = await asyncio.to_thread(
+                            RealChatterboxTTS.from_pretrained, device=self.device
+                        )
+                        print("ChatterboxTTSHandler: TTS Model loaded successfully.")
+                    except Exception as e:
+                        print(f"ChatterboxTTSHandler: Failed to load ChatterboxTTS model: {e}")
+                        ChatterboxTTSHandler._model_instance = None 
+                        raise 
+                if ChatterboxTTSHandler._model_instance is None:
+                     raise RuntimeError("ChatterboxTTS model could not be loaded.")
+            return ChatterboxTTSHandler._model_instance
+        
+        async def generate_speech(self, text: str, audio_prompt_path: Optional[str] = None, 
+                                  exaggeration: float = 0.5, cfg_weight: float = 0.5, 
+                                  temperature: float = 0.8) -> Tuple[int, bytes]:
+            # ... (implementation from Task 19)
+            if not CHATTERBOX_AVAILABLE: raise RuntimeError("Chatterbox library not installed.")
+            model = await self._ensure_model_loaded()
+            normalized_text = punc_norm(text)
+            try:
+                wav_tensor_batched = await asyncio.to_thread(
+                    model.generate, text=normalized_text, audio_prompt_path=audio_prompt_path,
+                    exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature
+                )
+            except Exception as e:
+                print(f"ChatterboxTTSHandler: Error during model.generate: {e}")
+                raise
+            if wav_tensor_batched is None or wav_tensor_batched.numel() == 0:
+                raise ValueError("TTS model generated empty audio.")
+            wav_tensor = wav_tensor_batched.squeeze(0).cpu()
+            audio_numpy = wav_tensor.numpy()
+            # Assuming ChatterboxTTS.generate() already applies watermarking internally
+            audio_bytes = audio_numpy.astype(np.float32).tobytes()
+            return self.sr, audio_bytes
+
+
+    class ChatterboxVCHandler:
+        """
+        Handles Voice Conversion using the real Chatterbox library.
+        """
+        _model_instance: Optional[RealChatterboxVC] = None
+        _model_lock = asyncio.Lock()
+
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR # VC model also outputs at S3GEN_SR
+            print(f"ChatterboxVCHandler: Initialized for device: {device}. Model will be loaded on first use.")
+
+        async def _ensure_model_loaded(self):
+            async with self._model_lock:
+                if not CHATTERBOX_AVAILABLE:
+                    raise RuntimeError("Chatterbox library is not installed. VC functionality is unavailable.")
+                if ChatterboxVCHandler._model_instance is None:
+                    print(f"ChatterboxVCHandler: Loading ChatterboxVC model for device '{self.device}'...")
+                    try:
+                        ChatterboxVCHandler._model_instance = await asyncio.to_thread(
+                            RealChatterboxVC.from_pretrained, device=self.device
+                        )
+                        print("ChatterboxVCHandler: VC Model loaded successfully.")
+                    except Exception as e:
+                        print(f"ChatterboxVCHandler: Failed to load ChatterboxVC model: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        ChatterboxVCHandler._model_instance = None
+                        raise
+                if ChatterboxVCHandler._model_instance is None:
+                    raise RuntimeError("ChatterboxVC model could not be loaded.")
+            return ChatterboxVCHandler._model_instance
+
+        async def convert_voice(self, source_audio_path: str, target_voice_path: str) -> Tuple[int, bytes]:
+            """Performs voice conversion using ChatterboxVC model."""
+            if not CHATTERBOX_AVAILABLE:
+                raise RuntimeError("Chatterbox library is not installed. Cannot convert voice.")
+
+            model = await self._ensure_model_loaded()
+
+            print(f"ChatterboxVCHandler: Converting voice from '{source_audio_path}' using target '{target_voice_path}'.")
+            
+            # ChatterboxVC.generate is synchronous
+            try:
+                wav_tensor_batched = await asyncio.to_thread(
+                    model.generate,
+                    audio=source_audio_path, # Path to source audio
+                    target_voice_path=target_voice_path # Path to target voice prompt
+                ) # Returns torch.Tensor of shape (1, num_samples)
+            except Exception as e:
+                print(f"ChatterboxVCHandler: Error during VC model.generate: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+            
+            if wav_tensor_batched is None or wav_tensor_batched.numel() == 0:
+                print("ChatterboxVCHandler: VC Model generated empty audio.")
+                raise ValueError("VC model generated empty audio.")
+
+            wav_tensor = wav_tensor_batched.squeeze(0).cpu()
+            audio_numpy = wav_tensor.numpy()
+            
+            # ChatterboxVC.generate() also applies watermarking internally.
+            audio_bytes = audio_numpy.astype(np.float32).tobytes()
+            
+            print(f"ChatterboxVCHandler: Voice conversion completed ({len(audio_bytes)} bytes, SR: {self.sr}).")
+            return self.sr, audio_bytes
+```
+
+3.  **Modify `python/tools/chatterbox_tts_tool.py`:**
+    *   Ensure `_convert_voice` method correctly instantiates and calls the updated `ChatterboxVCHandler`.
+    *   Handle the real audio bytes output.
+
+    ```python
+# python/tools/chatterbox_tts_tool.py
+    # ... (imports as in Task 19)
+
+    class ChatterboxTTSTool(Tool):
+        # ... (_tts_handler_instance, _vc_handler_instance, _handler_lock, get_tts_handler as in Task 19)
+
+        @classmethod
+        async def get_vc_handler(cls, device: str) -> ChatterboxVCHandler:
+            async with cls._handler_lock:
+                if cls._vc_handler_instance is None:
+                    cls._vc_handler_instance = ChatterboxVCHandler(device=device)
+                # Ensure model is loaded within handler
+                await cls._vc_handler_instance._ensure_model_loaded() # Call new ensure method
+            return cls._vc_handler_instance
+        
+        # ... (__init__, _emit_tts_event as in Task 19)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            # ... (action routing as in Task 19 for generate_speech)
+            try:
+                if action == "generate_speech":
+                    tts_handler = await self.get_tts_handler(self.device)
+                    # ... (params extraction) ...
+                    text = kwargs.get("text"); audio_prompt_path = kwargs.get("audio_prompt_path")
+                    exaggeration = float(kwargs.get("exaggeration", 0.5)); cfg_weight = float(kwargs.get("cfg_weight", 0.5))
+                    temperature = float(kwargs.get("temperature", 0.8))
+                    if not text: return ToolResponse("Error: 'text' is required.", error=True)
+                    return await self._generate_speech(tts_handler, text, audio_prompt_path, exaggeration, cfg_weight, temperature)
+                
+                elif action == "convert_voice":
+                    vc_handler = await self.get_vc_handler(self.device) # Uses real handler now
+                    source_audio_path = kwargs.get("source_audio_path")
+                    target_voice_path = kwargs.get("target_voice_path")
+                    if not source_audio_path or not target_voice_path:
+                        return ToolResponse("Error: 'source_audio_path' and 'target_voice_path' are required for convert_voice.", error=True)
+                    return await self._convert_voice(vc_handler, source_audio_path, target_voice_path) # Calls real VC
+                # ...
+            # ... (exception handling as in Task 19)
+            except RuntimeError as rne: 
+                error_message = f"ChatterboxTTSTool runtime error (likely model loading) during action '{action}': {str(rne)}"
+                print(error_message)
+                await self._emit_tts_event(action, "error", {"error": str(rne), "type": "RuntimeError"})
+                return ToolResponse(message=error_message, error=True)
+            except Exception as e:
+                import traceback
+                error_message = f"ChatterboxTTSTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_tts_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+
+        # ... (_generate_speech method as in Task 19, ensures saving to file)
+
+        async def _convert_voice(self, vc_handler: ChatterboxVCHandler, source_audio_path: str, target_voice_path: str) -> ToolResponse:
+            await self._emit_tts_event("convert_voice", "starting", {"source": source_audio_path, "target_prompt": target_voice_path})
+            
+            # Check if source/target paths are valid before passing to handler
+            if not os.path.exists(source_audio_path):
+                return ToolResponse(f"Error: Source audio path not found: {source_audio_path}", error=True)
+            if not os.path.exists(target_voice_path):
+                return ToolResponse(f"Error: Target voice path not found: {target_voice_path}", error=True)
+
+            sr, audio_bytes = await vc_handler.convert_voice(source_audio_path, target_voice_path)
+            
+            # Save converted audio to a temporary file
+            tts_output_dir = Path(self.agent.context.get_custom_data("work_dir_path", "work_dir")) / "tmp" / "vc_output"
+            tts_output_dir.mkdir(parents=True, exist_ok=True)
+            temp_audio_filename = f"vc_output_{uuid.uuid4()}.wav"
+            temp_audio_filepath = tts_output_dir / temp_audio_filename
+            
+            try:
+                import torchaudio # Should be available via chatterbox dependency
+                audio_tensor = torch.from_numpy(np.frombuffer(audio_bytes, dtype=np.float32))
+                if audio_tensor.ndim == 1: audio_tensor = audio_tensor.unsqueeze(0)
+                await asyncio.to_thread(torchaudio.save, str(temp_audio_filepath), audio_tensor, sr)
+                relative_audio_path = f"tmp/vc_output/{temp_audio_filename}"
+                print(f"ChatterboxTTSTool: Saved converted voice to {temp_audio_filepath}")
+            except Exception as e:
+                print(f"ChatterboxTTSTool: Error saving VC audio to file: {e}")
+                relative_audio_path = None
+            
+            result_details = {
+                "sample_rate": sr, 
+                "audio_path": relative_audio_path if relative_audio_path else "Error saving audio",
+                "audio_data_base64_preview": base64.b64encode(audio_bytes[:256]).decode('utf-8') + "..." if audio_bytes else None,
+                "audio_duration_seconds": len(audio_bytes) / (sr * np.dtype(np.float32).itemsize)
+            }
+            await self._emit_tts_event("convert_voice", "completed", result_details)
+            return ToolResponse(message="Voice conversion successful." + (f" Saved to {relative_audio_path}" if relative_audio_path else ""), data=result_details)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-29 completed.
+*   `chatterbox-tts` library and all its dependencies (including `torch`, `torchaudio`, `librosa`, `perth`, `s3tokenizer`, etc.) are correctly installed.
+*   Chatterbox models (for both TTS and VC) are downloadable via Hugging Face Hub or available locally as per `ChatterboxTTS.from_pretrained` and `ChatterboxVC.from_pretrained`.
+
+**Integration with Agent Zero:**
+*   `ChatterboxVCHandler` now loads and uses the actual `ChatterboxVC` model.
+*   The `convert_voice` method in `ChatterboxTTSTool` performs real voice conversion.
+*   Output audio is saved to a temporary file, and its path is returned, similar to TTS output. Watermarking is assumed to be handled by `ChatterboxVC.generate()`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   This task completes the core functionalities of the `ChatterboxTTSTool` by adding real voice conversion.
+
+**Docker Compatibility:**
+*   All dependencies for `chatterbox-tts` (including potentially large ones like `torch` and its CUDA variants if GPU is used) must be correctly handled in `requirements.txt` and the Dockerfiles.
+*   Ensure model files for `ChatterboxVC` are handled (downloaded to a persistent cache volume or baked into the image).
+*   The `/path/to/source_audio.wav` and `/path/to/target_voice_prompt.wav` for VC will need to be accessible within the Docker container, likely from the `work_dir` or uploaded files.
+
+**Summary of Task 30:**
+This task implements the voice conversion (`convert_voice`) functionality of the `ChatterboxTTSTool` by integrating the `ChatterboxVC` model from the `chatterbox-tts` library. The tool can now take a source audio file and a target voice prompt file, and generate an audio file with the source content spoken in the target voice. This, combined with the TTS functionality from Task 19, makes the `ChatterboxTTSTool` largely feature-complete based on the capabilities of the `chatterbox` library.
+
+Please confirm to proceed.Okay, let's proceed with Task 30.
+
+## Task 30: Implement Real Logic for `ChatterboxTTSTool` - Voice Conversion (VC) Action
+
+**Focus:**
+This task implements the `convert_voice` action within the `ChatterboxTTSTool`. This involves:
+1.  Integrating the voice conversion capabilities of the `chatterbox-tts` library.
+2.  Updating `ChatterboxVCHandler` in `python/agents/tts_agent/chatterbox_handler.py` to load and use the `ChatterboxVC` model.
+3.  Ensuring the `ChatterboxTTSTool._convert_voice` method correctly calls the handler and processes the output audio (e.g., saving to file, returning base64 or path).
+4.  Applying Perth watermarking to the converted audio.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `chatterbox-tts` is in `requirements.txt` and installed (as per Task 19).**
+
+2.  **Modify `python/agents/tts_agent/chatterbox_handler.py`:**
+    *   Replace the mock `ChatterboxVCHandler` with a real one that loads and uses `chatterbox.vc.ChatterboxVC`.
+
+    ```python
+    # python/agents/tts_agent/chatterbox_handler.py
+    import asyncio
+    from typing import Dict, Any, Optional, Tuple
+    import numpy as np
+    import torch
+    # import librosa # Not directly needed here, ChatterboxVC handles its audio loading
+    import tempfile
+    import os
+    from pathlib import Path
+
+    try:
+        from chatterbox.tts import ChatterboxTTS as RealChatterboxTTS, punc_norm
+        from chatterbox.vc import ChatterboxVC as RealChatterboxVC # Import VC model
+        from chatterbox.models.s3gen import S3GEN_SR 
+        CHATTERBOX_AVAILABLE = True
+    except ImportError:
+        print("ChatterboxTTSHandler/VCHandler: chatterbox-tts library not found. TTS/VC tools will not be functional.")
+        CHATTERBOX_AVAILABLE = False
+        S3GEN_SR = 24000 
+        class RealChatterboxTTS: # Placeholder
+            # ... (as in Task 19) ...
+            pass
+        class RealChatterboxVC: # Placeholder
+            def __init__(self, *args, **kwargs): self.sr = S3GEN_SR
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs): return cls()
+            def generate(self, *args, **kwargs): 
+                num_samples = int(S3GEN_SR * 2.0)
+                return torch.zeros(1, num_samples, dtype=torch.float32)
+
+
+    class ChatterboxTTSHandler:
+        # ... (implementation from Task 19 remains the same) ...
+        _model_instance: Optional[RealChatterboxTTS] = None
+        _model_lock = asyncio.Lock()
+
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR
+            print(f"ChatterboxTTSHandler: Initialized for device: {device}. Model will be loaded on first use.")
+
+        async def _ensure_model_loaded(self):
+            async with self._model_lock:
+                if not CHATTERBOX_AVAILABLE:
+                    raise RuntimeError("Chatterbox library is not installed. TTS functionality is unavailable.")
+                if ChatterboxTTSHandler._model_instance is None:
+                    print(f"ChatterboxTTSHandler: Loading ChatterboxTTS model for device '{self.device}'...")
+                    try:
+                        ChatterboxTTSHandler._model_instance = await asyncio.to_thread(
+                            RealChatterboxTTS.from_pretrained, device=self.device
+                        )
+                        print("ChatterboxTTSHandler: TTS Model loaded successfully.")
+                    except Exception as e:
+                        print(f"ChatterboxTTSHandler: Failed to load ChatterboxTTS model: {e}")
+                        ChatterboxTTSHandler._model_instance = None 
+                        raise 
+                if ChatterboxTTSHandler._model_instance is None:
+                     raise RuntimeError("ChatterboxTTS model could not be loaded.")
+            return ChatterboxTTSHandler._model_instance
+        
+        async def generate_speech(self, text: str, audio_prompt_path: Optional[str] = None, 
+                                  exaggeration: float = 0.5, cfg_weight: float = 0.5, 
+                                  temperature: float = 0.8) -> Tuple[int, bytes]:
+            # ... (implementation from Task 19)
+            if not CHATTERBOX_AVAILABLE: raise RuntimeError("Chatterbox library not installed.")
+            model = await self._ensure_model_loaded()
+            normalized_text = punc_norm(text)
+            try:
+                wav_tensor_batched = await asyncio.to_thread(
+                    model.generate, text=normalized_text, audio_prompt_path=audio_prompt_path,
+                    exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature
+                )
+            except Exception as e:
+                print(f"ChatterboxTTSHandler: Error during model.generate: {e}")
+                raise
+            if wav_tensor_batched is None or wav_tensor_batched.numel() == 0:
+                raise ValueError("TTS model generated empty audio.")
+            wav_tensor = wav_tensor_batched.squeeze(0).cpu()
+            audio_numpy = wav_tensor.numpy()
+            # Assuming ChatterboxTTS.generate() already applies watermarking internally
+            audio_bytes = audio_numpy.astype(np.float32).tobytes()
+            return self.sr, audio_bytes
+
+
+    class ChatterboxVCHandler:
+        """
+        Handles Voice Conversion using the real Chatterbox library.
+        """
+        _model_instance: Optional[RealChatterboxVC] = None
+        _model_lock = asyncio.Lock()
+
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR # VC model also outputs at S3GEN_SR
+            print(f"ChatterboxVCHandler: Initialized for device: {device}. Model will be loaded on first use.")
+
+        async def _ensure_model_loaded(self):
+            async with self._model_lock:
+                if not CHATTERBOX_AVAILABLE:
+                    raise RuntimeError("Chatterbox library is not installed. VC functionality is unavailable.")
+                if ChatterboxVCHandler._model_instance is None:
+                    print(f"ChatterboxVCHandler: Loading ChatterboxVC model for device '{self.device}'...")
+                    try:
+                        ChatterboxVCHandler._model_instance = await asyncio.to_thread(
+                            RealChatterboxVC.from_pretrained, device=self.device
+                        )
+                        print("ChatterboxVCHandler: VC Model loaded successfully.")
+                    except Exception as e:
+                        print(f"ChatterboxVCHandler: Failed to load ChatterboxVC model: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        ChatterboxVCHandler._model_instance = None
+                        raise
+                if ChatterboxVCHandler._model_instance is None:
+                    raise RuntimeError("ChatterboxVC model could not be loaded.")
+            return ChatterboxVCHandler._model_instance
+
+        async def convert_voice(self, source_audio_path: str, target_voice_path: str) -> Tuple[int, bytes]:
+            """Performs voice conversion using ChatterboxVC model."""
+            if not CHATTERBOX_AVAILABLE:
+                raise RuntimeError("Chatterbox library is not installed. Cannot convert voice.")
+
+            model = await self._ensure_model_loaded()
+
+            print(f"ChatterboxVCHandler: Converting voice from '{source_audio_path}' using target '{target_voice_path}'.")
+            
+            # ChatterboxVC.generate is synchronous
+            try:
+                wav_tensor_batched = await asyncio.to_thread(
+                    model.generate,
+                    audio=source_audio_path, # Path to source audio
+                    target_voice_path=target_voice_path # Path to target voice prompt
+                ) # Returns torch.Tensor of shape (1, num_samples)
+            except Exception as e:
+                print(f"ChatterboxVCHandler: Error during VC model.generate: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+            
+            if wav_tensor_batched is None or wav_tensor_batched.numel() == 0:
+                print("ChatterboxVCHandler: VC Model generated empty audio.")
+                raise ValueError("VC model generated empty audio.")
+
+            wav_tensor = wav_tensor_batched.squeeze(0).cpu()
+            audio_numpy = wav_tensor.numpy()
+            
+            # ChatterboxVC.generate() also applies watermarking internally.
+            audio_bytes = audio_numpy.astype(np.float32).tobytes()
+            
+            print(f"ChatterboxVCHandler: Voice conversion completed ({len(audio_bytes)} bytes, SR: {self.sr}).")
+            return self.sr, audio_bytes
+    ```
+
+3.  **Modify `python/tools/chatterbox_tts_tool.py`:**
+    *   Ensure `_convert_voice` method correctly instantiates and calls the updated `ChatterboxVCHandler`.
+    *   Handle the real audio bytes output.
+
+    ```python
+    # python/tools/chatterbox_tts_tool.py
+    # ... (imports as in Task 19)
+
+    class ChatterboxTTSTool(Tool):
+        # ... (_tts_handler_instance, _vc_handler_instance, _handler_lock, get_tts_handler as in Task 19)
+
+        @classmethod
+        async def get_vc_handler(cls, device: str) -> ChatterboxVCHandler:
+            async with cls._handler_lock:
+                if cls._vc_handler_instance is None:
+                    cls._vc_handler_instance = ChatterboxVCHandler(device=device)
+                # Ensure model is loaded within handler
+                await cls._vc_handler_instance._ensure_model_loaded() # Call new ensure method
+            return cls._vc_handler_instance
+        
+        # ... (__init__, _emit_tts_event as in Task 19)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            # ... (action routing as in Task 19 for generate_speech)
+            try:
+                if action == "generate_speech":
+                    tts_handler = await self.get_tts_handler(self.device)
+                    # ... (params extraction) ...
+                    text = kwargs.get("text"); audio_prompt_path = kwargs.get("audio_prompt_path")
+                    exaggeration = float(kwargs.get("exaggeration", 0.5)); cfg_weight = float(kwargs.get("cfg_weight", 0.5))
+                    temperature = float(kwargs.get("temperature", 0.8))
+                    if not text: return ToolResponse("Error: 'text' is required.", error=True)
+                    return await self._generate_speech(tts_handler, text, audio_prompt_path, exaggeration, cfg_weight, temperature)
+                
+                elif action == "convert_voice":
+                    vc_handler = await self.get_vc_handler(self.device) # Uses real handler now
+                    source_audio_path = kwargs.get("source_audio_path")
+                    target_voice_path = kwargs.get("target_voice_path")
+                    if not source_audio_path or not target_voice_path:
+                        return ToolResponse("Error: 'source_audio_path' and 'target_voice_path' are required for convert_voice.", error=True)
+                    return await self._convert_voice(vc_handler, source_audio_path, target_voice_path) # Calls real VC
+                # ...
+            # ... (exception handling as in Task 19)
+            except RuntimeError as rne: 
+                error_message = f"ChatterboxTTSTool runtime error (likely model loading) during action '{action}': {str(rne)}"
+                print(error_message)
+                await self._emit_tts_event(action, "error", {"error": str(rne), "type": "RuntimeError"})
+                return ToolResponse(message=error_message, error=True)
+            except Exception as e:
+                import traceback
+                error_message = f"ChatterboxTTSTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_tts_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+
+        # ... (_generate_speech method as in Task 19, ensures saving to file)
+
+        async def _convert_voice(self, vc_handler: ChatterboxVCHandler, source_audio_path: str, target_voice_path: str) -> ToolResponse:
+            await self._emit_tts_event("convert_voice", "starting", {"source": source_audio_path, "target_prompt": target_voice_path})
+            
+            # Check if source/target paths are valid before passing to handler
+            if not os.path.exists(source_audio_path):
+                return ToolResponse(f"Error: Source audio path not found: {source_audio_path}", error=True)
+            if not os.path.exists(target_voice_path):
+                return ToolResponse(f"Error: Target voice path not found: {target_voice_path}", error=True)
+
+            sr, audio_bytes = await vc_handler.convert_voice(source_audio_path, target_voice_path)
+            
+            # Save converted audio to a temporary file
+            tts_output_dir = Path(self.agent.context.get_custom_data("work_dir_path", "work_dir")) / "tmp" / "vc_output"
+            tts_output_dir.mkdir(parents=True, exist_ok=True)
+            temp_audio_filename = f"vc_output_{uuid.uuid4()}.wav"
+            temp_audio_filepath = tts_output_dir / temp_audio_filename
+            
+            try:
+                import torchaudio # Should be available via chatterbox dependency
+                audio_tensor = torch.from_numpy(np.frombuffer(audio_bytes, dtype=np.float32))
+                if audio_tensor.ndim == 1: audio_tensor = audio_tensor.unsqueeze(0)
+                await asyncio.to_thread(torchaudio.save, str(temp_audio_filepath), audio_tensor, sr)
+                relative_audio_path = f"tmp/vc_output/{temp_audio_filename}"
+                print(f"ChatterboxTTSTool: Saved converted voice to {temp_audio_filepath}")
+            except Exception as e:
+                print(f"ChatterboxTTSTool: Error saving VC audio to file: {e}")
+                relative_audio_path = None
+            
+            result_details = {
+                "sample_rate": sr, 
+                "audio_path": relative_audio_path if relative_audio_path else "Error saving audio",
+                "audio_data_base64_preview": base64.b64encode(audio_bytes[:256]).decode('utf-8') + "..." if audio_bytes else None,
+                "audio_duration_seconds": len(audio_bytes) / (sr * np.dtype(np.float32).itemsize)
+            }
+            await self._emit_tts_event("convert_voice", "completed", result_details)
+            return ToolResponse(message="Voice conversion successful." + (f" Saved to {relative_audio_path}" if relative_audio_path else ""), data=result_details)
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-29 completed.
+*   `chatterbox-tts` library and all its dependencies (including `torch`, `torchaudio`, `librosa`, `perth`, `s3tokenizer`, etc.) are correctly installed.
+*   Chatterbox models (for both TTS and VC) are downloadable via Hugging Face Hub or available locally as per `ChatterboxTTS.from_pretrained` and `ChatterboxVC.from_pretrained`.
+
+**Integration with Agent Zero:**
+*   `ChatterboxVCHandler` now loads and uses the actual `ChatterboxVC` model.
+*   The `convert_voice` method in `ChatterboxTTSTool` performs real voice conversion.
+*   Output audio is saved to a temporary file, and its path is returned, similar to TTS output. Watermarking is assumed to be handled by `ChatterboxVC.generate()`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   This task completes the core functionalities of the `ChatterboxTTSTool` by adding real voice conversion.
+
+**Docker Compatibility:**
+*   All dependencies for `chatterbox-tts` (including potentially large ones like `torch` and its CUDA variants if GPU is used) must be correctly handled in `requirements.txt` and the Dockerfiles.
+*   Ensure model files for `ChatterboxVC` are handled (downloaded to a persistent cache volume or baked into the image).
+*   The `/path/to/source_audio.wav` and `/path/to/target_voice_prompt.wav` for VC will need to be accessible within the Docker container, likely from the `work_dir` or uploaded files.
+
+**Summary of Task 30:**
+This task implements the voice conversion (`convert_voice`) functionality of the `ChatterboxTTSTool` by integrating the `ChatterboxVC` model from the `chatterbox-tts` library. The tool can now take a source audio file and a target voice prompt file, and generate an audio file with the source content spoken in the target voice. This, combined with the TTS functionality from Task 19, makes the `ChatterboxTTSTool` largely feature-complete based on the capabilities of the `chatterbox` library.
+
+Please confirm to proceed.

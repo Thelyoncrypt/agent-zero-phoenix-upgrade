@@ -1,0 +1,369 @@
+## Task 29: Implement Basic Combination Logic in `HybridMemoryTool._retrieve_context`
+
+**Focus:**
+This task focuses on implementing a basic, initial version of the context combination logic within `HybridMemoryTool._retrieve_context`. Instead of just concatenating results (as in the Task 9 placeholder), we will:
+1.  Fetch results from both Agent Zero's native memory (via `memory_load` tool) and `MemoryAgentTool` (Mem0 search).
+2.  Apply a simple relevance scoring or ranking based on similarity scores (if available from both sources) or a predefined preference.
+3.  Combine the top N results from each, ensuring no obvious duplicates if possible (e.g., based on content snippets).
+4.  Format the combined context into a single string to be passed to an LLM by the agent.
+5.  The sophisticated ranking and merging algorithms are still deferred, but this will be a step up from simple concatenation.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/tools/hybrid_memory_tool.py`:**
+    *   Update the `_retrieve_context` method.
+
+    ```python
+# python/tools/hybrid_memory_tool.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    # from python.tools.memory_agent_tool import MemoryAgentTool # Not called directly, but via self.agent.call_tool
+
+    # For simple content-based deduplication
+    import hashlib
+
+    class HybridMemoryTool(Tool):
+        # ... (__init__, _emit_hybrid_memory_event, execute, _store_interaction as in Task 9)
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="hybrid_memory_tool",
+                             description="Manages a hybrid memory system, storing and retrieving information using both structured and intelligent memory approaches.",
+                             args_schema=None, 
+                             **kwargs)
+            self.agent_id_for_memory = self.agent.get_user_id() or self.agent.get_thread_id() or "default_hybrid_user"
+            print(f"HybridMemoryTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with memory_id: {self.agent_id_for_memory}")
+
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], limit_per_source: int = 3, total_limit: int = 5) -> ToolResponse:
+            """
+            Retrieves and combines context from Agent Zero's native memory and MemoryAgentTool (Mem0).
+            Applies basic scoring and deduplication.
+            """
+            effective_user_id = user_id or self.agent_id_for_memory
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": effective_user_id})
+            
+            all_retrieved_items: List[Dict[str, Any]] = []
+
+            # 1. Retrieve from Agent Zero's structured memory (e.g., using memory_load tool)
+            try:
+                # Agent Zero's memory_load might have different args (e.g., threshold)
+                # For simplicity, we use query and limit.
+                # The response from memory_load is assumed to be a JSON string representing a list of dicts or a single dict.
+                # Each dict should ideally have 'content'/'text' and a 'score' or 'similarity'.
+                # If not, we'll assign a default score.
+                print(f"HybridMemoryTool: Querying Agent Zero native memory for: '{query}'")
+                az_mem_response_obj = await self.agent.call_tool(
+                    "memory_load",
+                    {"query": query, "limit": limit_per_source * 2} # Fetch more to have options
+                )
+                
+                if az_mem_response_obj and not az_mem_response_obj.error and az_mem_response_obj.message:
+                    az_results_raw = []
+                    try:
+                        # The message could be a JSON string of a list, or the direct list if call_tool returns parsed data
+                        if isinstance(az_mem_response_obj.message, str):
+                            az_results_raw = json.loads(az_mem_response_obj.message)
+                        elif isinstance(az_mem_response_obj.message, list):
+                             az_results_raw = az_mem_response_obj.message
+                        elif isinstance(az_mem_response_obj.message, dict): # Single item
+                            az_results_raw = [az_mem_response_obj.message]
+                            
+                    except json.JSONDecodeError:
+                        print(f"HybridMemoryTool: Failed to parse Agent Zero memory response: {az_mem_response_obj.message[:100]}")
+
+                    for res_item in az_results_raw:
+                        if isinstance(res_item, dict):
+                            content = res_item.get("page_content", res_item.get("text", res_item.get("content"))) # common keys for content
+                            if content:
+                                all_retrieved_items.append({
+                                    "content": str(content),
+                                    "score": float(res_item.get("score", res_item.get("similarity", 0.7))), # Default score if not present
+                                    "source_type": "agent_zero_structured",
+                                    "metadata": res_item.get("metadata", {"id": res_item.get("id", "unknown_az_id")})
+                                })
+                elif az_mem_response_obj and az_mem_response_obj.error:
+                    print(f"HybridMemoryTool: Error from Agent Zero memory_load: {az_mem_response_obj.message}")
+
+            except Exception as e:
+                print(f"HybridMemoryTool: Exception retrieving from Agent Zero structured memory: {e}")
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (Mem0)
+            try:
+                print(f"HybridMemoryTool: Querying MemoryAgentTool (Mem0) for: '{query}'")
+                mem0_response_obj = await self.agent.call_tool(
+                    "memory_agent_tool",
+                    {"action": "search", "query": query, "user_id": effective_user_id, "limit": limit_per_source * 2}
+                )
+                if mem0_response_obj and not mem0_response_obj.error and mem0_response_obj.data:
+                    # mem0 search should return a list of dicts, each with "text", "score", "metadata"
+                    for res_item in mem0_response_obj.data: # .data should contain the list of results
+                         if isinstance(res_item, dict) and res_item.get("text"):
+                            all_retrieved_items.append({
+                                "content": str(res_item["text"]),
+                                "score": float(res_item.get("score", res_item.get("relevance_score", 0.75))), # Mem0 uses 'score'
+                                "source_type": "mem0_intelligent",
+                                "metadata": res_item.get("metadata", {"id": res_item.get("id", "unknown_mem0_id")})
+                            })
+                elif mem0_response_obj and mem0_response_obj.error:
+                    print(f"HybridMemoryTool: Error from MemoryAgentTool search: {mem0_response_obj.message}")
+            except Exception as e:
+                print(f"HybridMemoryTool: Exception retrieving from MemoryAgentTool (Mem0): {e}")
+
+            # 3. Basic Ranking and Deduplication
+            # Sort by score (descending)
+            all_retrieved_items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+
+            # Simple deduplication based on content hash (first few chars for performance)
+            final_selected_items: List[Dict[str, Any]] = []
+            seen_content_hashes = set()
+            for item in all_retrieved_items:
+                if len(final_selected_items) >= total_limit:
+                    break
+                # Use a portion of content for hashing to avoid issues with minor formatting diffs
+                content_to_hash = item.get("content", "")[:200] # Hash first 200 chars
+                content_hash = hashlib.md5(content_to_hash.encode()).hexdigest()
+                if content_hash not in seen_content_hashes:
+                    final_selected_items.append(item)
+                    seen_content_hashes.add(content_hash)
+            
+            print(f"HybridMemoryTool: Retrieved {len(all_retrieved_items)} items, selected {len(final_selected_items)} after ranking/deduplication.")
+
+            # 4. Format combined context for LLM
+            if not final_selected_items:
+                ranked_combined_context_str = "No relevant information found in hybrid memory."
+            else:
+                context_parts = []
+                for i, item in enumerate(final_selected_items):
+                    context_parts.append(
+                        f"[Source System: {item['source_type']}, "
+                        f"Relevance: {item.get('score', 0.0):.2f}, "
+                        f"ID: {item.get('metadata', {}).get('id', 'N/A')}]\n"
+                        f"{item['content']}"
+                    )
+                ranked_combined_context_str = "\n\n---\n\n".join(context_parts)
+            
+            # Truncate if too long for LLM context (very basic truncation)
+            max_context_len = 3500 # Characters, adjust as needed
+            if len(ranked_combined_context_str) > max_context_len:
+                ranked_combined_context_str = ranked_combined_context_str[:max_context_len] + "\n... (context truncated)"
+
+            response_data = {
+                "query": query,
+                "user_id": effective_user_id,
+                "combined_context_text": ranked_combined_context_str,
+                "retrieved_item_details": final_selected_items # For inspection/UI
+            }
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", 
+                                                 {"query": query, "retrieved_count": len(final_selected_items), "user_id": effective_user_id})
+            return ToolResponse(message="Context retrieved and combined from hybrid memory.", data=response_data)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-28 completed.
+*   `MemoryAgentTool` (Task 18 & 27) should be functional for search.
+*   Agent Zero's native `memory_load` tool should be functional.
+*   The `agent.call_tool(...)` method must correctly invoke these tools and return their `ToolResponse` objects.
+
+**Integration with Agent Zero:**
+*   `HybridMemoryTool._retrieve_context` now actively queries both Agent Zero's native memory store and the `MemoryAgentTool` (Mem0).
+*   It performs a basic sort by relevance score and a simple content-based deduplication.
+*   The combined and formatted context is intended to be used by the main agent's LLM for generating responses.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond those already required by the underlying memory tools.
+
+**Summary of Task 29:**
+This task implements a more functional version of `HybridMemoryTool._retrieve_context`. It now fetches information from both Agent Zero's native memory and the Mem0-interfaced `MemoryAgentTool`, performs a basic ranking by score, attempts simple deduplication, and formats the combined results into a text string. This provides a richer, multi-source context for the agent's LLM, moving beyond the placeholder concatenation of Task 9. More sophisticated ranking, merging, and summarization of this hybrid context can be future enhancements.
+
+Please confirm to proceed.Okay, let's proceed with Task 29.
+
+## Task 29: Implement Basic Combination Logic in `HybridMemoryTool._retrieve_context`
+
+**Focus:**
+This task focuses on implementing a basic, initial version of the context combination logic within `HybridMemoryTool._retrieve_context`. Instead of just concatenating results (as in the Task 9 placeholder), we will:
+1.  Fetch results from both Agent Zero's native memory (via `memory_load` tool) and `MemoryAgentTool` (Mem0 search).
+2.  Apply a simple relevance scoring or ranking based on similarity scores (if available from both sources) or a predefined preference.
+3.  Combine the top N results from each, ensuring no obvious duplicates if possible (e.g., based on content snippets).
+4.  Format the combined context into a single string to be passed to an LLM by the agent.
+5.  The sophisticated ranking and merging algorithms are still deferred, but this will be a step up from simple concatenation.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/tools/hybrid_memory_tool.py`:**
+    *   Update the `_retrieve_context` method.
+
+    ```python
+    # python/tools/hybrid_memory_tool.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    # from python.tools.memory_agent_tool import MemoryAgentTool # Not called directly, but via self.agent.call_tool
+
+    # For simple content-based deduplication
+    import hashlib
+
+    class HybridMemoryTool(Tool):
+        # ... (__init__, _emit_hybrid_memory_event, execute, _store_interaction as in Task 9)
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="hybrid_memory_tool",
+                             description="Manages a hybrid memory system, storing and retrieving information using both structured and intelligent memory approaches.",
+                             args_schema=None, 
+                             **kwargs)
+            self.agent_id_for_memory = self.agent.get_user_id() or self.agent.get_thread_id() or "default_hybrid_user"
+            print(f"HybridMemoryTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with memory_id: {self.agent_id_for_memory}")
+
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], limit_per_source: int = 3, total_limit: int = 5) -> ToolResponse:
+            """
+            Retrieves and combines context from Agent Zero's native memory and MemoryAgentTool (Mem0).
+            Applies basic scoring and deduplication.
+            """
+            effective_user_id = user_id or self.agent_id_for_memory
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": effective_user_id})
+            
+            all_retrieved_items: List[Dict[str, Any]] = []
+
+            # 1. Retrieve from Agent Zero's structured memory (e.g., using memory_load tool)
+            try:
+                # Agent Zero's memory_load might have different args (e.g., threshold)
+                # For simplicity, we use query and limit.
+                # The response from memory_load is assumed to be a JSON string representing a list of dicts or a single dict.
+                # Each dict should ideally have 'content'/'text' and a 'score' or 'similarity'.
+                # If not, we'll assign a default score.
+                print(f"HybridMemoryTool: Querying Agent Zero native memory for: '{query}'")
+                az_mem_response_obj = await self.agent.call_tool(
+                    "memory_load",
+                    {"query": query, "limit": limit_per_source * 2} # Fetch more to have options
+                )
+                
+                if az_mem_response_obj and not az_mem_response_obj.error and az_mem_response_obj.message:
+                    az_results_raw = []
+                    try:
+                        # The message could be a JSON string of a list, or the direct list if call_tool returns parsed data
+                        if isinstance(az_mem_response_obj.message, str):
+                            az_results_raw = json.loads(az_mem_response_obj.message)
+                        elif isinstance(az_mem_response_obj.message, list):
+                             az_results_raw = az_mem_response_obj.message
+                        elif isinstance(az_mem_response_obj.message, dict): # Single item
+                            az_results_raw = [az_mem_response_obj.message]
+                            
+                    except json.JSONDecodeError:
+                        print(f"HybridMemoryTool: Failed to parse Agent Zero memory response: {az_mem_response_obj.message[:100]}")
+
+                    for res_item in az_results_raw:
+                        if isinstance(res_item, dict):
+                            content = res_item.get("page_content", res_item.get("text", res_item.get("content"))) # common keys for content
+                            if content:
+                                all_retrieved_items.append({
+                                    "content": str(content),
+                                    "score": float(res_item.get("score", res_item.get("similarity", 0.7))), # Default score if not present
+                                    "source_type": "agent_zero_structured",
+                                    "metadata": res_item.get("metadata", {"id": res_item.get("id", "unknown_az_id")})
+                                })
+                elif az_mem_response_obj and az_mem_response_obj.error:
+                    print(f"HybridMemoryTool: Error from Agent Zero memory_load: {az_mem_response_obj.message}")
+
+            except Exception as e:
+                print(f"HybridMemoryTool: Exception retrieving from Agent Zero structured memory: {e}")
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (Mem0)
+            try:
+                print(f"HybridMemoryTool: Querying MemoryAgentTool (Mem0) for: '{query}'")
+                mem0_response_obj = await self.agent.call_tool(
+                    "memory_agent_tool",
+                    {"action": "search", "query": query, "user_id": effective_user_id, "limit": limit_per_source * 2}
+                )
+                if mem0_response_obj and not mem0_response_obj.error and mem0_response_obj.data:
+                    # mem0 search should return a list of dicts, each with "text", "score", "metadata"
+                    for res_item in mem0_response_obj.data: # .data should contain the list of results
+                         if isinstance(res_item, dict) and res_item.get("text"):
+                            all_retrieved_items.append({
+                                "content": str(res_item["text"]),
+                                "score": float(res_item.get("score", res_item.get("relevance_score", 0.75))), # Mem0 uses 'score'
+                                "source_type": "mem0_intelligent",
+                                "metadata": res_item.get("metadata", {"id": res_item.get("id", "unknown_mem0_id")})
+                            })
+                elif mem0_response_obj and mem0_response_obj.error:
+                    print(f"HybridMemoryTool: Error from MemoryAgentTool search: {mem0_response_obj.message}")
+            except Exception as e:
+                print(f"HybridMemoryTool: Exception retrieving from MemoryAgentTool (Mem0): {e}")
+
+            # 3. Basic Ranking and Deduplication
+            # Sort by score (descending)
+            all_retrieved_items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+
+            # Simple deduplication based on content hash (first few chars for performance)
+            final_selected_items: List[Dict[str, Any]] = []
+            seen_content_hashes = set()
+            for item in all_retrieved_items:
+                if len(final_selected_items) >= total_limit:
+                    break
+                # Use a portion of content for hashing to avoid issues with minor formatting diffs
+                content_to_hash = item.get("content", "")[:200] # Hash first 200 chars
+                content_hash = hashlib.md5(content_to_hash.encode()).hexdigest()
+                if content_hash not in seen_content_hashes:
+                    final_selected_items.append(item)
+                    seen_content_hashes.add(content_hash)
+            
+            print(f"HybridMemoryTool: Retrieved {len(all_retrieved_items)} items, selected {len(final_selected_items)} after ranking/deduplication.")
+
+            # 4. Format combined context for LLM
+            if not final_selected_items:
+                ranked_combined_context_str = "No relevant information found in hybrid memory."
+            else:
+                context_parts = []
+                for i, item in enumerate(final_selected_items):
+                    context_parts.append(
+                        f"[Source System: {item['source_type']}, "
+                        f"Relevance: {item.get('score', 0.0):.2f}, "
+                        f"ID: {item.get('metadata', {}).get('id', 'N/A')}]\n"
+                        f"{item['content']}"
+                    )
+                ranked_combined_context_str = "\n\n---\n\n".join(context_parts)
+            
+            # Truncate if too long for LLM context (very basic truncation)
+            max_context_len = 3500 # Characters, adjust as needed
+            if len(ranked_combined_context_str) > max_context_len:
+                ranked_combined_context_str = ranked_combined_context_str[:max_context_len] + "\n... (context truncated)"
+
+            response_data = {
+                "query": query,
+                "user_id": effective_user_id,
+                "combined_context_text": ranked_combined_context_str,
+                "retrieved_item_details": final_selected_items # For inspection/UI
+            }
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", 
+                                                 {"query": query, "retrieved_count": len(final_selected_items), "user_id": effective_user_id})
+            return ToolResponse(message="Context retrieved and combined from hybrid memory.", data=response_data)
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-28 completed.
+*   `MemoryAgentTool` (Task 18 & 27) should be functional for search.
+*   Agent Zero's native `memory_load` tool should be functional.
+*   The `agent.call_tool(...)` method must correctly invoke these tools and return their `ToolResponse` objects.
+
+**Integration with Agent Zero:**
+*   `HybridMemoryTool._retrieve_context` now actively queries both Agent Zero's native memory store and the `MemoryAgentTool` (Mem0).
+*   It performs a basic sort by relevance score and a simple content-based deduplication.
+*   The combined and formatted context is intended to be used by the main agent's LLM for generating responses.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond those already required by the underlying memory tools.
+
+**Summary of Task 29:**
+This task implements a more functional version of `HybridMemoryTool._retrieve_context`. It now fetches information from both Agent Zero's native memory and the Mem0-interfaced `MemoryAgentTool`, performs a basic ranking by score, attempts simple deduplication, and formats the combined results into a text string. This provides a richer, multi-source context for the agent's LLM, moving beyond the placeholder concatenation of Task 9. More sophisticated ranking, merging, and summarization of this hybrid context can be future enhancements.
+
+Please confirm to proceed.

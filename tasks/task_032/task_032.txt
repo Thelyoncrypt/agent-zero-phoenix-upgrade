@@ -1,0 +1,865 @@
+## Task 32: Full StreamProtocol Event Integration - Agent Lifecycle and Tool Events
+
+**Focus:**
+This task is about comprehensively integrating `StreamProtocolTool` event emissions throughout the `Agent`'s lifecycle and tool interactions. We've touched on some of this in Task 4, but this task aims for completeness, ensuring all 16 standard AG-UI events (or relevant subsets) are emitted where appropriate. This makes the agent's internal state and actions fully transparent to an AG-UI compliant frontend.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` class):**
+
+    *   **`__init__` or a dedicated `start_session` method:**
+        *   Emit `SESSION_START` when an agent instance effectively begins a new processing session for a `thread_id`. This might be tricky if agent instances are reused. A clearer point might be when `StreamProtocolTool._start_session` is called, or when `Agent.process_streamed_message` is first invoked for a new `thread_id`.
+        For now, let's assume `StreamProtocolTool._start_session` handles the explicit `SESSION_START` event.
+    *   **`monologue` / Main Loop:**
+        *   `AGENT_THOUGHT`: Already partially implemented in Task 4. Ensure detailed thoughts/reasoning steps are captured and emitted if the LLM provides them or if the agent has pre/post processing logic.
+        *   `CONTEXT_UPDATE`: Emit when significant context is added or changed (e.g., after recalling memories, loading knowledge, receiving new user files/attachments).
+        *   `PROGRESS_UPDATE`: Emit for long-running internal processes within the monologue that don't involve a specific tool call (e.g., complex data processing, internal state changes before an LLM call). The existing `self.context.log.set_progress()` can be a trigger point for this.
+        *   `HUMAN_INTERVENTION`: If the agent pauses and requires human input (Agent Zero's `self.context.intervention_needed`), an event of this type should be emitted, perhaps with a prompt or question for the human.
+        *   `GENERATIVE_UI`: This is for when the agent wants the UI to render something dynamic (e.g., a form, a custom component). This is an advanced feature; for now, we can note where it *might* be used (e.g., if a tool result suggests a complex UI interaction).
+    *   **`_get_response` (LLM Call):**
+        *   Before call: `AGENT_THOUGHT` ("Querying LLM...").
+        *   After call, before parsing: `AGENT_THOUGHT` ("LLM response received, parsing...").
+    *   **`_extract_and_call_tool` / `_call_tool`:**
+        *   `TOOL_CALL_START`: (Implemented in Task 4) Ensure args are well-represented.
+        *   `TOOL_CALL_END`: (Implemented in Task 4) Ensure result/error is well-represented. Include duration if possible.
+    *   **Tool-Specific Events (emitted by tools themselves via `agent._emit_stream_event`):**
+        *   `MEMORY_UPDATE`: Emitted by `MemoryAgentTool` or `HybridMemoryTool`.
+        *   `KNOWLEDGE_RESULT`: Emitted by `KnowledgeAgentTool` after a query.
+        *   `BROWSER_ACTION`: Emitted by `BrowserAgentTool`.
+        *   `CRAWL_PROGRESS`: Emitted by `WebCrawlerTool`.
+    *   **Error Handling:**
+        *   `ERROR_EVENT`: Emit whenever a significant error occurs within the agent's logic or tool execution that isn't caught and handled by a tool itself.
+    *   **Session End:**
+        *   `SESSION_END`: Emit when the agent concludes a session or task (e.g., after `response` tool, or if `monologue` ends due to inactivity or explicit command). `StreamProtocolTool._end_session` already does this. Ensure agent logic triggers this appropriately.
+
+    ```python
+# agent.py (Illustrative Changes - focusing on new event emission points)
+    # ... (imports StreamProtocolTool, StreamEventType)
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event as before)
+
+        async def _emit_progress_update(self, message: str, percentage: Optional[float] = None, current_step: Optional[int]=None, total_steps: Optional[int]=None):
+            payload = {"message": message}
+            if percentage is not None: payload["percentage"] = percentage
+            if current_step is not None: payload["current_step"] = current_step
+            if total_steps is not None: payload["total_steps"] = total_steps
+            await self._emit_stream_event(StreamEventType.PROGRESS_UPDATE, payload)
+
+        async def _handle_intervention_request(self, prompt_for_human: str):
+            """Handles the agent pausing for human intervention."""
+            self.context.intervention_needed = True # Assuming this flag exists
+            # The actual UserMessage for intervention would be set elsewhere based on agent logic
+            # self.context.intervention_message = UserMessage(message=prompt_for_human)
+            
+            await self._emit_stream_event(
+                StreamEventType.HUMAN_INTERVENTION,
+                {"prompt": prompt_for_human, "status": "required"}
+            )
+            # The agent's main loop should then actually pause waiting for an external unpause/message.
+            # This is already part of Agent Zero's logic (self.context.halt_event.wait()).
+
+        async def monologue(self) -> Optional[str]:
+            # ... (initial setup)
+            # Existing log.set_progress can now also trigger a PROGRESS_UPDATE event
+            await self._emit_progress_update("Agent monologue started: Thinking...", percentage=5.0)
+            
+            # Initial AGENT_THOUGHT already in Task 4
+            # await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "Starting to process the request."})
+
+            # Example: Before recalling memories (if this is a distinct step)
+            # if self.config.enable_memory_recall: # Fictional config
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_start"})
+            #     # ... recall memories ...
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_end", "count": ...})
+
+
+            while self.iteration_no < self.max_iterations: # Existing loop
+                self.iteration_no += 1
+                # ... (handle intervention check - if intervention_needed, it might have already emitted HUMAN_INTERVENTION)
+
+                current_thought = f"Iteration {self.iteration_no}: Analyzing current state and planning next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": current_thought})
+                await self._emit_progress_update(current_thought, percentage=(self.iteration_no / self.max_iterations) * 90.0)
+
+
+                # --- LLM Call section ---
+                pre_llm_thought = "Preparing to query LLM for next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": pre_llm_thought})
+                response_json = await self._get_response() # This should be wrapped if it can fail
+                
+                if not response_json:
+                    err_msg = "LLM call failed or produced no parsable response."
+                    await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": err_msg, "stage": "llm_response_parsing"})
+                    # Consider breaking or specific error handling
+                    break 
+                
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "LLM response received, parsing for action."})
+                # ... (emit thoughts from response_json as in Task 4) ...
+                agent_llm_thoughts = response_json.get("thoughts", [])
+                if isinstance(agent_llm_thoughts, list):
+                    for thought in agent_llm_thoughts: await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": str(thought)})
+                elif isinstance(agent_llm_thoughts, str):
+                    await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": agent_llm_thoughts})
+
+
+                # --- Tool Call section ---
+                tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+
+                if tool_name:
+                    # TOOL_CALL_START and TOOL_CALL_END are emitted in Task 4's version of this block
+                    # Ensure args and results are comprehensive in those events
+                    # ... (tool call logic as in Task 4, which includes start/end events) ...
+                    # ...
+                    tool_response = await self._call_tool(tool_name, tool_args, tool_message) # This block already emits tool_call_start/end
+
+                    if tool_response and tool_response.error:
+                         await self._emit_stream_event(StreamEventType.ERROR_EVENT, {
+                             "error": f"Tool '{tool_name}' execution failed: {tool_response.message}",
+                             "tool_name": tool_name, "tool_args": tool_args
+                         })
+                         # Decide if to break or continue based on error policy
+
+                    if tool_response and tool_response.break_loop:
+                        final_message = tool_response.message
+                        if tool_name == "response": # This is the agent's final textual response
+                            # This event emission was added to ResponseTool in Task 4, or handled here
+                            # Ensuring it's here for clarity
+                            await self._emit_stream_event(
+                                StreamEventType.TEXT_MESSAGE_CONTENT,
+                                {"role": "assistant", "content": final_message}
+                            )
+                            await self._emit_stream_event(
+                                StreamEventType.SESSION_END, # Or TASK_COMPLETE
+                                {"reason": "Agent provided final response.", "thread_id": self.get_thread_id()}
+                            )
+                            await self._emit_progress_update("Task completed.", percentage=100.0)
+                        return final_message
+                    
+                    if tool_response: # Add tool result to history (if not an error that halts)
+                        self.hist_add_tool_result(tool_name, tool_response.message if tool_response.message else json.dumps(tool_response.data) if tool_response.data else "Tool executed.")
+                        await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "tool_result_added", "tool_name": tool_name})
+
+                else: # No tool identified, could be a direct textual response from LLM (if agent is allowed to do that)
+                    no_tool_message = response_json.get("response", response_json.get("answer", response_json.get("text")))
+                    if no_tool_message and isinstance(no_tool_message, str):
+                        await self._emit_stream_event(StreamEventType.TEXT_MESSAGE_CONTENT, {"role": "assistant", "content": no_tool_message})
+                        await self._emit_stream_event(StreamEventType.SESSION_END, {"reason": "Agent provided direct LLM response."})
+                        await self._emit_progress_update("Task completed with direct response.", percentage=100.0)
+                        return no_tool_message
+                    else:
+                        # LLM didn't call a tool and didn't provide a direct response text. This is an issue.
+                        await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": "LLM did not call a tool nor provide a direct textual response."})
+                        # Fallback or break
+                        break
+                
+                # ... (loop continuation logic)
+            
+            # Monologue ended (e.g. max_iterations, or other break condition)
+            await self._emit_progress_update("Agent monologue finished.", percentage=100.0)
+            # If not ended by 'response' tool, might emit a specific "waiting" or "halted" state
+            if not self.context.intervention_needed: # Avoid duplicate if intervention was already signaled
+                await self._emit_stream_event(StreamEventType.STATE_DELTA, {"status": "idle", "reason": "Monologue ended."})
+            return None # Or last relevant message if any
+
+        # ... (other Agent methods)
+```
+
+2.  **Review all Tools (`python/tools/*.py`):**
+    *   Ensure that each tool's `execute` method, when performing significant sub-steps or encountering errors, uses `self.agent._emit_stream_event` to emit relevant events:
+        *   `PROGRESS_UPDATE` for stages within the tool.
+        *   `ERROR_EVENT` if the tool itself handles an error but needs to report it.
+        *   Specific events like `MEMORY_UPDATE`, `KNOWLEDGE_RESULT`, `BROWSER_ACTION`, `CRAWL_PROGRESS` are already being emitted by their respective tools from previous tasks. Verify their payloads are comprehensive.
+
+    *   **Example for `ChatterboxTTSTool._generate_speech` from Task 30 (ensure it uses `self.agent._emit_stream_event`):**
+        ```python
+# python/tools/chatterbox_tts_tool.py
+        # In _generate_speech and _convert_voice
+        # Replace direct calls to self._emit_tts_event with self.agent._emit_stream_event(...)
+        # For example:
+        # await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, 
+        #    {"source_tool": "chatterbox_tts", "action": "generate_speech", "status": "starting", ...})
+        
+        # And for completion/error:
+        # await self.agent._emit_stream_event(StreamEventType.TTS_GENERATION_COMPLETE, result_details) // If we had a custom event
+        # Or use a generic event with specific payload:
+        # await self.agent._emit_stream_event(StreamEventType.CONTEXT_UPDATE, 
+        #    {"type": "tts_output_ready", "tool": "chatterbox_tts", **result_details})
+```
+        For simplicity, the existing `_emit_tts_event` helper within `ChatterboxTTSTool` already calls `self.agent._emit_stream_event` with `StreamEventType.PROGRESS_UPDATE`. We just need to ensure its details are rich. A dedicated `TTS_OUTPUT_READY` event could be added to `StreamEventType` if more specific signaling is desired.
+
+3.  **Review `StreamProtocolTool` in `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method in `StreamProtocolTool` (Task 11) should correctly parse `RunAgentInput`.
+    *   When it calls `self.agent.process_streamed_message`, that method in `Agent` (modified in Task 32) will now trigger the monologue and subsequent event emissions.
+    *   `_start_session` and `_end_session` in `StreamProtocolTool` already emit `SESSION_START` and `SESSION_END`.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-31 completed. All tools should have their basic structure and be callable.
+*   `Agent` class has the `_emit_stream_event` helper method.
+*   `StreamEventType` enum is defined.
+*   `StreamProtocolTool` is set up to receive the global `StreamTransport` instance.
+
+**Integration with Agent Zero:**
+*   This task deeply weaves event emissions into the agent's core operational loop and tool interactions.
+*   The agent becomes much more "chatty" in terms of AG-UI events, providing fine-grained updates about its state and actions.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `ChatterboxTTSTool` should already be using `self.agent._emit_stream_event` for its progress and completion events, as refined in Task 30/31. This task is about ensuring this pattern is consistently applied everywhere else.
+
+**Docker Compatibility:**
+*   No new Python package dependencies.
+*   Ensure all modified Python files are correctly updated in the Docker image.
+
+**Summary of Task 32:**
+This task focuses on comprehensively instrumenting the `Agent` class and its core methods (`monologue`, tool calling logic, error handling) to emit a wide range of `StreamEventType` events. This will make Agent Zero's operations highly observable to an AG-UI compliant frontend, providing real-time insights into thoughts, tool usage, progress, context changes, and errors. It also involves ensuring that individual tools consistently use the agent's event emission mechanism.
+
+Please confirm to proceed.Okay, let's proceed with Task 32.
+
+## Task 32: Full StreamProtocol Event Integration - Agent Lifecycle and Tool Events
+
+**Focus:**
+This task is about comprehensively integrating `StreamProtocolTool` event emissions throughout the `Agent`'s lifecycle and tool interactions. We've touched on some of this in Task 4, but this task aims for completeness, ensuring all 16 standard AG-UI events (or relevant subsets) are emitted where appropriate. This makes the agent's internal state and actions fully transparent to an AG-UI compliant frontend.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` class):**
+
+    *   **`__init__` or a dedicated `start_session` method:**
+        *   Emit `SESSION_START` when an agent instance effectively begins a new processing session for a `thread_id`. This might be tricky if agent instances are reused. A clearer point might be when `StreamProtocolTool._start_session` is called, or when `Agent.process_streamed_message` is first invoked for a new `thread_id`.
+        For now, let's assume `StreamProtocolTool._start_session` handles the explicit `SESSION_START` event.
+    *   **`monologue` / Main Loop:**
+        *   `AGENT_THOUGHT`: Already partially implemented in Task 4. Ensure detailed thoughts/reasoning steps are captured and emitted if the LLM provides them or if the agent has pre/post processing logic.
+        *   `CONTEXT_UPDATE`: Emit when significant context is added or changed (e.g., after recalling memories, loading knowledge, receiving new user files/attachments).
+        *   `PROGRESS_UPDATE`: Emit for long-running internal processes within the monologue that don't involve a specific tool call (e.g., complex data processing, internal state changes before an LLM call). The existing `self.context.log.set_progress()` can be a trigger point for this.
+        *   `HUMAN_INTERVENTION`: If the agent pauses and requires human input (Agent Zero's `self.context.intervention_needed`), an event of this type should be emitted, perhaps with a prompt or question for the human.
+        *   `GENERATIVE_UI`: This is for when the agent wants the UI to render something dynamic (e.g., a form, a custom component). This is an advanced feature; for now, we can note where it *might* be used (e.g., if a tool result suggests a complex UI interaction).
+    *   **`_get_response` (LLM Call):**
+        *   Before call: `AGENT_THOUGHT` ("Querying LLM...").
+        *   After call, before parsing: `AGENT_THOUGHT` ("LLM response received, parsing...").
+    *   **`_extract_and_call_tool` / `_call_tool`:**
+        *   `TOOL_CALL_START`: (Implemented in Task 4) Ensure args are well-represented.
+        *   `TOOL_CALL_END`: (Implemented in Task 4) Ensure result/error is well-represented. Include duration if possible.
+    *   **Tool-Specific Events (emitted by tools themselves via `agent._emit_stream_event`):**
+        *   `MEMORY_UPDATE`: Emitted by `MemoryAgentTool` or `HybridMemoryTool`.
+        *   `KNOWLEDGE_RESULT`: Emitted by `KnowledgeAgentTool` after a query.
+        *   `BROWSER_ACTION`: Emitted by `BrowserAgentTool`.
+        *   `CRAWL_PROGRESS`: Emitted by `WebCrawlerTool`.
+    *   **Error Handling:**
+        *   `ERROR_EVENT`: Emit whenever a significant error occurs within the agent's logic or tool execution that isn't caught and handled by a tool itself.
+    *   **Session End:**
+        *   `SESSION_END`: Emit when the agent concludes a session or task (e.g., after `response` tool, or if `monologue` ends due to inactivity or explicit command). `StreamProtocolTool._end_session` already does this. Ensure agent logic triggers this appropriately.
+
+    ```python
+# agent.py (Illustrative Changes - focusing on new event emission points)
+    # ... (imports StreamProtocolTool, StreamEventType)
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event as before)
+
+        async def _emit_progress_update(self, message: str, percentage: Optional[float] = None, current_step: Optional[int]=None, total_steps: Optional[int]=None):
+            payload = {"message": message}
+            if percentage is not None: payload["percentage"] = percentage
+            if current_step is not None: payload["current_step"] = current_step
+            if total_steps is not None: payload["total_steps"] = total_steps
+            await self._emit_stream_event(StreamEventType.PROGRESS_UPDATE, payload)
+
+        async def _handle_intervention_request(self, prompt_for_human: str):
+            """Handles the agent pausing for human intervention."""
+            self.context.intervention_needed = True # Assuming this flag exists
+            # The actual UserMessage for intervention would be set elsewhere based on agent logic
+            # self.context.intervention_message = UserMessage(message=prompt_for_human)
+            
+            await self._emit_stream_event(
+                StreamEventType.HUMAN_INTERVENTION,
+                {"prompt": prompt_for_human, "status": "required"}
+            )
+            # The agent's main loop should then actually pause waiting for an external unpause/message.
+            # This is already part of Agent Zero's logic (self.context.halt_event.wait()).
+
+        async def monologue(self) -> Optional[str]:
+            # ... (initial setup)
+            # Existing log.set_progress can now also trigger a PROGRESS_UPDATE event
+            await self._emit_progress_update("Agent monologue started: Thinking...", percentage=5.0)
+            
+            # Initial AGENT_THOUGHT already in Task 4
+            # await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "Starting to process the request."})
+
+            # Example: Before recalling memories (if this is a distinct step)
+            # if self.config.enable_memory_recall: # Fictional config
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_start"})
+            #     # ... recall memories ...
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_end", "count": ...})
+
+
+            while self.iteration_no < self.max_iterations: # Existing loop
+                self.iteration_no += 1
+                # ... (handle intervention check - if intervention_needed, it might have already emitted HUMAN_INTERVENTION)
+
+                current_thought = f"Iteration {self.iteration_no}: Analyzing current state and planning next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": current_thought})
+                await self._emit_progress_update(current_thought, percentage=(self.iteration_no / self.max_iterations) * 90.0)
+
+
+                # --- LLM Call section ---
+                pre_llm_thought = "Preparing to query LLM for next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": pre_llm_thought})
+                response_json = await self._get_response() # This should be wrapped if it can fail
+                
+                if not response_json:
+                    err_msg = "LLM call failed or produced no parsable response."
+                    await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": err_msg, "stage": "llm_response_parsing"})
+                    # Consider breaking or specific error handling
+                    break 
+                
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "LLM response received, parsing for action."})
+                # ... (emit thoughts from response_json as in Task 4) ...
+                agent_llm_thoughts = response_json.get("thoughts", [])
+                if isinstance(agent_llm_thoughts, list):
+                    for thought in agent_llm_thoughts: await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": str(thought)})
+                elif isinstance(agent_llm_thoughts, str):
+                    await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": agent_llm_thoughts})
+
+
+                # --- Tool Call section ---
+                tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+
+                if tool_name:
+                    # TOOL_CALL_START and TOOL_CALL_END are emitted in Task 4's version of this block
+                    # Ensure args and results are comprehensive in those events
+                    # ... (tool call logic as in Task 4, which includes start/end events) ...
+                    # ...
+                    tool_response = await self._call_tool(tool_name, tool_args, tool_message) # This block already emits tool_call_start/end
+
+                    if tool_response and tool_response.error:
+                         await self._emit_stream_event(StreamEventType.ERROR_EVENT, {
+                             "error": f"Tool '{tool_name}' execution failed: {tool_response.message}",
+                             "tool_name": tool_name, "tool_args": tool_args
+                         })
+                         # Decide if to break or continue based on error policy
+
+                    if tool_response and tool_response.break_loop:
+                        final_message = tool_response.message
+                        if tool_name == "response": # This is the agent's final textual response
+                            # This event emission was added to ResponseTool in Task 4, or handled here
+                            # Ensuring it's here for clarity
+                            await self._emit_stream_event(
+                                StreamEventType.TEXT_MESSAGE_CONTENT,
+                                {"role": "assistant", "content": final_message}
+                            )
+                            await self._emit_stream_event(
+                                StreamEventType.SESSION_END, # Or TASK_COMPLETE
+                                {"reason": "Agent provided final response.", "thread_id": self.get_thread_id()}
+                            )
+                            await self._emit_progress_update("Task completed.", percentage=100.0)
+                        return final_message
+                    
+                    if tool_response: # Add tool result to history (if not an error that halts)
+                        self.hist_add_tool_result(tool_name, tool_response.message if tool_response.message else json.dumps(tool_response.data) if tool_response.data else "Tool executed.")
+                        await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "tool_result_added", "tool_name": tool_name})
+
+                else: # No tool identified, could be a direct textual response from LLM (if agent is allowed to do that)
+                    no_tool_message = response_json.get("response", response_json.get("answer", response_json.get("text")))
+                    if no_tool_message and isinstance(no_tool_message, str):
+                        await self._emit_stream_event(StreamEventType.TEXT_MESSAGE_CONTENT, {"role": "assistant", "content": no_tool_message})
+                        await self._emit_stream_event(StreamEventType.SESSION_END, {"reason": "Agent provided direct LLM response."})
+                        await self._emit_progress_update("Task completed with direct response.", percentage=100.0)
+                        return no_tool_message
+                    else:
+                        # LLM didn't call a tool and didn't provide a direct response text. This is an issue.
+                        await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": "LLM did not call a tool nor provide a direct textual response."})
+                        # Fallback or break
+                        break
+                
+                # ... (loop continuation logic)
+            
+            # Monologue ended (e.g. max_iterations, or other break condition)
+            await self._emit_progress_update("Agent monologue finished.", percentage=100.0)
+            # If not ended by 'response' tool, might emit a specific "waiting" or "halted" state
+            if not self.context.intervention_needed: # Avoid duplicate if intervention was already signaled
+                await self._emit_stream_event(StreamEventType.STATE_DELTA, {"status": "idle", "reason": "Monologue ended."})
+            return None # Or last relevant message if any
+
+        # ... (other Agent methods)
+```
+
+2.  **Review all Tools (`python/tools/*.py`):**
+    *   Ensure that each tool's `execute` method, when performing significant sub-steps or encountering errors, uses `self.agent._emit_stream_event` to emit relevant events:
+        *   `PROGRESS_UPDATE` for stages within the tool.
+        *   `ERROR_EVENT` if the tool itself handles an error but needs to report it.
+        *   Specific events like `MEMORY_UPDATE`, `KNOWLEDGE_RESULT`, `BROWSER_ACTION`, `CRAWL_PROGRESS` are already being emitted by their respective tools from previous tasks. Verify their payloads are comprehensive.
+
+    *   **Example for `ChatterboxTTSTool._generate_speech` from Task 30 (ensure it uses `self.agent._emit_stream_event`):**
+        ```python
+# python/tools/chatterbox_tts_tool.py
+        # In _generate_speech and _convert_voice
+        # Replace direct calls to self._emit_tts_event with self.agent._emit_stream_event(...)
+        # For example:
+        # await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, 
+        #    {"source_tool": "chatterbox_tts", "action": "generate_speech", "status": "starting", ...})
+        
+        # And for completion/error:
+        # await self.agent._emit_stream_event(StreamEventType.TTS_GENERATION_COMPLETE, result_details) // If we had a custom event
+        # Or use a generic event with specific payload:
+        # await self.agent._emit_stream_event(StreamEventType.CONTEXT_UPDATE, 
+        #    {"type": "tts_output_ready", "tool": "chatterbox_tts", **result_details})
+```
+        For simplicity, the existing `_emit_tts_event` helper within `ChatterboxTTSTool` already calls `self.agent._emit_stream_event` with `StreamEventType.PROGRESS_UPDATE`. We just need to ensure its details are rich. A dedicated `TTS_OUTPUT_READY` event could be added to `StreamEventType` if more specific signaling is desired.
+
+3.  **Review `StreamProtocolTool` in `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method in `StreamProtocolTool` (Task 11) should correctly parse `RunAgentInput`.
+    *   When it calls `self.agent.process_streamed_message`, that method in `Agent` (modified in Task 32) will now trigger the monologue and subsequent event emissions.
+    *   `_start_session` and `_end_session` in `StreamProtocolTool` already emit `SESSION_START` and `SESSION_END`.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-31 completed. All tools should have their basic structure and be callable.
+*   `Agent` class has the `_emit_stream_event` helper method.
+*   `StreamEventType` enum is defined.
+*   `StreamProtocolTool` is set up to receive the global `StreamTransport` instance.
+
+**Integration with Agent Zero:**
+*   This task deeply weaves event emissions into the agent's core operational loop and tool interactions.
+*   The agent becomes much more "chatty" in terms of AG-UI events, providing fine-grained updates about its state and actions.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `ChatterboxTTSTool` should already be using `self.agent._emit_stream_event` for its progress and completion events, as refined in Task 30/31. This task is about ensuring this pattern is consistently applied everywhere else.
+
+**Docker Compatibility:**
+*   No new Python package dependencies.
+*   Ensure all modified Python files are correctly updated in the Docker image.
+
+**Summary of Task 32:**
+This task focuses on comprehensively instrumenting the `Agent` class and its core methods (`monologue`, tool calling logic, error handling) to emit a wide range of `StreamEventType` events. This will make Agent Zero's operations highly observable to an AG-UI compliant frontend, providing real-time insights into thoughts, tool usage, progress, context changes, and errors. It also involves ensuring that individual tools consistently use the agent's event emission mechanism.
+
+Please confirm to proceed.## Task 32: Full StreamProtocol Event Integration - Agent Lifecycle and Tool Events
+
+**Focus:**
+This task is about comprehensively integrating `StreamProtocolTool` event emissions throughout the `Agent`'s lifecycle and tool interactions. We've touched on some of this in Task 4, but this task aims for completeness, ensuring all 16 standard AG-UI events (or relevant subsets) are emitted where appropriate. This makes the agent's internal state and actions fully transparent to an AG-UI compliant frontend.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` class):**
+
+    *   **`__init__` or a dedicated `start_session` method:**
+        *   Emit `SESSION_START` when an agent instance effectively begins a new processing session for a `thread_id`. This might be tricky if agent instances are reused. A clearer point might be when `StreamProtocolTool._start_session` is called, or when `Agent.process_streamed_message` is first invoked for a new `thread_id`.
+        For now, let's assume `StreamProtocolTool._start_session` handles the explicit `SESSION_START` event.
+    *   **`monologue` / Main Loop:**
+        *   `AGENT_THOUGHT`: Already partially implemented in Task 4. Ensure detailed thoughts/reasoning steps are captured and emitted if the LLM provides them or if the agent has pre/post processing logic.
+        *   `CONTEXT_UPDATE`: Emit when significant context is added or changed (e.g., after recalling memories, loading knowledge, receiving new user files/attachments).
+        *   `PROGRESS_UPDATE`: Emit for long-running internal processes within the monologue that don't involve a specific tool call (e.g., complex data processing, internal state changes before an LLM call). The existing `self.context.log.set_progress()` can be a trigger point for this.
+        *   `HUMAN_INTERVENTION`: If the agent pauses and requires human input (Agent Zero's `self.context.intervention_needed`), an event of this type should be emitted, perhaps with a prompt or question for the human.
+        *   `GENERATIVE_UI`: This is for when the agent wants the UI to render something dynamic (e.g., a form, a custom component). This is an advanced feature; for now, we can note where it *might* be used (e.g., if a tool result suggests a complex UI interaction).
+    *   **`_get_response` (LLM Call):**
+        *   Before call: `AGENT_THOUGHT` ("Querying LLM...").
+        *   After call, before parsing: `AGENT_THOUGHT` ("LLM response received, parsing...").
+    *   **`_extract_and_call_tool` / `_call_tool`:**
+        *   `TOOL_CALL_START`: (Implemented in Task 4) Ensure args are well-represented.
+        *   `TOOL_CALL_END`: (Implemented in Task 4) Ensure result/error is well-represented. Include duration if possible.
+    *   **Tool-Specific Events (emitted by tools themselves via `agent._emit_stream_event`):**
+        *   `MEMORY_UPDATE`: Emitted by `MemoryAgentTool` or `HybridMemoryTool`.
+        *   `KNOWLEDGE_RESULT`: Emitted by `KnowledgeAgentTool` after a query.
+        *   `BROWSER_ACTION`: Emitted by `BrowserAgentTool`.
+        *   `CRAWL_PROGRESS`: Emitted by `WebCrawlerTool`.
+    *   **Error Handling:**
+        *   `ERROR_EVENT`: Emit whenever a significant error occurs within the agent's logic or tool execution that isn't caught and handled by a tool itself.
+    *   **Session End:**
+        *   `SESSION_END`: Emit when the agent concludes a session or task (e.g., after `response` tool, or if `monologue` ends due to inactivity or explicit command). `StreamProtocolTool._end_session` already does this. Ensure agent logic triggers this appropriately.
+
+    ```python
+# agent.py (Illustrative Changes - focusing on new event emission points)
+    # ... (imports StreamProtocolTool, StreamEventType)
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event as before)
+
+        async def _emit_progress_update(self, message: str, percentage: Optional[float] = None, current_step: Optional[int]=None, total_steps: Optional[int]=None):
+            payload = {"message": message}
+            if percentage is not None: payload["percentage"] = percentage
+            if current_step is not None: payload["current_step"] = current_step
+            if total_steps is not None: payload["total_steps"] = total_steps
+            await self._emit_stream_event(StreamEventType.PROGRESS_UPDATE, payload)
+
+        async def _handle_intervention_request(self, prompt_for_human: str):
+            """Handles the agent pausing for human intervention."""
+            self.context.intervention_needed = True # Assuming this flag exists
+            # The actual UserMessage for intervention would be set elsewhere based on agent logic
+            # self.context.intervention_message = UserMessage(message=prompt_for_human)
+            
+            await self._emit_stream_event(
+                StreamEventType.HUMAN_INTERVENTION,
+                {"prompt": prompt_for_human, "status": "required"}
+            )
+            # The agent's main loop should then actually pause waiting for an external unpause/message.
+            # This is already part of Agent Zero's logic (self.context.halt_event.wait()).
+
+        async def monologue(self) -> Optional[str]:
+            # ... (initial setup)
+            # Existing log.set_progress can now also trigger a PROGRESS_UPDATE event
+            await self._emit_progress_update("Agent monologue started: Thinking...", percentage=5.0)
+            
+            # Initial AGENT_THOUGHT already in Task 4
+            # await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "Starting to process the request."})
+
+            # Example: Before recalling memories (if this is a distinct step)
+            # if self.config.enable_memory_recall: # Fictional config
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_start"})
+            #     # ... recall memories ...
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_end", "count": ...})
+
+
+            while self.iteration_no < self.max_iterations: # Existing loop
+                self.iteration_no += 1
+                # ... (handle intervention check - if intervention_needed, it might have already emitted HUMAN_INTERVENTION)
+
+                current_thought = f"Iteration {self.iteration_no}: Analyzing current state and planning next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": current_thought})
+                await self._emit_progress_update(current_thought, percentage=(self.iteration_no / self.max_iterations) * 90.0)
+
+
+                # --- LLM Call section ---
+                pre_llm_thought = "Preparing to query LLM for next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": pre_llm_thought})
+                response_json = await self._get_response() # This should be wrapped if it can fail
+                
+                if not response_json:
+                    err_msg = "LLM call failed or produced no parsable response."
+                    await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": err_msg, "stage": "llm_response_parsing"})
+                    # Consider breaking or specific error handling
+                    break 
+                
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "LLM response received, parsing for action."})
+                # ... (emit thoughts from response_json as in Task 4) ...
+                agent_llm_thoughts = response_json.get("thoughts", [])
+                if isinstance(agent_llm_thoughts, list):
+                    for thought in agent_llm_thoughts: await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": str(thought)})
+                elif isinstance(agent_llm_thoughts, str):
+                    await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": agent_llm_thoughts})
+
+
+                # --- Tool Call section ---
+                tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+
+                if tool_name:
+                    # TOOL_CALL_START and TOOL_CALL_END are emitted in Task 4's version of this block
+                    # Ensure args and results are comprehensive in those events
+                    # ... (tool call logic as in Task 4, which includes start/end events) ...
+                    # ...
+                    tool_response = await self._call_tool(tool_name, tool_args, tool_message) # This block already emits tool_call_start/end
+
+                    if tool_response and tool_response.error:
+                         await self._emit_stream_event(StreamEventType.ERROR_EVENT, {
+                             "error": f"Tool '{tool_name}' execution failed: {tool_response.message}",
+                             "tool_name": tool_name, "tool_args": tool_args
+                         })
+                         # Decide if to break or continue based on error policy
+
+                    if tool_response and tool_response.break_loop:
+                        final_message = tool_response.message
+                        if tool_name == "response": # This is the agent's final textual response
+                            # This event emission was added to ResponseTool in Task 4, or handled here
+                            # Ensuring it's here for clarity
+                            await self._emit_stream_event(
+                                StreamEventType.TEXT_MESSAGE_CONTENT,
+                                {"role": "assistant", "content": final_message}
+                            )
+                            await self._emit_stream_event(
+                                StreamEventType.SESSION_END, # Or TASK_COMPLETE
+                                {"reason": "Agent provided final response.", "thread_id": self.get_thread_id()}
+                            )
+                            await self._emit_progress_update("Task completed.", percentage=100.0)
+                        return final_message
+                    
+                    if tool_response: # Add tool result to history (if not an error that halts)
+                        self.hist_add_tool_result(tool_name, tool_response.message if tool_response.message else json.dumps(tool_response.data) if tool_response.data else "Tool executed.")
+                        await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "tool_result_added", "tool_name": tool_name})
+
+                else: # No tool identified, could be a direct textual response from LLM (if agent is allowed to do that)
+                    no_tool_message = response_json.get("response", response_json.get("answer", response_json.get("text")))
+                    if no_tool_message and isinstance(no_tool_message, str):
+                        await self._emit_stream_event(StreamEventType.TEXT_MESSAGE_CONTENT, {"role": "assistant", "content": no_tool_message})
+                        await self._emit_stream_event(StreamEventType.SESSION_END, {"reason": "Agent provided direct LLM response."})
+                        await self._emit_progress_update("Task completed with direct response.", percentage=100.0)
+                        return no_tool_message
+                    else:
+                        # LLM didn't call a tool and didn't provide a direct response text. This is an issue.
+                        await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": "LLM did not call a tool nor provide a direct textual response."})
+                        # Fallback or break
+                        break
+                
+                # ... (loop continuation logic)
+            
+            # Monologue ended (e.g. max_iterations, or other break condition)
+            await self._emit_progress_update("Agent monologue finished.", percentage=100.0)
+            # If not ended by 'response' tool, might emit a specific "waiting" or "halted" state
+            if not self.context.intervention_needed: # Avoid duplicate if intervention was already signaled
+                await self._emit_stream_event(StreamEventType.STATE_DELTA, {"status": "idle", "reason": "Monologue ended."})
+            return None # Or last relevant message if any
+
+        # ... (other Agent methods)
+```
+
+2.  **Review all Tools (`python/tools/*.py`):**
+    *   Ensure that each tool's `execute` method, when performing significant sub-steps or encountering errors, uses `self.agent._emit_stream_event` to emit relevant events:
+        *   `PROGRESS_UPDATE` for stages within the tool.
+        *   `ERROR_EVENT` if the tool itself handles an error but needs to report it.
+        *   Specific events like `MEMORY_UPDATE`, `KNOWLEDGE_RESULT`, `BROWSER_ACTION`, `CRAWL_PROGRESS` are already being emitted by their respective tools from previous tasks. Verify their payloads are comprehensive.
+
+    *   **Example for `ChatterboxTTSTool._generate_speech` from Task 30 (ensure it uses `self.agent._emit_stream_event`):**
+        ```python
+# python/tools/chatterbox_tts_tool.py
+        # In _generate_speech and _convert_voice
+        # Replace direct calls to self._emit_tts_event with self.agent._emit_stream_event(...)
+        # For example:
+        # await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, 
+        #    {"source_tool": "chatterbox_tts", "action": "generate_speech", "status": "starting", ...})
+        
+        # And for completion/error:
+        # await self.agent._emit_stream_event(StreamEventType.TTS_GENERATION_COMPLETE, result_details) // If we had a custom event
+        # Or use a generic event with specific payload:
+        # await self.agent._emit_stream_event(StreamEventType.CONTEXT_UPDATE, 
+        #    {"type": "tts_output_ready", "tool": "chatterbox_tts", **result_details})
+```
+        For simplicity, the existing `_emit_tts_event` helper within `ChatterboxTTSTool` already calls `self.agent._emit_stream_event` with `StreamEventType.PROGRESS_UPDATE`. We just need to ensure its details are rich. A dedicated `TTS_OUTPUT_READY` event could be added to `StreamEventType` if more specific signaling is desired.
+
+3.  **Review `StreamProtocolTool` in `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method in `StreamProtocolTool` (Task 11) should correctly parse `RunAgentInput`.
+    *   When it calls `self.agent.process_streamed_message`, that method in `Agent` (modified in Task 32) will now trigger the monologue and subsequent event emissions.
+    *   `_start_session` and `_end_session` in `StreamProtocolTool` already emit `SESSION_START` and `SESSION_END`.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-31 completed. All tools should have their basic structure and be callable.
+*   `Agent` class has the `_emit_stream_event` helper method.
+*   `StreamEventType` enum is defined.
+*   `StreamProtocolTool` is set up to receive the global `StreamTransport` instance.
+
+**Integration with Agent Zero:**
+*   This task deeply weaves event emissions into the agent's core operational loop and tool interactions.
+*   The agent becomes much more "chatty" in terms of AG-UI events, providing fine-grained updates about its state and actions.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `ChatterboxTTSTool` should already be using `self.agent._emit_stream_event` for its progress and completion events, as refined in Task 30/31. This task is about ensuring this pattern is consistently applied everywhere else.
+
+**Docker Compatibility:**
+*   No new Python package dependencies.
+*   Ensure all modified Python files are correctly updated in the Docker image.
+
+**Summary of Task 32:**
+This task focuses on comprehensively instrumenting the `Agent` class and its core methods (`monologue`, tool calling logic, error handling) to emit a wide range of `StreamEventType` events. This will make Agent Zero's operations highly observable to an AG-UI compliant frontend, providing real-time insights into thoughts, tool usage, progress, context changes, and errors. It also involves ensuring that individual tools consistently use the agent's event emission mechanism.
+
+Please confirm to proceed.Okay, let's proceed with Task 32.
+
+## Task 32: Full StreamProtocol Event Integration - Agent Lifecycle and Tool Events
+
+**Focus:**
+This task is about comprehensively integrating `StreamProtocolTool` event emissions throughout the `Agent`'s lifecycle and tool interactions. We've touched on some of this in Task 4, but this task aims for completeness, ensuring all 16 standard AG-UI events (or relevant subsets) are emitted where appropriate. This makes the agent's internal state and actions fully transparent to an AG-UI compliant frontend.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` class):**
+
+    *   **`__init__` or a dedicated `start_session` method:**
+        *   Emit `SESSION_START` when an agent instance effectively begins a new processing session for a `thread_id`. This might be tricky if agent instances are reused. A clearer point might be when `StreamProtocolTool._start_session` is called, or when `Agent.process_streamed_message` is first invoked for a new `thread_id`.
+        For now, let's assume `StreamProtocolTool._start_session` handles the explicit `SESSION_START` event.
+    *   **`monologue` / Main Loop:**
+        *   `AGENT_THOUGHT`: Already partially implemented in Task 4. Ensure detailed thoughts/reasoning steps are captured and emitted if the LLM provides them or if the agent has pre/post processing logic.
+        *   `CONTEXT_UPDATE`: Emit when significant context is added or changed (e.g., after recalling memories, loading knowledge, receiving new user files/attachments).
+        *   `PROGRESS_UPDATE`: Emit for long-running internal processes within the monologue that don't involve a specific tool call (e.g., complex data processing, internal state changes before an LLM call). The existing `self.context.log.set_progress()` can be a trigger point for this.
+        *   `HUMAN_INTERVENTION`: If the agent pauses and requires human input (Agent Zero's `self.context.intervention_needed`), an event of this type should be emitted, perhaps with a prompt or question for the human.
+        *   `GENERATIVE_UI`: This is for when the agent wants the UI to render something dynamic (e.g., a form, a custom component). This is an advanced feature; for now, we can note where it *might* be used (e.g., if a tool result suggests a complex UI interaction).
+    *   **`_get_response` (LLM Call):**
+        *   Before call: `AGENT_THOUGHT` ("Querying LLM...").
+        *   After call, before parsing: `AGENT_THOUGHT` ("LLM response received, parsing...").
+    *   **`_extract_and_call_tool` / `_call_tool`:**
+        *   `TOOL_CALL_START`: (Implemented in Task 4) Ensure args are well-represented.
+        *   `TOOL_CALL_END`: (Implemented in Task 4) Ensure result/error is well-represented. Include duration if possible.
+    *   **Tool-Specific Events (emitted by tools themselves via `agent._emit_stream_event`):**
+        *   `MEMORY_UPDATE`: Emitted by `MemoryAgentTool` or `HybridMemoryTool`.
+        *   `KNOWLEDGE_RESULT`: Emitted by `KnowledgeAgentTool` after a query.
+        *   `BROWSER_ACTION`: Emitted by `BrowserAgentTool`.
+        *   `CRAWL_PROGRESS`: Emitted by `WebCrawlerTool`.
+    *   **Error Handling:**
+        *   `ERROR_EVENT`: Emit whenever a significant error occurs within the agent's logic or tool execution that isn't caught and handled by a tool itself.
+    *   **Session End:**
+        *   `SESSION_END`: Emit when the agent concludes a session or task (e.g., after `response` tool, or if `monologue` ends due to inactivity or explicit command). `StreamProtocolTool._end_session` already does this. Ensure agent logic triggers this appropriately.
+
+    ```python
+    # agent.py (Illustrative Changes - focusing on new event emission points)
+    # ... (imports StreamProtocolTool, StreamEventType)
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event as before)
+
+        async def _emit_progress_update(self, message: str, percentage: Optional[float] = None, current_step: Optional[int]=None, total_steps: Optional[int]=None):
+            payload = {"message": message}
+            if percentage is not None: payload["percentage"] = percentage
+            if current_step is not None: payload["current_step"] = current_step
+            if total_steps is not None: payload["total_steps"] = total_steps
+            await self._emit_stream_event(StreamEventType.PROGRESS_UPDATE, payload)
+
+        async def _handle_intervention_request(self, prompt_for_human: str):
+            """Handles the agent pausing for human intervention."""
+            self.context.intervention_needed = True # Assuming this flag exists
+            # The actual UserMessage for intervention would be set elsewhere based on agent logic
+            # self.context.intervention_message = UserMessage(message=prompt_for_human)
+            
+            await self._emit_stream_event(
+                StreamEventType.HUMAN_INTERVENTION,
+                {"prompt": prompt_for_human, "status": "required"}
+            )
+            # The agent's main loop should then actually pause waiting for an external unpause/message.
+            # This is already part of Agent Zero's logic (self.context.halt_event.wait()).
+
+        async def monologue(self) -> Optional[str]:
+            # ... (initial setup)
+            # Existing log.set_progress can now also trigger a PROGRESS_UPDATE event
+            await self._emit_progress_update("Agent monologue started: Thinking...", percentage=5.0)
+            
+            # Initial AGENT_THOUGHT already in Task 4
+            # await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "Starting to process the request."})
+
+            # Example: Before recalling memories (if this is a distinct step)
+            # if self.config.enable_memory_recall: # Fictional config
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_start"})
+            #     # ... recall memories ...
+            #     await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "memory_recall_end", "count": ...})
+
+
+            while self.iteration_no < self.max_iterations: # Existing loop
+                self.iteration_no += 1
+                # ... (handle intervention check - if intervention_needed, it might have already emitted HUMAN_INTERVENTION)
+
+                current_thought = f"Iteration {self.iteration_no}: Analyzing current state and planning next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": current_thought})
+                await self._emit_progress_update(current_thought, percentage=(self.iteration_no / self.max_iterations) * 90.0)
+
+
+                # --- LLM Call section ---
+                pre_llm_thought = "Preparing to query LLM for next action."
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": pre_llm_thought})
+                response_json = await self._get_response() # This should be wrapped if it can fail
+                
+                if not response_json:
+                    err_msg = "LLM call failed or produced no parsable response."
+                    await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": err_msg, "stage": "llm_response_parsing"})
+                    # Consider breaking or specific error handling
+                    break 
+                
+                await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": "LLM response received, parsing for action."})
+                # ... (emit thoughts from response_json as in Task 4) ...
+                agent_llm_thoughts = response_json.get("thoughts", [])
+                if isinstance(agent_llm_thoughts, list):
+                    for thought in agent_llm_thoughts: await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": str(thought)})
+                elif isinstance(agent_llm_thoughts, str):
+                    await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"content": agent_llm_thoughts})
+
+
+                # --- Tool Call section ---
+                tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+
+                if tool_name:
+                    # TOOL_CALL_START and TOOL_CALL_END are emitted in Task 4's version of this block
+                    # Ensure args and results are comprehensive in those events
+                    # ... (tool call logic as in Task 4, which includes start/end events) ...
+                    # ...
+                    tool_response = await self._call_tool(tool_name, tool_args, tool_message) # This block already emits tool_call_start/end
+
+                    if tool_response and tool_response.error:
+                         await self._emit_stream_event(StreamEventType.ERROR_EVENT, {
+                             "error": f"Tool '{tool_name}' execution failed: {tool_response.message}",
+                             "tool_name": tool_name, "tool_args": tool_args
+                         })
+                         # Decide if to break or continue based on error policy
+
+                    if tool_response and tool_response.break_loop:
+                        final_message = tool_response.message
+                        if tool_name == "response": # This is the agent's final textual response
+                            # This event emission was added to ResponseTool in Task 4, or handled here
+                            # Ensuring it's here for clarity
+                            await self._emit_stream_event(
+                                StreamEventType.TEXT_MESSAGE_CONTENT,
+                                {"role": "assistant", "content": final_message}
+                            )
+                            await self._emit_stream_event(
+                                StreamEventType.SESSION_END, # Or TASK_COMPLETE
+                                {"reason": "Agent provided final response.", "thread_id": self.get_thread_id()}
+                            )
+                            await self._emit_progress_update("Task completed.", percentage=100.0)
+                        return final_message
+                    
+                    if tool_response: # Add tool result to history (if not an error that halts)
+                        self.hist_add_tool_result(tool_name, tool_response.message if tool_response.message else json.dumps(tool_response.data) if tool_response.data else "Tool executed.")
+                        await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "tool_result_added", "tool_name": tool_name})
+
+                else: # No tool identified, could be a direct textual response from LLM (if agent is allowed to do that)
+                    no_tool_message = response_json.get("response", response_json.get("answer", response_json.get("text")))
+                    if no_tool_message and isinstance(no_tool_message, str):
+                        await self._emit_stream_event(StreamEventType.TEXT_MESSAGE_CONTENT, {"role": "assistant", "content": no_tool_message})
+                        await self._emit_stream_event(StreamEventType.SESSION_END, {"reason": "Agent provided direct LLM response."})
+                        await self._emit_progress_update("Task completed with direct response.", percentage=100.0)
+                        return no_tool_message
+                    else:
+                        # LLM didn't call a tool and didn't provide a direct response text. This is an issue.
+                        await self._emit_stream_event(StreamEventType.ERROR_EVENT, {"error": "LLM did not call a tool nor provide a direct textual response."})
+                        # Fallback or break
+                        break
+                
+                # ... (loop continuation logic)
+            
+            # Monologue ended (e.g. max_iterations, or other break condition)
+            await self._emit_progress_update("Agent monologue finished.", percentage=100.0)
+            # If not ended by 'response' tool, might emit a specific "waiting" or "halted" state
+            if not self.context.intervention_needed: # Avoid duplicate if intervention was already signaled
+                await self._emit_stream_event(StreamEventType.STATE_DELTA, {"status": "idle", "reason": "Monologue ended."})
+            return None # Or last relevant message if any
+
+        # ... (other Agent methods)
+    ```
+
+2.  **Review all Tools (`python/tools/*.py`):**
+    *   Ensure that each tool's `execute` method, when performing significant sub-steps or encountering errors, uses `self.agent._emit_stream_event` to emit relevant events:
+        *   `PROGRESS_UPDATE` for stages within the tool.
+        *   `ERROR_EVENT` if the tool itself handles an error but needs to report it.
+        *   Specific events like `MEMORY_UPDATE`, `KNOWLEDGE_RESULT`, `BROWSER_ACTION`, `CRAWL_PROGRESS` are already being emitted by their respective tools from previous tasks. Verify their payloads are comprehensive.
+
+    *   **Example for `ChatterboxTTSTool._generate_speech` from Task 30 (ensure it uses `self.agent._emit_stream_event`):**
+        ```python
+        # python/tools/chatterbox_tts_tool.py
+        # In _generate_speech and _convert_voice
+        # Replace direct calls to self._emit_tts_event with self.agent._emit_stream_event(...)
+        # For example:
+        # await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, 
+        #    {"source_tool": "chatterbox_tts", "action": "generate_speech", "status": "starting", ...})
+        
+        # And for completion/error:
+        # await self.agent._emit_stream_event(StreamEventType.TTS_GENERATION_COMPLETE, result_details) // If we had a custom event
+        # Or use a generic event with specific payload:
+        # await self.agent._emit_stream_event(StreamEventType.CONTEXT_UPDATE, 
+        #    {"type": "tts_output_ready", "tool": "chatterbox_tts", **result_details})
+        ```
+        For simplicity, the existing `_emit_tts_event` helper within `ChatterboxTTSTool` already calls `self.agent._emit_stream_event` with `StreamEventType.PROGRESS_UPDATE`. We just need to ensure its details are rich. A dedicated `TTS_OUTPUT_READY` event could be added to `StreamEventType` if more specific signaling is desired.
+
+3.  **Review `StreamProtocolTool` in `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method in `StreamProtocolTool` (Task 11) should correctly parse `RunAgentInput`.
+    *   When it calls `self.agent.process_streamed_message`, that method in `Agent` (modified in Task 32) will now trigger the monologue and subsequent event emissions.
+    *   `_start_session` and `_end_session` in `StreamProtocolTool` already emit `SESSION_START` and `SESSION_END`.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-31 completed. All tools should have their basic structure and be callable.
+*   `Agent` class has the `_emit_stream_event` helper method.
+*   `StreamEventType` enum is defined.
+*   `StreamProtocolTool` is set up to receive the global `StreamTransport` instance.
+
+**Integration with Agent Zero:**
+*   This task deeply weaves event emissions into the agent's core operational loop and tool interactions.
+*   The agent becomes much more "chatty" in terms of AG-UI events, providing fine-grained updates about its state and actions.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `ChatterboxTTSTool` should already be using `self.agent._emit_stream_event` for its progress and completion events, as refined in Task 30/31. This task is about ensuring this pattern is consistently applied everywhere else.
+
+**Docker Compatibility:**
+*   No new Python package dependencies.
+*   Ensure all modified Python files are correctly updated in the Docker image.
+
+**Summary of Task 32:**
+This task focuses on comprehensively instrumenting the `Agent` class and its core methods (`monologue`, tool calling logic, error handling) to emit a wide range of `StreamEventType` events. This will make Agent Zero's operations highly observable to an AG-UI compliant frontend, providing real-time insights into thoughts, tool usage, progress, context changes, and errors. It also involves ensuring that individual tools consistently use the agent's event emission mechanism.
+
+Please confirm to proceed.

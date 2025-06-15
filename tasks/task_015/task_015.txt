@@ -1,0 +1,668 @@
+## Task 15: Implement Real Logic for `MemoryAgentTool` - Basic Embedding and In-Memory Storage
+
+**Focus:**
+This task transitions the `MemoryAgentTool` from placeholder logic to a more functional implementation for its core actions (`add`, `search`). It will integrate the `EmbeddingGenerator` (from `python/agents/knowledge_agent/embeddings.py`, as it's a general utility now) to vectorize textual memory content. The `IntelligentMemory` component (from `python/agents/memory_agent/memory.py`) will use these embeddings for a basic in-memory similarity search. Full Mem0 features like graph memory and LLM-based memory processing are deferred.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Update `BaseMemory` and `IntelligentMemory` to use the `EmbeddingGenerator`.
+    *   Implement a basic cosine similarity search in `BaseMemory.search`.
+
+    ```python
+# python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+    import uuid
+    import numpy as np # For cosine similarity
+    
+    # Import the real EmbeddingGenerator
+    from agents.knowledge_agent.embeddings import EmbeddingGenerator 
+    # Assuming knowledge_agent is in the python path or use relative import if structure allows
+    # from ..knowledge_agent.embeddings import EmbeddingGenerator 
+
+    def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+        """Computes cosine similarity between two vectors."""
+        vec1 = np.array(v1, dtype=np.float32)
+        vec2 = np.array(v2, dtype=np.float32)
+        if vec1.shape != vec2.shape or vec1.ndim != 1:
+            print(f"Warning: cosine_similarity received vectors of mismatched shapes/dims. v1: {vec1.shape}, v2: {vec2.shape}")
+            return 0.0
+        dot_product = np.dot(vec1, vec2)
+        norm_v1 = np.linalg.norm(vec1)
+        norm_v2 = np.linalg.norm(vec2)
+        if norm_v1 == 0 or norm_v2 == 0:
+            return 0.0
+        return dot_product / (norm_v1 * norm_v2)
+
+    class BaseMemory:
+        def __init__(self, agent_id: str = "default_agent", embedding_generator: Optional[EmbeddingGenerator] = None):
+            self.agent_id = agent_id
+            self.store: Dict[str, Dict[str, Any]] = {} # id -> {"data": any, "text_for_embedding": str, "embedding": List[float], "type": str, "metadata": Dict}
+            self.embedding_generator = embedding_generator or EmbeddingGenerator() # Use provided or create new
+            print(f"{self.__class__.__name__}: Initialized for agent '{agent_id}' with EmbeddingGenerator.")
+
+        async def _get_text_for_embedding(self, memory_data: Any) -> str:
+            """Extracts or creates a textual representation of memory_data for embedding."""
+            if isinstance(memory_data, str):
+                return memory_data
+            if isinstance(memory_data, dict) and "content" in memory_data:
+                return str(memory_data["content"])
+            if isinstance(memory_data, list) and all(isinstance(m, dict) for m in memory_data): # List of messages
+                return " ".join([str(m.get("content", "")) for m in memory_data if m.get("content")])
+            return str(memory_data) # Fallback
+
+        async def add(self, memory_data: Any, memory_id: Optional[str] = None, 
+                      metadata: Optional[Dict[str,Any]] = None, text_for_embedding: Optional[str] = None) -> str:
+            _id = memory_id or f"mem_{str(uuid.uuid4())}" # Use UUID for better uniqueness
+            
+            text_to_embed = text_for_embedding if text_for_embedding else await self._get_text_for_embedding(memory_data)
+            embedding = [] # Default to empty list
+            if text_to_embed:
+                embedding = await self.embedding_generator.generate_single_embedding(text_to_embed)
+            else:
+                print(f"{self.__class__.__name__}: No text content to embed for memory_id '{_id}'. Storing without embedding.")
+
+
+            self.store[_id] = {
+                "id": _id,
+                "data": memory_data, 
+                "text_for_embedding": text_to_embed,
+                "embedding": embedding, 
+                "type": "generic_memory",
+                "metadata": metadata or {}
+            }
+            print(f"{self.__class__.__name__}: Added memory '{_id}' (Embedded: {bool(embedding)}).")
+            return _id
+
+        async def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
+            return self.store.get(memory_id)
+
+        async def search(self, query: str, user_id: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
+            # user_id currently not used in this mock search as memory is per-instance agent_id
+            print(f"{self.__class__.__name__}: Searching memories for query '{query}' (limit: {limit}) for agent '{self.agent_id}'.")
+            if not query: return []
+            
+            query_embedding = await self.embedding_generator.generate_single_embedding(query)
+            if sum(abs(x) for x in query_embedding) == 0: # Check for zero query embedding
+                 print(f"{self.__class__.__name__}: Query embedding is zero. Cannot perform similarity search.")
+                 return []
+
+            candidate_mems = []
+            for mem_id, mem_content in self.store.items():
+                if mem_content.get("embedding"): # Only consider memories with embeddings
+                    similarity = cosine_similarity(query_embedding, mem_content["embedding"])
+                    candidate_mems.append({**mem_content, "relevance_score": float(similarity)})
+            
+            candidate_mems.sort(key=lambda m: m["relevance_score"], reverse=True)
+            return candidate_mems[:limit]
+
+        async def update(self, memory_id: str, new_data: Any, new_text_for_embedding: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            if memory_id in self.store:
+                text_to_embed = new_text_for_embedding if new_text_for_embedding else await self._get_text_for_embedding(new_data)
+                embedding = []
+                if text_to_embed:
+                    embedding = await self.embedding_generator.generate_single_embedding(text_to_embed)
+                
+                self.store[memory_id]["data"] = new_data
+                self.store[memory_id]["text_for_embedding"] = text_to_embed
+                self.store[memory_id]["embedding"] = embedding
+                if new_metadata is not None:
+                    self.store[memory_id]["metadata"].update(new_metadata)
+                self.store[memory_id]["updated_at"] = "mock_timestamp_updated" # Mock
+                print(f"{self.__class__.__name__}: Updated memory '{memory_id}'.")
+                return True
+            return False
+
+        async def delete(self, memory_id: str) -> bool:
+            if memory_id in self.store:
+                del self.store[memory_id]
+                print(f"{self.__class__.__name__}: Deleted memory '{memory_id}'.")
+                return True
+            return False
+        
+        async def get_all(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+            # user_id not used in this simple mock's get_all
+            print(f"{self.__class__.__name__}: Getting all memories for agent '{self.agent_id}'.")
+            return list(self.store.values())
+
+
+    class IntelligentMemory(BaseMemory):
+        """
+        Mock for Mem0's main client, now using real embeddings for its base operations.
+        """
+        def __init__(self, agent_id: str = "default_agent", embedding_generator: Optional[EmbeddingGenerator] = None):
+            super().__init__(agent_id, embedding_generator)
+            # In real Mem0, this would initialize and manage different types of stores (vector, graph, etc.)
+            # For this task, it mostly relies on BaseMemory's enhanced capabilities.
+            print(f"IntelligentMemory: Initialized for agent '{agent_id}'.")
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id: Optional[str] = None) -> List[str]:
+            """Adds memories extracted from a list of messages."""
+            # user_id might be used to namespace memories if this instance handles multiple users
+            effective_agent_id = user_id or self.agent_id
+            print(f"IntelligentMemory: Adding memories from {len(messages)} messages for user/agent '{effective_agent_id}'.")
+            
+            stored_ids = []
+            for i, msg in enumerate(messages):
+                content = msg.get("content")
+                role = msg.get("role", "unknown")
+                if content and content.strip():
+                    # Create a more structured memory data
+                    memory_data = {"role": role, "content": content, "original_message_index": i}
+                    # Text for embedding could be just content, or include role for context
+                    text_for_embedding = f"{role}: {content}"
+                    
+                    # Use base add method, passing explicit text for embedding
+                    mem_id = await super().add(
+                        memory_data=memory_data, 
+                        text_for_embedding=text_for_embedding,
+                        metadata={"source_type": "message", "role": role, "user_id": user_id}
+                    )
+                    stored_ids.append(mem_id)
+                else:
+                    print(f"IntelligentMemory: Skipping empty message at index {i}.")
+            return stored_ids
+            
+        # `search`, `update`, `delete`, `get_all` can be inherited from BaseMemory for now.
+        # Real Mem0 would have more sophisticated logic here, potentially combining results
+        # from different underlying stores (vector, graph).
+```
+
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Update `__init__` to pass the shared `EmbeddingGenerator` instance to `IntelligentMemory` if a global/shared one is preferred, or let `IntelligentMemory` create its own. For tool encapsulation, letting `IntelligentMemory` create its own `EmbeddingGenerator` is simpler for now.
+    *   Ensure the `execute` method correctly calls the updated `IntelligentMemory` methods, which now handle embeddings.
+
+    ```python
+# python/tools/memory_agent_tool.py
+    # ... (imports and StreamEventType same as Task 8)
+    from agents.memory_agent.memory import IntelligentMemory # Uses real EmbeddingGenerator internally
+    from agents.knowledge_agent.embeddings import EmbeddingGenerator # To be explicit, can pass one
+
+    class MemoryAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool",
+                             description="Manages an intelligent memory system, allowing adding, searching, updating, and deleting memories.",
+                             args_schema=None,
+                             **kwargs)
+            
+            # Option 1: MemoryAgentTool creates its own EmbeddingGenerator for its IntelligentMemory
+            # self.embedding_generator = EmbeddingGenerator() 
+            # self.memory_system = IntelligentMemory(
+            #     agent_id=self.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user",
+            #     embedding_generator=self.embedding_generator
+            # )
+
+            # Option 2: IntelligentMemory creates its own (as implemented in memory.py mock)
+            self.memory_system = IntelligentMemory(
+                 agent_id=self.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user"
+            )
+
+            print(f"MemoryAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id}) "
+                  f"with memory agent_id: {self.memory_system.agent_id}")
+
+        # ... (_emit_memory_event method remains the same)
+        async def _emit_memory_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            payload = {"source_tool": "memory_agent", "action": action_name, "status": status}
+            if details: payload.update(details)
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.MEMORY_UPDATE, payload)
+            else:
+                print(f"MemoryAgentTool: Agent does not have _emit_stream_event. Cannot emit MEMORY_UPDATE.")
+
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            user_id_arg = kwargs.get("user_id") # User ID passed in tool args
+            # If no user_id in args, use the memory_system's configured agent_id (which might be from agent context)
+            # This is important because Mem0 operations are typically user-scoped.
+            # The self.memory_system was initialized with an agent_id.
+
+            try:
+                if action == "add":
+                    messages = kwargs.get("messages")
+                    data_to_add = kwargs.get("data")
+                    memory_id_arg = kwargs.get("memory_id")
+                    metadata_arg = kwargs.get("metadata")
+
+                    if messages and isinstance(messages, list):
+                        # IntelligentMemory.add_messages internally uses user_id/agent_id for scoping
+                        return await self._add_from_messages(messages, user_id_arg) # Pass user_id_arg for clarity
+                    elif data_to_add is not None: # Check for not None, as data could be False, 0, etc.
+                        return await self._add_generic_memory(data_to_add, memory_id_arg, user_id_arg, metadata_arg)
+                    else:
+                        return ToolResponse("Error: 'messages' or 'data' required for 'add'.", error=True)
+
+                elif action == "search":
+                    query = kwargs.get("query")
+                    limit = kwargs.get("limit", 5)
+                    if not query: return ToolResponse("Error: 'query' is required for search.", error=True)
+                    # IntelligentMemory.search uses its own agent_id or passed user_id
+                    return await self._search_memory(query, user_id_arg, limit) 
+                
+                elif action == "update":
+                    memory_id_arg = kwargs.get("memory_id")
+                    new_data = kwargs.get("data")
+                    new_metadata = kwargs.get("metadata")
+                    if not memory_id_arg or new_data is None:
+                        return ToolResponse("Error: 'memory_id' and 'data' required for update.", error=True)
+                    return await self._update_memory(memory_id_arg, new_data, user_id_arg, new_metadata)
+                    
+                elif action == "delete":
+                    memory_id_arg = kwargs.get("memory_id")
+                    if not memory_id_arg: return ToolResponse("Error: 'memory_id' required for delete.", error=True)
+                    return await self._delete_memory(memory_id_arg, user_id_arg)
+
+                elif action == "get_all":
+                     return await self._get_all_memories(user_id_arg)
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error: {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id_arg": user_id_arg})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _add_from_messages(self, messages: List[Dict[str, Any]], user_id_for_op: Optional[str]) -> ToolResponse:
+            # The user_id_for_op can override the memory_system's default agent_id if Mem0 supports multi-tenancy this way
+            # For our mock, memory_system.add_messages might just use its initialized agent_id.
+            # Let's assume user_id_for_op is primarily for metadata/logging for now.
+            await self._emit_memory_event("add_messages", "starting", {"count": len(messages), "user_id": user_id_for_op or self.memory_system.agent_id})
+            stored_ids = await self.memory_system.add_messages(messages, user_id=user_id_for_op)
+            result_details = {"stored_ids": stored_ids, "user_id": user_id_for_op or self.memory_system.agent_id}
+            await self._emit_memory_event("add_messages", "completed", result_details)
+            return ToolResponse(message=f"Added {len(stored_ids)} memories from messages.", data=result_details)
+
+        async def _add_generic_memory(self, data: Any, memory_id: Optional[str], user_id_for_op: Optional[str], metadata: Optional[Dict[str, Any]]) -> ToolResponse:
+            await self._emit_memory_event("add_generic", "starting", {"has_id": bool(memory_id), "user_id": user_id_for_op or self.memory_system.agent_id})
+            # Pass metadata to the memory system
+            stored_id = await self.memory_system.add(data, memory_id=memory_id, metadata=metadata) 
+            result_details = {"stored_id": stored_id, "user_id": user_id_for_op or self.memory_system.agent_id}
+            await self._emit_memory_event("add_generic", "completed", result_details)
+            return ToolResponse(message=f"Memory added with ID: {stored_id}", data=result_details)
+
+        async def _search_memory(self, query: str, user_id_for_op: Optional[str], limit: int) -> ToolResponse:
+            await self._emit_memory_event("search", "processing", {"query": query, "limit": limit, "user_id": user_id_for_op or self.memory_system.agent_id})
+            results = await self.memory_system.search(query, user_id=user_id_for_op, limit=limit)
+            await self._emit_memory_event("search", "completed", {"query": query, "results_count": len(results), "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=json.dumps(results), data=results)
+
+        async def _update_memory(self, memory_id: str, new_data: Any, user_id_for_op: Optional[str], new_metadata: Optional[Dict[str, Any]]) -> ToolResponse:
+            await self._emit_memory_event("update", "processing", {"memory_id": memory_id, "user_id": user_id_for_op or self.memory_system.agent_id})
+            success = await self.memory_system.update(memory_id, new_data, new_metadata=new_metadata)
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("update", status, {"memory_id": memory_id, "success": success, "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=f"Memory update {status}.", data={"success": success})
+
+        async def _delete_memory(self, memory_id: str, user_id_for_op: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("delete", "processing", {"memory_id": memory_id, "user_id": user_id_for_op or self.memory_system.agent_id})
+            success = await self.memory_system.delete(memory_id)
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("delete", status, {"memory_id": memory_id, "success": success, "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=f"Memory deletion {status}.", data={"success": success})
+
+        async def _get_all_memories(self, user_id_for_op: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("get_all", "processing", {"user_id": user_id_for_op or self.memory_system.agent_id})
+            all_memories = await self.memory_system.get_all(user_id=user_id_for_op)
+            await self._emit_memory_event("get_all", "completed", {"count": len(all_memories), "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=json.dumps(all_memories), data=all_memories)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-13 completed.
+*   `EmbeddingGenerator` from `python/agents/knowledge_agent/embeddings.py` is functional and uses OpenAI.
+*   `openai` and `numpy` libraries are in `requirements.txt` and installed.
+*   Valid `OPENAI_API_KEY` set in environment.
+
+**Integration with Agent Zero:**
+*   `IntelligentMemory` (mock for Mem0) now uses the real `EmbeddingGenerator` to create vector embeddings for memory items.
+*   Its `search` method performs a basic cosine similarity search over the in-memory store using these embeddings.
+*   `MemoryAgentTool` orchestrates these actions. When adding memories (especially from messages or generic data), text suitable for embedding is identified, and an embedding is generated and stored alongside the data.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond what `EmbeddingGenerator` required (`openai`, `numpy`).
+*   Ensure the `.env` file in Docker (or environment variables passed to the container) includes `OPENAI_API_KEY`.
+
+**Summary of Task 15:**
+This task enhances the `MemoryAgentTool` by integrating real embedding generation into its mocked `IntelligentMemory` component. While full Mem0 functionality (like graph memory, advanced LLM processing of memories) is still pending, the tool can now vectorize textual memories and perform a rudimentary similarity search on them. This makes its "search" capability more meaningful than a simple keyword match and lays a better foundation for integrating the full Mem0 library later.
+
+Please confirm to proceed.Okay, let's proceed with Task 15.
+
+## Task 15: Implement Real Logic for `MemoryAgentTool` - Basic Embedding and In-Memory Storage
+
+**Focus:**
+This task transitions the `MemoryAgentTool` from placeholder logic to a more functional implementation for its core actions (`add`, `search`). It will integrate the `EmbeddingGenerator` (from `python/agents/knowledge_agent/embeddings.py`, as it's a general utility now) to vectorize textual memory content. The `IntelligentMemory` component (from `python/agents/memory_agent/memory.py`) will use these embeddings for a basic in-memory similarity search. Full Mem0 features like graph memory and LLM-based memory processing are deferred.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Update `BaseMemory` and `IntelligentMemory` to use the `EmbeddingGenerator`.
+    *   Implement a basic cosine similarity search in `BaseMemory.search`.
+
+    ```python
+    # python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+    import uuid
+    import numpy as np # For cosine similarity
+    
+    # Import the real EmbeddingGenerator
+    from agents.knowledge_agent.embeddings import EmbeddingGenerator 
+    # Assuming knowledge_agent is in the python path or use relative import if structure allows
+    # from ..knowledge_agent.embeddings import EmbeddingGenerator 
+
+    def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+        """Computes cosine similarity between two vectors."""
+        vec1 = np.array(v1, dtype=np.float32)
+        vec2 = np.array(v2, dtype=np.float32)
+        if vec1.shape != vec2.shape or vec1.ndim != 1:
+            print(f"Warning: cosine_similarity received vectors of mismatched shapes/dims. v1: {vec1.shape}, v2: {vec2.shape}")
+            return 0.0
+        dot_product = np.dot(vec1, vec2)
+        norm_v1 = np.linalg.norm(vec1)
+        norm_v2 = np.linalg.norm(vec2)
+        if norm_v1 == 0 or norm_v2 == 0:
+            return 0.0
+        return dot_product / (norm_v1 * norm_v2)
+
+    class BaseMemory:
+        def __init__(self, agent_id: str = "default_agent", embedding_generator: Optional[EmbeddingGenerator] = None):
+            self.agent_id = agent_id
+            self.store: Dict[str, Dict[str, Any]] = {} # id -> {"data": any, "text_for_embedding": str, "embedding": List[float], "type": str, "metadata": Dict}
+            self.embedding_generator = embedding_generator or EmbeddingGenerator() # Use provided or create new
+            print(f"{self.__class__.__name__}: Initialized for agent '{agent_id}' with EmbeddingGenerator.")
+
+        async def _get_text_for_embedding(self, memory_data: Any) -> str:
+            """Extracts or creates a textual representation of memory_data for embedding."""
+            if isinstance(memory_data, str):
+                return memory_data
+            if isinstance(memory_data, dict) and "content" in memory_data:
+                return str(memory_data["content"])
+            if isinstance(memory_data, list) and all(isinstance(m, dict) for m in memory_data): # List of messages
+                return " ".join([str(m.get("content", "")) for m in memory_data if m.get("content")])
+            return str(memory_data) # Fallback
+
+        async def add(self, memory_data: Any, memory_id: Optional[str] = None, 
+                      metadata: Optional[Dict[str,Any]] = None, text_for_embedding: Optional[str] = None) -> str:
+            _id = memory_id or f"mem_{str(uuid.uuid4())}" # Use UUID for better uniqueness
+            
+            text_to_embed = text_for_embedding if text_for_embedding else await self._get_text_for_embedding(memory_data)
+            embedding = [] # Default to empty list
+            if text_to_embed:
+                embedding = await self.embedding_generator.generate_single_embedding(text_to_embed)
+            else:
+                print(f"{self.__class__.__name__}: No text content to embed for memory_id '{_id}'. Storing without embedding.")
+
+
+            self.store[_id] = {
+                "id": _id,
+                "data": memory_data, 
+                "text_for_embedding": text_to_embed,
+                "embedding": embedding, 
+                "type": "generic_memory",
+                "metadata": metadata or {}
+            }
+            print(f"{self.__class__.__name__}: Added memory '{_id}' (Embedded: {bool(embedding)}).")
+            return _id
+
+        async def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
+            return self.store.get(memory_id)
+
+        async def search(self, query: str, user_id: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
+            # user_id currently not used in this mock search as memory is per-instance agent_id
+            print(f"{self.__class__.__name__}: Searching memories for query '{query}' (limit: {limit}) for agent '{self.agent_id}'.")
+            if not query: return []
+            
+            query_embedding = await self.embedding_generator.generate_single_embedding(query)
+            if sum(abs(x) for x in query_embedding) == 0: # Check for zero query embedding
+                 print(f"{self.__class__.__name__}: Query embedding is zero. Cannot perform similarity search.")
+                 return []
+
+            candidate_mems = []
+            for mem_id, mem_content in self.store.items():
+                if mem_content.get("embedding"): # Only consider memories with embeddings
+                    similarity = cosine_similarity(query_embedding, mem_content["embedding"])
+                    candidate_mems.append({**mem_content, "relevance_score": float(similarity)})
+            
+            candidate_mems.sort(key=lambda m: m["relevance_score"], reverse=True)
+            return candidate_mems[:limit]
+
+        async def update(self, memory_id: str, new_data: Any, new_text_for_embedding: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            if memory_id in self.store:
+                text_to_embed = new_text_for_embedding if new_text_for_embedding else await self._get_text_for_embedding(new_data)
+                embedding = []
+                if text_to_embed:
+                    embedding = await self.embedding_generator.generate_single_embedding(text_to_embed)
+                
+                self.store[memory_id]["data"] = new_data
+                self.store[memory_id]["text_for_embedding"] = text_to_embed
+                self.store[memory_id]["embedding"] = embedding
+                if new_metadata is not None:
+                    self.store[memory_id]["metadata"].update(new_metadata)
+                self.store[memory_id]["updated_at"] = "mock_timestamp_updated" # Mock
+                print(f"{self.__class__.__name__}: Updated memory '{memory_id}'.")
+                return True
+            return False
+
+        async def delete(self, memory_id: str) -> bool:
+            if memory_id in self.store:
+                del self.store[memory_id]
+                print(f"{self.__class__.__name__}: Deleted memory '{memory_id}'.")
+                return True
+            return False
+        
+        async def get_all(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+            # user_id not used in this simple mock's get_all
+            print(f"{self.__class__.__name__}: Getting all memories for agent '{self.agent_id}'.")
+            return list(self.store.values())
+
+
+    class IntelligentMemory(BaseMemory):
+        """
+        Mock for Mem0's main client, now using real embeddings for its base operations.
+        """
+        def __init__(self, agent_id: str = "default_agent", embedding_generator: Optional[EmbeddingGenerator] = None):
+            super().__init__(agent_id, embedding_generator)
+            # In real Mem0, this would initialize and manage different types of stores (vector, graph, etc.)
+            # For this task, it mostly relies on BaseMemory's enhanced capabilities.
+            print(f"IntelligentMemory: Initialized for agent '{agent_id}'.")
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id: Optional[str] = None) -> List[str]:
+            """Adds memories extracted from a list of messages."""
+            # user_id might be used to namespace memories if this instance handles multiple users
+            effective_agent_id = user_id or self.agent_id
+            print(f"IntelligentMemory: Adding memories from {len(messages)} messages for user/agent '{effective_agent_id}'.")
+            
+            stored_ids = []
+            for i, msg in enumerate(messages):
+                content = msg.get("content")
+                role = msg.get("role", "unknown")
+                if content and content.strip():
+                    # Create a more structured memory data
+                    memory_data = {"role": role, "content": content, "original_message_index": i}
+                    # Text for embedding could be just content, or include role for context
+                    text_for_embedding = f"{role}: {content}"
+                    
+                    # Use base add method, passing explicit text for embedding
+                    mem_id = await super().add(
+                        memory_data=memory_data, 
+                        text_for_embedding=text_for_embedding,
+                        metadata={"source_type": "message", "role": role, "user_id": user_id}
+                    )
+                    stored_ids.append(mem_id)
+                else:
+                    print(f"IntelligentMemory: Skipping empty message at index {i}.")
+            return stored_ids
+            
+        # `search`, `update`, `delete`, `get_all` can be inherited from BaseMemory for now.
+        # Real Mem0 would have more sophisticated logic here, potentially combining results
+        # from different underlying stores (vector, graph).
+    ```
+
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Update `__init__` to pass the shared `EmbeddingGenerator` instance to `IntelligentMemory` if a global/shared one is preferred, or let `IntelligentMemory` create its own. For tool encapsulation, letting `IntelligentMemory` create its own `EmbeddingGenerator` is simpler for now.
+    *   Ensure the `execute` method correctly calls the updated `IntelligentMemory` methods, which now handle embeddings.
+
+    ```python
+    # python/tools/memory_agent_tool.py
+    # ... (imports and StreamEventType same as Task 8)
+    from agents.memory_agent.memory import IntelligentMemory # Uses real EmbeddingGenerator internally
+    from agents.knowledge_agent.embeddings import EmbeddingGenerator # To be explicit, can pass one
+
+    class MemoryAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool",
+                             description="Manages an intelligent memory system, allowing adding, searching, updating, and deleting memories.",
+                             args_schema=None,
+                             **kwargs)
+            
+            # Option 1: MemoryAgentTool creates its own EmbeddingGenerator for its IntelligentMemory
+            # self.embedding_generator = EmbeddingGenerator() 
+            # self.memory_system = IntelligentMemory(
+            #     agent_id=self.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user",
+            #     embedding_generator=self.embedding_generator
+            # )
+
+            # Option 2: IntelligentMemory creates its own (as implemented in memory.py mock)
+            self.memory_system = IntelligentMemory(
+                 agent_id=self.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user"
+            )
+
+            print(f"MemoryAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id}) "
+                  f"with memory agent_id: {self.memory_system.agent_id}")
+
+        # ... (_emit_memory_event method remains the same)
+        async def _emit_memory_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            payload = {"source_tool": "memory_agent", "action": action_name, "status": status}
+            if details: payload.update(details)
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.MEMORY_UPDATE, payload)
+            else:
+                print(f"MemoryAgentTool: Agent does not have _emit_stream_event. Cannot emit MEMORY_UPDATE.")
+
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            user_id_arg = kwargs.get("user_id") # User ID passed in tool args
+            # If no user_id in args, use the memory_system's configured agent_id (which might be from agent context)
+            # This is important because Mem0 operations are typically user-scoped.
+            # The self.memory_system was initialized with an agent_id.
+
+            try:
+                if action == "add":
+                    messages = kwargs.get("messages")
+                    data_to_add = kwargs.get("data")
+                    memory_id_arg = kwargs.get("memory_id")
+                    metadata_arg = kwargs.get("metadata")
+
+                    if messages and isinstance(messages, list):
+                        # IntelligentMemory.add_messages internally uses user_id/agent_id for scoping
+                        return await self._add_from_messages(messages, user_id_arg) # Pass user_id_arg for clarity
+                    elif data_to_add is not None: # Check for not None, as data could be False, 0, etc.
+                        return await self._add_generic_memory(data_to_add, memory_id_arg, user_id_arg, metadata_arg)
+                    else:
+                        return ToolResponse("Error: 'messages' or 'data' required for 'add'.", error=True)
+
+                elif action == "search":
+                    query = kwargs.get("query")
+                    limit = kwargs.get("limit", 5)
+                    if not query: return ToolResponse("Error: 'query' is required for search.", error=True)
+                    # IntelligentMemory.search uses its own agent_id or passed user_id
+                    return await self._search_memory(query, user_id_arg, limit) 
+                
+                elif action == "update":
+                    memory_id_arg = kwargs.get("memory_id")
+                    new_data = kwargs.get("data")
+                    new_metadata = kwargs.get("metadata")
+                    if not memory_id_arg or new_data is None:
+                        return ToolResponse("Error: 'memory_id' and 'data' required for update.", error=True)
+                    return await self._update_memory(memory_id_arg, new_data, user_id_arg, new_metadata)
+                    
+                elif action == "delete":
+                    memory_id_arg = kwargs.get("memory_id")
+                    if not memory_id_arg: return ToolResponse("Error: 'memory_id' required for delete.", error=True)
+                    return await self._delete_memory(memory_id_arg, user_id_arg)
+
+                elif action == "get_all":
+                     return await self._get_all_memories(user_id_arg)
+                else:
+                    return ToolResponse(f"Unknown MemoryAgent action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"MemoryAgentTool error: {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_memory_event(action, "error", {"error": str(e), "user_id_arg": user_id_arg})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _add_from_messages(self, messages: List[Dict[str, Any]], user_id_for_op: Optional[str]) -> ToolResponse:
+            # The user_id_for_op can override the memory_system's default agent_id if Mem0 supports multi-tenancy this way
+            # For our mock, memory_system.add_messages might just use its initialized agent_id.
+            # Let's assume user_id_for_op is primarily for metadata/logging for now.
+            await self._emit_memory_event("add_messages", "starting", {"count": len(messages), "user_id": user_id_for_op or self.memory_system.agent_id})
+            stored_ids = await self.memory_system.add_messages(messages, user_id=user_id_for_op)
+            result_details = {"stored_ids": stored_ids, "user_id": user_id_for_op or self.memory_system.agent_id}
+            await self._emit_memory_event("add_messages", "completed", result_details)
+            return ToolResponse(message=f"Added {len(stored_ids)} memories from messages.", data=result_details)
+
+        async def _add_generic_memory(self, data: Any, memory_id: Optional[str], user_id_for_op: Optional[str], metadata: Optional[Dict[str, Any]]) -> ToolResponse:
+            await self._emit_memory_event("add_generic", "starting", {"has_id": bool(memory_id), "user_id": user_id_for_op or self.memory_system.agent_id})
+            # Pass metadata to the memory system
+            stored_id = await self.memory_system.add(data, memory_id=memory_id, metadata=metadata) 
+            result_details = {"stored_id": stored_id, "user_id": user_id_for_op or self.memory_system.agent_id}
+            await self._emit_memory_event("add_generic", "completed", result_details)
+            return ToolResponse(message=f"Memory added with ID: {stored_id}", data=result_details)
+
+        async def _search_memory(self, query: str, user_id_for_op: Optional[str], limit: int) -> ToolResponse:
+            await self._emit_memory_event("search", "processing", {"query": query, "limit": limit, "user_id": user_id_for_op or self.memory_system.agent_id})
+            results = await self.memory_system.search(query, user_id=user_id_for_op, limit=limit)
+            await self._emit_memory_event("search", "completed", {"query": query, "results_count": len(results), "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=json.dumps(results), data=results)
+
+        async def _update_memory(self, memory_id: str, new_data: Any, user_id_for_op: Optional[str], new_metadata: Optional[Dict[str, Any]]) -> ToolResponse:
+            await self._emit_memory_event("update", "processing", {"memory_id": memory_id, "user_id": user_id_for_op or self.memory_system.agent_id})
+            success = await self.memory_system.update(memory_id, new_data, new_metadata=new_metadata)
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("update", status, {"memory_id": memory_id, "success": success, "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=f"Memory update {status}.", data={"success": success})
+
+        async def _delete_memory(self, memory_id: str, user_id_for_op: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("delete", "processing", {"memory_id": memory_id, "user_id": user_id_for_op or self.memory_system.agent_id})
+            success = await self.memory_system.delete(memory_id)
+            status = "completed" if success else "failed"
+            await self._emit_memory_event("delete", status, {"memory_id": memory_id, "success": success, "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=f"Memory deletion {status}.", data={"success": success})
+
+        async def _get_all_memories(self, user_id_for_op: Optional[str]) -> ToolResponse:
+            await self._emit_memory_event("get_all", "processing", {"user_id": user_id_for_op or self.memory_system.agent_id})
+            all_memories = await self.memory_system.get_all(user_id=user_id_for_op)
+            await self._emit_memory_event("get_all", "completed", {"count": len(all_memories), "user_id": user_id_for_op or self.memory_system.agent_id})
+            return ToolResponse(message=json.dumps(all_memories), data=all_memories)
+
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-13 completed.
+*   `EmbeddingGenerator` from `python/agents/knowledge_agent/embeddings.py` is functional and uses OpenAI.
+*   `openai` and `numpy` libraries are in `requirements.txt` and installed.
+*   Valid `OPENAI_API_KEY` set in environment.
+
+**Integration with Agent Zero:**
+*   `IntelligentMemory` (mock for Mem0) now uses the real `EmbeddingGenerator` to create vector embeddings for memory items.
+*   Its `search` method performs a basic cosine similarity search over the in-memory store using these embeddings.
+*   `MemoryAgentTool` orchestrates these actions. When adding memories (especially from messages or generic data), text suitable for embedding is identified, and an embedding is generated and stored alongside the data.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies beyond what `EmbeddingGenerator` required (`openai`, `numpy`).
+*   Ensure the `.env` file in Docker (or environment variables passed to the container) includes `OPENAI_API_KEY`.
+
+**Summary of Task 15:**
+This task enhances the `MemoryAgentTool` by integrating real embedding generation into its mocked `IntelligentMemory` component. While full Mem0 functionality (like graph memory, advanced LLM processing of memories) is still pending, the tool can now vectorize textual memories and perform a rudimentary similarity search on them. This makes its "search" capability more meaningful than a simple keyword match and lays a better foundation for integrating the full Mem0 library later.
+
+Please confirm to proceed.

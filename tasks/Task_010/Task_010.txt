@@ -1,0 +1,565 @@
+## Task 10: Implement Core Chatterbox TTS Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `ChatterboxTTSTool` within Agent Zero, based on the `chatterbox` repository. It will include placeholder implementations for the core TTS actions (`generate_speech`, `generate_voice_conversion`). The actual model loading, audio generation, and watermarking logic will be deferred. The goal is to create the tool's interface, make it callable by Agent Zero, and have it emit relevant `PROGRESS_UPDATE` or custom TTS-related events (e.g., `TTS_GENERATION_COMPLETE`).
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories (if they don't exist):**
+    *   `python/agents/` (should exist)
+    *   `python/agents/tts_agent/` (New directory for TTS model components)
+
+2.  **Create `python/agents/tts_agent/chatterbox_handler.py` (Placeholder):**
+    This file will eventually encapsulate the core logic from `src/chatterbox/tts.py` and `src/chatterbox/vc.py`.
+
+    ```python
+# python/agents/tts_agent/chatterbox_handler.py
+    import asyncio
+    from typing import Dict, Any, Optional, Tuple
+    import numpy as np # For mock audio data
+
+    # Mock sample rates from Chatterbox
+    S3GEN_SR = 24000 
+
+    class ChatterboxTTSHandler:
+        """
+        Handles Text-to-Speech generation using Chatterbox (mocked).
+        """
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR 
+            # In real implementation, models (t3, s3gen, ve, tokenizer) would be loaded here.
+            # self.t3_model = None
+            # self.s3gen_model = None
+            # self.voice_encoder = None
+            # self.tokenizer = None
+            # self.watermarker = None # Placeholder for Perth watermarker
+            print(f"ChatterboxTTSHandler (Mock) initialized on device: {device}")
+
+        async def _mock_audio_data(self, duration_seconds: float = 2.0) -> Tuple[int, np.ndarray]:
+            """Generates a short silent numpy array representing audio."""
+            num_samples = int(self.sr * duration_seconds)
+            # Simple sine wave for mock audio to make it non-silent if played
+            # frequency = 440  # A4 note
+            # t = np.linspace(0, duration_seconds, num_samples, endpoint=False)
+            # audio_data = 0.5 * np.sin(2 * np.pi * frequency * t)
+            audio_data = np.zeros(num_samples, dtype=np.float32) # Silent mock
+            return self.sr, audio_data
+
+        async def generate_speech(self, text: str, audio_prompt_path: Optional[str] = None, 
+                                  exaggeration: float = 0.5, cfg_weight: float = 0.5, 
+                                  temperature: float = 0.8) -> Tuple[int, bytes]: # Returning bytes for audio data
+            """Simulates TTS generation."""
+            print(f"ChatterboxTTSHandler (Mock): Generating speech for text: '{text[:50]}...'")
+            print(f"  Params: prompt_path='{audio_prompt_path}', exaggeration={exaggeration}, cfg={cfg_weight}, temp={temperature}")
+            
+            await asyncio.sleep(0.5) # Simulate processing time
+            
+            sr, audio_np = await self._mock_audio_data(duration_seconds=len(text)/10.0) # Duration based on text length
+            # In real implementation, audio_np would be watermarked here before converting to bytes.
+            # watermarked_wav_np = self.watermarker.apply_watermark(audio_np, sample_rate=sr)
+            # audio_bytes = watermarked_wav_np.tobytes()
+            audio_bytes = audio_np.tobytes() # Placeholder without watermarking
+            
+            print(f"ChatterboxTTSHandler (Mock): Generated mock audio ({len(audio_bytes)} bytes, SR: {sr}).")
+            return sr, audio_bytes
+
+    class ChatterboxVCHandler:
+        """
+        Handles Voice Conversion using Chatterbox (mocked).
+        """
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR
+            # In real implementation, s3gen model and its tokenizer/VE would be loaded.
+            # self.s3gen_model = None
+            # self.watermarker = None
+            print(f"ChatterboxVCHandler (Mock) initialized on device: {device}")
+        
+        async def _mock_audio_data(self, duration_seconds: float = 2.0) -> Tuple[int, np.ndarray]:
+            num_samples = int(self.sr * duration_seconds)
+            audio_data = np.zeros(num_samples, dtype=np.float32)
+            return self.sr, audio_data
+
+        async def convert_voice(self, source_audio_path: str, target_voice_path: str) -> Tuple[int, bytes]:
+            """Simulates voice conversion."""
+            print(f"ChatterboxVCHandler (Mock): Converting voice from '{source_audio_path}' to target '{target_voice_path}'.")
+            await asyncio.sleep(0.7) # Simulate processing time
+
+            # Mock duration based on source audio (if we could load it) or fixed
+            sr, audio_np = await self._mock_audio_data(duration_seconds=3.0) 
+            # watermarked_wav_np = self.watermarker.apply_watermark(audio_np, sample_rate=sr)
+            # audio_bytes = watermarked_wav_np.tobytes()
+            audio_bytes = audio_np.tobytes()
+
+            print(f"ChatterboxVCHandler (Mock): Generated mock VC audio ({len(audio_bytes)} bytes, SR: {sr}).")
+            return sr, audio_bytes
+```
+
+3.  **Create `python/tools/chatterbox_tts_tool.py`:**
+
+    ```python
+# python/tools/chatterbox_tts_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from agents.tts_agent.chatterbox_handler import ChatterboxTTSHandler, ChatterboxVCHandler # Using mock handlers
+    import asyncio
+    import base64 # For encoding audio data if sent as string
+    from typing import Dict, Any, Optional
+
+    # A global or context-specific place to store/retrieve audio data if needed for playback via another mechanism
+    # For now, the tool will return audio data (e.g., base64 encoded or a reference ID).
+    # If we need to play it directly, another tool or UI mechanism would handle that.
+    # audio_data_store = {} 
+
+    class ChatterboxTTSTool(Tool):
+        """
+        Chatterbox TTS and Voice Conversion tool for Agent Zero.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="chatterbox_tts_tool",
+                             description="Generates speech from text (TTS) or performs voice conversion (VC) using Chatterbox models.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            # In a real setup, device would come from agent config
+            device = agent.config.get("tts_device", "cpu") 
+            self.tts_handler = ChatterboxTTSHandler(device=device)
+            self.vc_handler = ChatterboxVCHandler(device=device)
+            print(f"ChatterboxTTSTool initialized for agent {agent.agent_name} on device {device}")
+
+        async def _emit_tts_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit TTS related events (could be PROGRESS_UPDATE or a custom TTS event)."""
+            event_type = StreamEventType.PROGRESS_UPDATE # Using PROGRESS_UPDATE for now
+            payload = {"source_tool": "chatterbox_tts", "action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(event_type, payload)
+            else:
+                print(f"ChatterboxTTSTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute Chatterbox TTS/VC operations.
+            
+            Args:
+                action (str): "generate_speech" or "convert_voice".
+                **kwargs: Arguments for the action.
+            """
+            try:
+                if action == "generate_speech":
+                    text = kwargs.get("text")
+                    if not text: return ToolResponse("Error: 'text' is required for generate_speech.", error=True)
+                    
+                    audio_prompt_path = kwargs.get("audio_prompt_path") # Path to a .wav file
+                    exaggeration = float(kwargs.get("exaggeration", 0.5))
+                    cfg_weight = float(kwargs.get("cfg_weight", 0.5))
+                    temperature = float(kwargs.get("temperature", 0.8))
+                    
+                    return await self._generate_speech(text, audio_prompt_path, exaggeration, cfg_weight, temperature)
+                
+                elif action == "convert_voice":
+                    source_audio_path = kwargs.get("source_audio_path")
+                    target_voice_path = kwargs.get("target_voice_path")
+                    if not source_audio_path or not target_voice_path:
+                        return ToolResponse("Error: 'source_audio_path' and 'target_voice_path' are required for convert_voice.", error=True)
+                    return await self._convert_voice(source_audio_path, target_voice_path)
+                
+                else:
+                    return ToolResponse(f"Unknown ChatterboxTTSTool action: {action}", error=True)
+
+            except Exception as e:
+                import traceback
+                error_message = f"ChatterboxTTSTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_tts_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _generate_speech(self, text: str, audio_prompt_path: Optional[str], 
+                                   exaggeration: float, cfg_weight: float, temperature: float) -> ToolResponse:
+            await self._emit_tts_event("generate_speech", "starting", {"text_length": len(text), "prompt": bool(audio_prompt_path)})
+            
+            sr, audio_bytes = await self.tts_handler.generate_speech(
+                text, audio_prompt_path, exaggeration, cfg_weight, temperature
+            )
+            
+            # Encode audio data for JSON transport (e.g., base64) or store and return a reference.
+            # For this placeholder, let's return a small snippet of base64.
+            audio_base64 = base64.b64encode(audio_bytes[:1024]).decode('utf-8') # Snippet for response
+            # In a real scenario, you might save the file and return a path/URL, 
+            # or stream bytes via a different AG-UI event type if supported.
+
+            result_details = {
+                "sample_rate": sr, 
+                "audio_data_base64_snippet": audio_base64, # Or "audio_url": "path/to/file.wav"
+                "text_length": len(text),
+                "audio_duration_mock_seconds": len(audio_bytes) / (sr * 2) # Assuming 16-bit mono for mock
+            }
+            await self._emit_tts_event("generate_speech", "completed", result_details)
+            return ToolResponse(message="Speech generated successfully (mock).", data=result_details)
+
+        async def _convert_voice(self, source_audio_path: str, target_voice_path: str) -> ToolResponse:
+            await self._emit_tts_event("convert_voice", "starting", {"source": source_audio_path, "target_prompt": target_voice_path})
+            
+            sr, audio_bytes = await self.vc_handler.convert_voice(source_audio_path, target_voice_path)
+            
+            audio_base64 = base64.b64encode(audio_bytes[:1024]).decode('utf-8')
+            result_details = {
+                "sample_rate": sr, 
+                "audio_data_base64_snippet": audio_base64,
+                "audio_duration_mock_seconds": len(audio_bytes) / (sr * 2)
+            }
+            await self._emit_tts_event("convert_voice", "completed", result_details)
+            return ToolResponse(message="Voice conversion successful (mock).", data=result_details)
+```
+
+4.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `chatterbox_tts_tool`.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing tools including hybrid_memory_tool)
+
+    ### chatterbox_tts_tool:
+    # Generates speech from text (TTS) or performs voice conversion (VC).
+    # Arguments:
+    #   action: string - "generate_speech" or "convert_voice".
+    #   For "generate_speech":
+    #     text: string - The text to synthesize.
+    #     audio_prompt_path: string - (Optional) Path to a .wav file for voice cloning. If not provided, uses default or last used voice.
+    #     exaggeration: float - (Optional, default 0.5) Controls emotion/intensity.
+    #     cfg_weight: float - (Optional, default 0.5) Controls pacing/adherence to prompt.
+    #     temperature: float - (Optional, default 0.8) Sampling temperature.
+    #   For "convert_voice":
+    #     source_audio_path: string - Path to the source .wav file to convert.
+    #     target_voice_path: string - Path to the target voice .wav file to clone.
+    # Example for TTS:
+    # {
+    #   "tool_name": "chatterbox_tts_tool",
+    #   "tool_args": { 
+    #     "action": "generate_speech", 
+    #     "text": "Hello, world! This is Agent Zero speaking.", 
+    #     "audio_prompt_path": "/path/to/reference_voice.wav" 
+    #   }
+    # }
+    # Example for Voice Conversion:
+    # {
+    #   "tool_name": "chatterbox_tts_tool",
+    #   "tool_args": { 
+    #     "action": "convert_voice", 
+    #     "source_audio_path": "/path/to/source_audio.wav", 
+    #     "target_voice_path": "/path/to/target_voice_prompt.wav" 
+    #   }
+    # }
+    # The tool returns a dictionary with 'sample_rate' and 'audio_data_base64_snippet' (or a future audio reference).
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-8 completed.
+*   `StreamProtocolTool` for event emission and `Agent._emit_stream_event` helper.
+*   Standard Python libraries (`asyncio`, `base64`, `typing`). The actual `chatterbox-tts` package and its heavy dependencies (`torch`, `librosa`, `perth`, `transformers`, etc.) will be added to `requirements.txt` and Docker when implementing the real logic.
+
+**Integration with Agent Zero:**
+*   `ChatterboxTTSTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `PROGRESS_UPDATE` events (or custom TTS events) via the agent.
+*   The tool's description and usage are added to system prompts.
+*   Placeholder actions for TTS and VC are implemented. The generated audio is mock data, returned as a base64 snippet in the response for now.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   This task *is* the initial structural integration of Chatterbox TTS as a tool. It sets up the placeholders for its core functionalities.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for these placeholders *yet*. When the actual Chatterbox models are integrated, its dependencies (`torch`, `torchaudio`, `librosa`, `s3tokenizer`, `resemble-perth`, `conformer`, `safetensors`, `transformers`, `diffusers`, `numpy`) will need to be added to `requirements.txt` and potentially to the Docker base image if they have complex system dependencies (e.g., CUDA for GPU Torch).
+*   Ensure the new directory structure `python/agents/tts_agent/` and files within, plus `python/tools/chatterbox_tts_tool.py`, are included in the Docker image.
+
+**Summary of Task 10:**
+This task sets up the `ChatterboxTTSTool` and its placeholder handler classes. It defines the tool's actions for speech generation and voice conversion within Agent Zero. It also includes mechanisms for emitting progress/status events. This prepares for the subsequent integration of the actual Chatterbox model loading and audio processing logic.
+
+Please confirm to proceed.Okay, let's proceed with Task 10.
+
+## Task 10: Implement Core Chatterbox TTS Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `ChatterboxTTSTool` within Agent Zero, based on the `chatterbox` repository. It will include placeholder implementations for the core TTS actions (`generate_speech`, `generate_voice_conversion`). The actual model loading, audio generation, and watermarking logic will be deferred. The goal is to create the tool's interface, make it callable by Agent Zero, and have it emit relevant `PROGRESS_UPDATE` or custom TTS-related events (e.g., `TTS_GENERATION_COMPLETE`).
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories (if they don't exist):**
+    *   `python/agents/` (should exist)
+    *   `python/agents/tts_agent/` (New directory for TTS model components)
+
+2.  **Create `python/agents/tts_agent/chatterbox_handler.py` (Placeholder):**
+    This file will eventually encapsulate the core logic from `src/chatterbox/tts.py` and `src/chatterbox/vc.py`.
+
+    ```python
+    # python/agents/tts_agent/chatterbox_handler.py
+    import asyncio
+    from typing import Dict, Any, Optional, Tuple
+    import numpy as np # For mock audio data
+
+    # Mock sample rates from Chatterbox
+    S3GEN_SR = 24000 
+
+    class ChatterboxTTSHandler:
+        """
+        Handles Text-to-Speech generation using Chatterbox (mocked).
+        """
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR 
+            # In real implementation, models (t3, s3gen, ve, tokenizer) would be loaded here.
+            # self.t3_model = None
+            # self.s3gen_model = None
+            # self.voice_encoder = None
+            # self.tokenizer = None
+            # self.watermarker = None # Placeholder for Perth watermarker
+            print(f"ChatterboxTTSHandler (Mock) initialized on device: {device}")
+
+        async def _mock_audio_data(self, duration_seconds: float = 2.0) -> Tuple[int, np.ndarray]:
+            """Generates a short silent numpy array representing audio."""
+            num_samples = int(self.sr * duration_seconds)
+            # Simple sine wave for mock audio to make it non-silent if played
+            # frequency = 440  # A4 note
+            # t = np.linspace(0, duration_seconds, num_samples, endpoint=False)
+            # audio_data = 0.5 * np.sin(2 * np.pi * frequency * t)
+            audio_data = np.zeros(num_samples, dtype=np.float32) # Silent mock
+            return self.sr, audio_data
+
+        async def generate_speech(self, text: str, audio_prompt_path: Optional[str] = None, 
+                                  exaggeration: float = 0.5, cfg_weight: float = 0.5, 
+                                  temperature: float = 0.8) -> Tuple[int, bytes]: # Returning bytes for audio data
+            """Simulates TTS generation."""
+            print(f"ChatterboxTTSHandler (Mock): Generating speech for text: '{text[:50]}...'")
+            print(f"  Params: prompt_path='{audio_prompt_path}', exaggeration={exaggeration}, cfg={cfg_weight}, temp={temperature}")
+            
+            await asyncio.sleep(0.5) # Simulate processing time
+            
+            sr, audio_np = await self._mock_audio_data(duration_seconds=len(text)/10.0) # Duration based on text length
+            # In real implementation, audio_np would be watermarked here before converting to bytes.
+            # watermarked_wav_np = self.watermarker.apply_watermark(audio_np, sample_rate=sr)
+            # audio_bytes = watermarked_wav_np.tobytes()
+            audio_bytes = audio_np.tobytes() # Placeholder without watermarking
+            
+            print(f"ChatterboxTTSHandler (Mock): Generated mock audio ({len(audio_bytes)} bytes, SR: {sr}).")
+            return sr, audio_bytes
+
+    class ChatterboxVCHandler:
+        """
+        Handles Voice Conversion using Chatterbox (mocked).
+        """
+        def __init__(self, device: str = "cpu"):
+            self.device = device
+            self.sr = S3GEN_SR
+            # In real implementation, s3gen model and its tokenizer/VE would be loaded.
+            # self.s3gen_model = None
+            # self.watermarker = None
+            print(f"ChatterboxVCHandler (Mock) initialized on device: {device}")
+        
+        async def _mock_audio_data(self, duration_seconds: float = 2.0) -> Tuple[int, np.ndarray]:
+            num_samples = int(self.sr * duration_seconds)
+            audio_data = np.zeros(num_samples, dtype=np.float32)
+            return self.sr, audio_data
+
+        async def convert_voice(self, source_audio_path: str, target_voice_path: str) -> Tuple[int, bytes]:
+            """Simulates voice conversion."""
+            print(f"ChatterboxVCHandler (Mock): Converting voice from '{source_audio_path}' to target '{target_voice_path}'.")
+            await asyncio.sleep(0.7) # Simulate processing time
+
+            # Mock duration based on source audio (if we could load it) or fixed
+            sr, audio_np = await self._mock_audio_data(duration_seconds=3.0) 
+            # watermarked_wav_np = self.watermarker.apply_watermark(audio_np, sample_rate=sr)
+            # audio_bytes = watermarked_wav_np.tobytes()
+            audio_bytes = audio_np.tobytes()
+
+            print(f"ChatterboxVCHandler (Mock): Generated mock VC audio ({len(audio_bytes)} bytes, SR: {sr}).")
+            return sr, audio_bytes
+
+    ```
+
+3.  **Create `python/tools/chatterbox_tts_tool.py`:**
+
+    ```python
+    # python/tools/chatterbox_tts_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from agents.tts_agent.chatterbox_handler import ChatterboxTTSHandler, ChatterboxVCHandler # Using mock handlers
+    import asyncio
+    import base64 # For encoding audio data if sent as string
+    from typing import Dict, Any, Optional
+
+    # A global or context-specific place to store/retrieve audio data if needed for playback via another mechanism
+    # For now, the tool will return audio data (e.g., base64 encoded or a reference ID).
+    # If we need to play it directly, another tool or UI mechanism would handle that.
+    # audio_data_store = {} 
+
+    class ChatterboxTTSTool(Tool):
+        """
+        Chatterbox TTS and Voice Conversion tool for Agent Zero.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="chatterbox_tts_tool",
+                             description="Generates speech from text (TTS) or performs voice conversion (VC) using Chatterbox models.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            # In a real setup, device would come from agent config
+            device = agent.config.get("tts_device", "cpu") 
+            self.tts_handler = ChatterboxTTSHandler(device=device)
+            self.vc_handler = ChatterboxVCHandler(device=device)
+            print(f"ChatterboxTTSTool initialized for agent {agent.agent_name} on device {device}")
+
+        async def _emit_tts_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit TTS related events (could be PROGRESS_UPDATE or a custom TTS event)."""
+            event_type = StreamEventType.PROGRESS_UPDATE # Using PROGRESS_UPDATE for now
+            payload = {"source_tool": "chatterbox_tts", "action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(event_type, payload)
+            else:
+                print(f"ChatterboxTTSTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute Chatterbox TTS/VC operations.
+            
+            Args:
+                action (str): "generate_speech" or "convert_voice".
+                **kwargs: Arguments for the action.
+            """
+            try:
+                if action == "generate_speech":
+                    text = kwargs.get("text")
+                    if not text: return ToolResponse("Error: 'text' is required for generate_speech.", error=True)
+                    
+                    audio_prompt_path = kwargs.get("audio_prompt_path") # Path to a .wav file
+                    exaggeration = float(kwargs.get("exaggeration", 0.5))
+                    cfg_weight = float(kwargs.get("cfg_weight", 0.5))
+                    temperature = float(kwargs.get("temperature", 0.8))
+                    
+                    return await self._generate_speech(text, audio_prompt_path, exaggeration, cfg_weight, temperature)
+                
+                elif action == "convert_voice":
+                    source_audio_path = kwargs.get("source_audio_path")
+                    target_voice_path = kwargs.get("target_voice_path")
+                    if not source_audio_path or not target_voice_path:
+                        return ToolResponse("Error: 'source_audio_path' and 'target_voice_path' are required for convert_voice.", error=True)
+                    return await self._convert_voice(source_audio_path, target_voice_path)
+                
+                else:
+                    return ToolResponse(f"Unknown ChatterboxTTSTool action: {action}", error=True)
+
+            except Exception as e:
+                import traceback
+                error_message = f"ChatterboxTTSTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_tts_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _generate_speech(self, text: str, audio_prompt_path: Optional[str], 
+                                   exaggeration: float, cfg_weight: float, temperature: float) -> ToolResponse:
+            await self._emit_tts_event("generate_speech", "starting", {"text_length": len(text), "prompt": bool(audio_prompt_path)})
+            
+            sr, audio_bytes = await self.tts_handler.generate_speech(
+                text, audio_prompt_path, exaggeration, cfg_weight, temperature
+            )
+            
+            # Encode audio data for JSON transport (e.g., base64) or store and return a reference.
+            # For this placeholder, let's return a small snippet of base64.
+            audio_base64 = base64.b64encode(audio_bytes[:1024]).decode('utf-8') # Snippet for response
+            # In a real scenario, you might save the file and return a path/URL, 
+            # or stream bytes via a different AG-UI event type if supported.
+
+            result_details = {
+                "sample_rate": sr, 
+                "audio_data_base64_snippet": audio_base64, # Or "audio_url": "path/to/file.wav"
+                "text_length": len(text),
+                "audio_duration_mock_seconds": len(audio_bytes) / (sr * 2) # Assuming 16-bit mono for mock
+            }
+            await self._emit_tts_event("generate_speech", "completed", result_details)
+            return ToolResponse(message="Speech generated successfully (mock).", data=result_details)
+
+        async def _convert_voice(self, source_audio_path: str, target_voice_path: str) -> ToolResponse:
+            await self._emit_tts_event("convert_voice", "starting", {"source": source_audio_path, "target_prompt": target_voice_path})
+            
+            sr, audio_bytes = await self.vc_handler.convert_voice(source_audio_path, target_voice_path)
+            
+            audio_base64 = base64.b64encode(audio_bytes[:1024]).decode('utf-8')
+            result_details = {
+                "sample_rate": sr, 
+                "audio_data_base64_snippet": audio_base64,
+                "audio_duration_mock_seconds": len(audio_bytes) / (sr * 2)
+            }
+            await self._emit_tts_event("convert_voice", "completed", result_details)
+            return ToolResponse(message="Voice conversion successful (mock).", data=result_details)
+
+    ```
+
+4.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `chatterbox_tts_tool`.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing tools including hybrid_memory_tool)
+
+    ### chatterbox_tts_tool:
+    # Generates speech from text (TTS) or performs voice conversion (VC).
+    # Arguments:
+    #   action: string - "generate_speech" or "convert_voice".
+    #   For "generate_speech":
+    #     text: string - The text to synthesize.
+    #     audio_prompt_path: string - (Optional) Path to a .wav file for voice cloning. If not provided, uses default or last used voice.
+    #     exaggeration: float - (Optional, default 0.5) Controls emotion/intensity.
+    #     cfg_weight: float - (Optional, default 0.5) Controls pacing/adherence to prompt.
+    #     temperature: float - (Optional, default 0.8) Sampling temperature.
+    #   For "convert_voice":
+    #     source_audio_path: string - Path to the source .wav file to convert.
+    #     target_voice_path: string - Path to the target voice .wav file to clone.
+    # Example for TTS:
+    # {
+    #   "tool_name": "chatterbox_tts_tool",
+    #   "tool_args": { 
+    #     "action": "generate_speech", 
+    #     "text": "Hello, world! This is Agent Zero speaking.", 
+    #     "audio_prompt_path": "/path/to/reference_voice.wav" 
+    #   }
+    # }
+    # Example for Voice Conversion:
+    # {
+    #   "tool_name": "chatterbox_tts_tool",
+    #   "tool_args": { 
+    #     "action": "convert_voice", 
+    #     "source_audio_path": "/path/to/source_audio.wav", 
+    #     "target_voice_path": "/path/to/target_voice_prompt.wav" 
+    #   }
+    # }
+    # The tool returns a dictionary with 'sample_rate' and 'audio_data_base64_snippet' (or a future audio reference).
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-8 completed.
+*   `StreamProtocolTool` for event emission and `Agent._emit_stream_event` helper.
+*   Standard Python libraries (`asyncio`, `base64`, `typing`). The actual `chatterbox-tts` package and its heavy dependencies (`torch`, `librosa`, `perth`, `transformers`, etc.) will be added to `requirements.txt` and Docker when implementing the real logic.
+
+**Integration with Agent Zero:**
+*   `ChatterboxTTSTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `PROGRESS_UPDATE` events (or custom TTS events) via the agent.
+*   The tool's description and usage are added to system prompts.
+*   Placeholder actions for TTS and VC are implemented. The generated audio is mock data, returned as a base64 snippet in the response for now.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   This task *is* the initial structural integration of Chatterbox TTS as a tool. It sets up the placeholders for its core functionalities.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for these placeholders *yet*. When the actual Chatterbox models are integrated, its dependencies (`torch`, `torchaudio`, `librosa`, `s3tokenizer`, `resemble-perth`, `conformer`, `safetensors`, `transformers`, `diffusers`, `numpy`) will need to be added to `requirements.txt` and potentially to the Docker base image if they have complex system dependencies (e.g., CUDA for GPU Torch).
+*   Ensure the new directory structure `python/agents/tts_agent/` and files within, plus `python/tools/chatterbox_tts_tool.py`, are included in the Docker image.
+
+**Summary of Task 10:**
+This task sets up the `ChatterboxTTSTool` and its placeholder handler classes. It defines the tool's actions for speech generation and voice conversion within Agent Zero. It also includes mechanisms for emitting progress/status events. This prepares for the subsequent integration of the actual Chatterbox model loading and audio processing logic.
+
+Please confirm to proceed.

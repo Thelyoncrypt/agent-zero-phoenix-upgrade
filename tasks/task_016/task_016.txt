@@ -1,0 +1,515 @@
+## Task 16: Implement Real `DatabaseManager` for Supabase/pgvector in `KnowledgeAgentTool`
+
+**Focus:**
+This task replaces the mock `DatabaseManager` in `python/agents/knowledge_agent/database.py` with a functional version that interacts with a Supabase instance configured with the pgvector extension. This involves:
+1.  Establishing a connection to Supabase.
+2.  Implementing `store_chunks` to insert vectorized data.
+3.  Implementing `semantic_search` to perform vector similarity searches using Supabase's RPC functions (as defined in `rag-example.sql` from `foundational-rag-agent_full_code.md`).
+4.  Implementing `get_all_sources`.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add `supabase` (the Python client for Supabase).
+
+    ```
+# requirements.txt
+    # ... (existing requirements)
+    supabase>=2.0.0 # Or latest stable version
+```
+
+2.  **Ensure `.env` is configured (as per `foundational-rag-agent`):**
+    *   `SUPABASE_URL`
+    *   `SUPABASE_KEY`
+
+3.  **Create/Verify SQL Setup in Supabase:**
+    *   The SQL script `rag-example.sql` (from `foundational-rag-agent_full_code.md`) must have been executed on your Supabase instance. This script creates the `rag_pages` table and the `match_rag_pages` RPC function. This task assumes this database schema is in place.
+
+4.  **Modify `python/agents/knowledge_agent/database.py`:**
+    *   Replace the mock `DatabaseManager` with a class that uses the `supabase-py` client.
+
+    ```python
+# python/agents/knowledge_agent/database.py
+    import os
+    from typing import List, Dict, Any, Optional
+    import numpy as np # Still useful for array operations if needed before sending to Supabase
+    from supabase import create_client, Client as SupabaseClientLib # Renamed to avoid conflict
+    from dotenv import load_dotenv
+    from pathlib import Path
+
+    # Load environment variables from the project root .env file
+    # This assumes the .env is at the root of the "enhanced_agent_zero" project
+    project_root = Path(__file__).resolve().parents[2] 
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    # Cosine similarity can be removed if pgvector handles it, but good for reference
+    # def cosine_similarity(v1: List[float], v2: List[float]) -> float: ... (as before)
+
+    class DatabaseManager: # Was SupabaseClient in foundational-rag-agent, renaming here to avoid confusion
+        """
+        Manages interaction with the Supabase vector database.
+        """
+        def __init__(self, supabase_url: Optional[str] = None, supabase_key: Optional[str] = None):
+            self.url = supabase_url or os.getenv("SUPABASE_URL")
+            self.key = supabase_key or os.getenv("SUPABASE_KEY")
+
+            if not self.url or not self.key:
+                raise ValueError("Supabase URL and Key must be provided via environment variables or arguments.")
+            
+            try:
+                self.client: SupabaseClientLib = create_client(self.url, self.key)
+                print(f"DatabaseManager: Successfully connected to Supabase instance at {self.url[:30]}...")
+            except Exception as e:
+                print(f"DatabaseManager: Failed to connect to Supabase: {e}")
+                raise
+
+        async def store_chunks(self, chunks_data: List[Dict[str, Any]]) -> List[str]:
+            """
+            Stores chunks with their embeddings and metadata in Supabase.
+            chunks_data: list of dicts, each like 
+                         {"text": str, "embedding": List[float], "metadata": Dict, "id": str (source_url_chunk_idx)}
+            """
+            if not chunks_data:
+                return []
+
+            records_to_insert = []
+            for chunk_info in chunks_data:
+                source_url = chunk_info["metadata"].get("source_url", "unknown_source")
+                chunk_idx = chunk_info["metadata"].get("chunk_index", 0)
+
+                records_to_insert.append({
+                    "url": source_url, # 'url' column in rag_pages stores the source identifier
+                    "chunk_number": chunk_idx,
+                    "content": chunk_info["text"],
+                    "embedding": chunk_info["embedding"], # pgvector will handle this list of floats
+                    "metadata": chunk_info["metadata"] # Store all other metadata here
+                })
+            
+            try:
+                # Supabase client's insert is synchronous by default in v1.x, use to_thread for async
+                # For supabase-py v2.x, some operations might be async, or use a thread.
+                # For simplicity with current supabase-py, we'll assume sync operations wrapped in to_thread if needed.
+                # However, many client libraries are designed to be used in async contexts without explicit to_thread.
+                # Let's assume the client handles its own async execution or is fine in an executor.
+                # The Python Supabase client uses httpx which supports async.
+                
+                response = await asyncio.to_thread(
+                    self.client.table("rag_pages").insert(records_to_insert).execute
+                )
+
+                if response.data:
+                    print(f"DatabaseManager: Successfully stored {len(response.data)} chunks in Supabase.")
+                    # Return the IDs of the stored chunks if available and needed,
+                    # or simply the count or a success status.
+                    # The 'id' field in chunk_info was client-generated for the list, 
+                    # Supabase will assign its own primary key 'id'.
+                    # We might want to return these Supabase IDs.
+                    return [record['id'] for record in response.data]
+                else:
+                    # Check response.error if available
+                    error_info = getattr(response, 'error', None)
+                    print(f"DatabaseManager: Failed to store chunks. Response: {response.data}, Error: {error_info}")
+                    return []
+            except Exception as e:
+                print(f"DatabaseManager: Exception during storing chunks: {e}")
+                import traceback
+                traceback.print_exc()
+                return []
+
+        async def semantic_search(
+            self, 
+            query_embedding: List[float], 
+            limit: int, 
+            filter_metadata: Optional[Dict] = None
+        ) -> List[Dict[str, Any]]:
+            """Performs semantic search using the match_rag_pages RPC function."""
+            if not query_embedding:
+                print("DatabaseManager: Query embedding is empty. Returning no results.")
+                return []
+
+            rpc_params = {
+                "query_embedding": query_embedding,
+                "match_count": limit,
+            }
+            if filter_metadata: # The SQL function expects 'filter' as the key for metadata
+                rpc_params["filter"] = filter_metadata
+            else:
+                # Ensure the 'filter' parameter is always present, even if empty, as defined in SQL.
+                rpc_params["filter"] = {}
+
+
+            try:
+                # response = self.client.rpc("match_rag_pages", rpc_params).execute() # Sync version
+                response = await asyncio.to_thread(
+                     self.client.rpc("match_rag_pages", rpc_params).execute
+                )
+
+                if response.data:
+                    print(f"DatabaseManager: Found {len(response.data)} results from semantic search.")
+                    # The RPC function already returns content, metadata, and similarity
+                    return response.data
+                else:
+                    error_info = getattr(response, 'error', None)
+                    print(f"DatabaseManager: No results or error from semantic search. Response: {response.data}, Error: {error_info}")
+                    return []
+            except Exception as e:
+                print(f"DatabaseManager: Exception during semantic search: {e}")
+                import traceback
+                traceback.print_exc()
+                return []
+
+        async def get_all_sources(self) -> List[str]:
+            """Fetches all unique 'url' values from the rag_pages table."""
+            try:
+                # response = self.client.table("rag_pages").select("url", count="exact").execute() # Sync
+                response = await asyncio.to_thread(
+                    self.client.table("rag_pages").select("url", count="exact").execute
+                )
+                if response.data:
+                    sources = set(item["url"] for item in response.data)
+                    print(f"DatabaseManager: Retrieved {len(sources)} unique sources.")
+                    return list(sources)
+                else:
+                    error_info = getattr(response, 'error', None)
+                    print(f"DatabaseManager: Failed to get sources. Error: {error_info}")
+                    return []
+            except Exception as e:
+                print(f"DatabaseManager: Exception during get_all_sources: {e}")
+                return []
+```
+
+5.  **Modify `python/agents/knowledge_agent/retrieval.py` and `python/agents/knowledge_agent/agent.py`:**
+    *   These should already be designed to use `DatabaseManager` and `EmbeddingGenerator`. The main change is that `DatabaseManager` is now real.
+    *   Ensure `KnowledgeRAGAgent.query_knowledge_base` correctly formats the retrieved documents from Supabase (which should match the `KnowledgeBaseSearchResult` structure if the RPC function returns the right fields).
+
+    ```python
+# python/agents/knowledge_agent/agent.py (Illustrative check for query_knowledge_base)
+    # ...
+    class KnowledgeRAGAgent:
+        # ... (__init__ as before)
+
+        async def query_knowledge_base(self, query: str, limit: int = 5, filter_metadata: Optional[Dict] = None) -> Dict[str, Any]:
+            """Queries the knowledge base and prepares a RAG response (still mock LLM part)."""
+            print(f"KnowledgeRAGAgent: Querying with: '{query}' using real DB Manager.")
+            # Retriever uses the real DB manager and real Embedding Generator
+            retrieved_docs_from_db = await self.retriever.retrieve_documents(query, limit, filter_metadata)
+            
+            if not retrieved_docs_from_db:
+                return {"response": "I could not find relevant information in the knowledge base.", "sources": [], "retrieved_count": 0}
+
+            # The 'retrieved_docs_from_db' should already be in the format:
+            # [{"id": ..., "content": ..., "metadata": ..., "similarity": ...}, ...]
+            # as returned by match_rag_pages RPC function.
+
+            context_for_llm = "\n\n".join([f"Source: {doc['metadata'].get('source_url', doc.get('url', 'Unknown'))}\nContent: {doc['content']}" for doc in retrieved_docs_from_db])
+            
+            # Mock LLM response generation using the context
+            # In a real scenario, this would call an LLM:
+            # llm_response = await self.llm_client.generate(prompt=RAG_SYSTEM_PROMPT, context=context_for_llm, query=query)
+            mock_llm_response_text = f"Based on retrieved documents for '{query}': {context_for_llm[:300]}..."
+            
+            sources_for_ui = []
+            for doc in retrieved_docs_from_db:
+                sources_for_ui.append({
+                    "id": doc.get("id"),
+                    "source": doc["metadata"].get("source_url", doc.get("url", "Unknown")), # Prefer source_url from metadata
+                    "content_preview": doc["content"][:150]+"...",
+                    "similarity": doc.get("similarity", 0.0), # Ensure 'similarity' is present
+                    "metadata": doc["metadata"]
+                })
+            
+            return {
+                "response": mock_llm_response_text, 
+                "sources": sources_for_ui, 
+                "retrieved_count": len(retrieved_docs_from_db)
+            }
+        # ... (ingest_document_chunks remains similar, it calls db_manager.store_chunks)
+```
+
+6.  **Verify `python/tools/knowledge_agent_tool.py`:**
+    *   No major changes should be needed here if it correctly instantiates `DatabaseManager` and `EmbeddingGenerator` and calls their methods. The tool acts as an orchestrator.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-14 completed.
+*   `supabase` library added to `requirements.txt` and installed.
+*   A Supabase project set up with the pgvector extension enabled and the schema from `rag-example.sql` applied.
+*   `SUPABASE_URL` and `SUPABASE_KEY` correctly set in the `.env` file.
+*   `EmbeddingGenerator` from Task 14 is functional.
+
+**Integration with Agent Zero:**
+*   The `KnowledgeAgentTool` now interacts with a real Supabase backend for storing and retrieving vectorized document chunks.
+*   Embeddings generated by `EmbeddingGenerator` are stored in Supabase.
+*   Semantic search leverages pgvector via the `match_rag_pages` RPC function.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `supabase` to `requirements.txt`.
+*   Ensure the Docker container has network access to the Supabase instance.
+*   The `SUPABASE_URL` and `SUPABASE_KEY` environment variables must be available to the container at runtime.
+
+**Summary of Task 16:**
+This task makes the `KnowledgeAgentTool` significantly more functional by replacing its mock database component with a real Supabase client. It can now store document chunks with their OpenAI-generated embeddings into a pgvector-enabled Supabase table and perform semantic similarity searches using a custom SQL function. This is a core part of the RAG pipeline. The RAG LLM response generation part within `KnowledgeRAGAgent` is still mocked.
+
+Please confirm to proceed.Understood. Given the substantial work remaining, "Task 16" is a bit ambitious as a single step. Let's break down the next phase into smaller, more manageable tasks, continuing the numbering.
+
+We'll start by fleshing out the `KnowledgeAgentTool` by implementing the real database interaction with Supabase/pgvector. This is a critical step for any RAG functionality.
+
+## Task 16: Implement Real `DatabaseManager` for Supabase/pgvector in `KnowledgeAgentTool`
+
+**Focus:**
+This task replaces the mock `DatabaseManager` in `python/agents/knowledge_agent/database.py` with a functional version that interacts with a Supabase instance configured with the pgvector extension. This involves:
+1.  Establishing a connection to Supabase.
+2.  Implementing `store_chunks` to insert vectorized data.
+3.  Implementing `semantic_search` to perform vector similarity searches using Supabase's RPC functions (as defined in `rag-example.sql` from `foundational-rag-agent_full_code.md`).
+4.  Implementing `get_all_sources`.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add `supabase` (the Python client for Supabase).
+
+    ```
+    # requirements.txt
+    # ... (existing requirements)
+    supabase>=2.0.0 # Or latest stable version
+    ```
+
+2.  **Ensure `.env` is configured (as per `foundational-rag-agent`):**
+    *   `SUPABASE_URL`
+    *   `SUPABASE_KEY`
+
+3.  **Create/Verify SQL Setup in Supabase:**
+    *   The SQL script `rag-example.sql` (from `foundational-rag-agent_full_code.md`) must have been executed on your Supabase instance. This script creates the `rag_pages` table and the `match_rag_pages` RPC function. This task assumes this database schema is in place.
+
+4.  **Modify `python/agents/knowledge_agent/database.py`:**
+    *   Replace the mock `DatabaseManager` with a class that uses the `supabase-py` client.
+
+    ```python
+    # python/agents/knowledge_agent/database.py
+    import os
+    from typing import List, Dict, Any, Optional
+    import numpy as np # Still useful for array operations if needed before sending to Supabase
+    from supabase import create_client, Client as SupabaseClientLib # Renamed to avoid conflict
+    from dotenv import load_dotenv
+    from pathlib import Path
+
+    # Load environment variables from the project root .env file
+    # This assumes the .env is at the root of the "enhanced_agent_zero" project
+    project_root = Path(__file__).resolve().parents[2] 
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    # Cosine similarity can be removed if pgvector handles it, but good for reference
+    # def cosine_similarity(v1: List[float], v2: List[float]) -> float: ... (as before)
+
+    class DatabaseManager: # Was SupabaseClient in foundational-rag-agent, renaming here to avoid confusion
+        """
+        Manages interaction with the Supabase vector database.
+        """
+        def __init__(self, supabase_url: Optional[str] = None, supabase_key: Optional[str] = None):
+            self.url = supabase_url or os.getenv("SUPABASE_URL")
+            self.key = supabase_key or os.getenv("SUPABASE_KEY")
+
+            if not self.url or not self.key:
+                raise ValueError("Supabase URL and Key must be provided via environment variables or arguments.")
+            
+            try:
+                self.client: SupabaseClientLib = create_client(self.url, self.key)
+                print(f"DatabaseManager: Successfully connected to Supabase instance at {self.url[:30]}...")
+            except Exception as e:
+                print(f"DatabaseManager: Failed to connect to Supabase: {e}")
+                raise
+
+        async def store_chunks(self, chunks_data: List[Dict[str, Any]]) -> List[str]:
+            """
+            Stores chunks with their embeddings and metadata in Supabase.
+            chunks_data: list of dicts, each like 
+                         {"text": str, "embedding": List[float], "metadata": Dict, "id": str (source_url_chunk_idx)}
+            """
+            if not chunks_data:
+                return []
+
+            records_to_insert = []
+            for chunk_info in chunks_data:
+                source_url = chunk_info["metadata"].get("source_url", "unknown_source")
+                chunk_idx = chunk_info["metadata"].get("chunk_index", 0)
+
+                records_to_insert.append({
+                    "url": source_url, # 'url' column in rag_pages stores the source identifier
+                    "chunk_number": chunk_idx,
+                    "content": chunk_info["text"],
+                    "embedding": chunk_info["embedding"], # pgvector will handle this list of floats
+                    "metadata": chunk_info["metadata"] # Store all other metadata here
+                })
+            
+            try:
+                # Supabase client's insert is synchronous by default in v1.x, use to_thread for async
+                # For supabase-py v2.x, some operations might be async, or use a thread.
+                # For simplicity with current supabase-py, we'll assume sync operations wrapped in to_thread if needed.
+                # However, many client libraries are designed to be used in async contexts without explicit to_thread.
+                # Let's assume the client handles its own async execution or is fine in an executor.
+                # The Python Supabase client uses httpx which supports async.
+                
+                response = await asyncio.to_thread(
+                    self.client.table("rag_pages").insert(records_to_insert).execute
+                )
+
+                if response.data:
+                    print(f"DatabaseManager: Successfully stored {len(response.data)} chunks in Supabase.")
+                    # Return the IDs of the stored chunks if available and needed,
+                    # or simply the count or a success status.
+                    # The 'id' field in chunk_info was client-generated for the list, 
+                    # Supabase will assign its own primary key 'id'.
+                    # We might want to return these Supabase IDs.
+                    return [record['id'] for record in response.data]
+                else:
+                    # Check response.error if available
+                    error_info = getattr(response, 'error', None)
+                    print(f"DatabaseManager: Failed to store chunks. Response: {response.data}, Error: {error_info}")
+                    return []
+            except Exception as e:
+                print(f"DatabaseManager: Exception during storing chunks: {e}")
+                import traceback
+                traceback.print_exc()
+                return []
+
+        async def semantic_search(
+            self, 
+            query_embedding: List[float], 
+            limit: int, 
+            filter_metadata: Optional[Dict] = None
+        ) -> List[Dict[str, Any]]:
+            """Performs semantic search using the match_rag_pages RPC function."""
+            if not query_embedding:
+                print("DatabaseManager: Query embedding is empty. Returning no results.")
+                return []
+
+            rpc_params = {
+                "query_embedding": query_embedding,
+                "match_count": limit,
+            }
+            if filter_metadata: # The SQL function expects 'filter' as the key for metadata
+                rpc_params["filter"] = filter_metadata
+            else:
+                # Ensure the 'filter' parameter is always present, even if empty, as defined in SQL.
+                rpc_params["filter"] = {}
+
+
+            try:
+                # response = self.client.rpc("match_rag_pages", rpc_params).execute() # Sync version
+                response = await asyncio.to_thread(
+                     self.client.rpc("match_rag_pages", rpc_params).execute
+                )
+
+                if response.data:
+                    print(f"DatabaseManager: Found {len(response.data)} results from semantic search.")
+                    # The RPC function already returns content, metadata, and similarity
+                    return response.data
+                else:
+                    error_info = getattr(response, 'error', None)
+                    print(f"DatabaseManager: No results or error from semantic search. Response: {response.data}, Error: {error_info}")
+                    return []
+            except Exception as e:
+                print(f"DatabaseManager: Exception during semantic search: {e}")
+                import traceback
+                traceback.print_exc()
+                return []
+
+        async def get_all_sources(self) -> List[str]:
+            """Fetches all unique 'url' values from the rag_pages table."""
+            try:
+                # response = self.client.table("rag_pages").select("url", count="exact").execute() # Sync
+                response = await asyncio.to_thread(
+                    self.client.table("rag_pages").select("url", count="exact").execute
+                )
+                if response.data:
+                    sources = set(item["url"] for item in response.data)
+                    print(f"DatabaseManager: Retrieved {len(sources)} unique sources.")
+                    return list(sources)
+                else:
+                    error_info = getattr(response, 'error', None)
+                    print(f"DatabaseManager: Failed to get sources. Error: {error_info}")
+                    return []
+            except Exception as e:
+                print(f"DatabaseManager: Exception during get_all_sources: {e}")
+                return []
+    ```
+
+5.  **Modify `python/agents/knowledge_agent/retrieval.py` and `python/agents/knowledge_agent/agent.py`:**
+    *   These should already be designed to use `DatabaseManager` and `EmbeddingGenerator`. The main change is that `DatabaseManager` is now real.
+    *   Ensure `KnowledgeRAGAgent.query_knowledge_base` correctly formats the retrieved documents from Supabase (which should match the `KnowledgeBaseSearchResult` structure if the RPC function returns the right fields).
+
+    ```python
+    # python/agents/knowledge_agent/agent.py (Illustrative check for query_knowledge_base)
+    # ...
+    class KnowledgeRAGAgent:
+        # ... (__init__ as before)
+
+        async def query_knowledge_base(self, query: str, limit: int = 5, filter_metadata: Optional[Dict] = None) -> Dict[str, Any]:
+            """Queries the knowledge base and prepares a RAG response (still mock LLM part)."""
+            print(f"KnowledgeRAGAgent: Querying with: '{query}' using real DB Manager.")
+            # Retriever uses the real DB manager and real Embedding Generator
+            retrieved_docs_from_db = await self.retriever.retrieve_documents(query, limit, filter_metadata)
+            
+            if not retrieved_docs_from_db:
+                return {"response": "I could not find relevant information in the knowledge base.", "sources": [], "retrieved_count": 0}
+
+            # The 'retrieved_docs_from_db' should already be in the format:
+            # [{"id": ..., "content": ..., "metadata": ..., "similarity": ...}, ...]
+            # as returned by match_rag_pages RPC function.
+
+            context_for_llm = "\n\n".join([f"Source: {doc['metadata'].get('source_url', doc.get('url', 'Unknown'))}\nContent: {doc['content']}" for doc in retrieved_docs_from_db])
+            
+            # Mock LLM response generation using the context
+            # In a real scenario, this would call an LLM:
+            # llm_response = await self.llm_client.generate(prompt=RAG_SYSTEM_PROMPT, context=context_for_llm, query=query)
+            mock_llm_response_text = f"Based on retrieved documents for '{query}': {context_for_llm[:300]}..."
+            
+            sources_for_ui = []
+            for doc in retrieved_docs_from_db:
+                sources_for_ui.append({
+                    "id": doc.get("id"),
+                    "source": doc["metadata"].get("source_url", doc.get("url", "Unknown")), # Prefer source_url from metadata
+                    "content_preview": doc["content"][:150]+"...",
+                    "similarity": doc.get("similarity", 0.0), # Ensure 'similarity' is present
+                    "metadata": doc["metadata"]
+                })
+            
+            return {
+                "response": mock_llm_response_text, 
+                "sources": sources_for_ui, 
+                "retrieved_count": len(retrieved_docs_from_db)
+            }
+        # ... (ingest_document_chunks remains similar, it calls db_manager.store_chunks)
+    ```
+
+6.  **Verify `python/tools/knowledge_agent_tool.py`:**
+    *   No major changes should be needed here if it correctly instantiates `DatabaseManager` and `EmbeddingGenerator` and calls their methods. The tool acts as an orchestrator.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-14 completed.
+*   `supabase` library added to `requirements.txt` and installed.
+*   A Supabase project set up with the pgvector extension enabled and the schema from `rag-example.sql` applied.
+*   `SUPABASE_URL` and `SUPABASE_KEY` correctly set in the `.env` file.
+*   `EmbeddingGenerator` from Task 14 is functional.
+
+**Integration with Agent Zero:**
+*   The `KnowledgeAgentTool` now interacts with a real Supabase backend for storing and retrieving vectorized document chunks.
+*   Embeddings generated by `EmbeddingGenerator` are stored in Supabase.
+*   Semantic search leverages pgvector via the `match_rag_pages` RPC function.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `supabase` to `requirements.txt`.
+*   Ensure the Docker container has network access to the Supabase instance.
+*   The `SUPABASE_URL` and `SUPABASE_KEY` environment variables must be available to the container at runtime.
+
+**Summary of Task 16:**
+This task makes the `KnowledgeAgentTool` significantly more functional by replacing its mock database component with a real Supabase client. It can now store document chunks with their OpenAI-generated embeddings into a pgvector-enabled Supabase table and perform semantic similarity searches using a custom SQL function. This is a core part of the RAG pipeline. The RAG LLM response generation part within `KnowledgeRAGAgent` is still mocked.
+
+Please confirm to proceed.

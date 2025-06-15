@@ -1,0 +1,654 @@
+## Task 3: Implement Server-Side WebSocket and StreamTransport Management
+
+**Focus:**
+This task focuses on setting up the server-side infrastructure for handling WebSocket connections and managing the `StreamTransport` instance. This involves modifying `run_ui.py` (or a similar entry point for the Flask/A2WSCI server) to include WebSocket endpoints and to make the `StreamTransport` accessible to the `StreamProtocolTool`. We will use a simple WebSocket library for Python, like `websockets` or `flask-sock` (if Flask is the base server). For this example, I'll assume a Flask-based setup and use `flask-sock` as it integrates nicely. If Agent Zero uses A2WSCI directly or another framework, the WebSocket handling part would need to be adapted.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add the WebSocket library. If using Flask, `flask-sock` is a good choice.
+
+    ```
+# requirements.txt
+    # ... (existing requirements)
+    flask-sock # Or another suitable WebSocket library like 'websockets'
+```
+
+2.  **Modify `run_ui.py` (or main server script):**
+
+    *   Initialize `Flask-Sock`.
+    *   Create a global or app-contextual instance of `StreamTransport` from `stream_protocol_tool.py`.
+    *   Define a WebSocket route (e.g., `/ws/<thread_id>`).
+    *   In the WebSocket handler:
+        *   Register new connections with the `StreamTransport`.
+        *   Listen for incoming messages (these are client-to-server control messages for the stream, or potentially client-initiated AG-UI events, though the primary flow is server-to-client for AG-UI events).
+        *   Handle WebSocket disconnections by unregistering from `StreamTransport`.
+    *   Make the `StreamTransport` instance accessible, perhaps by attaching it to the Flask `app` object or by ensuring the singleton pattern in `StreamTransport` (as stubbed in Task 2) works correctly in the application context.
+
+    ```python
+# run_ui.py (Illustrative Changes - adapt to Agent Zero's actual server setup)
+    # ... (existing imports)
+    from flask import Flask, request, jsonify # Ensure jsonify is imported
+    from flask_sock import Sock # New import
+    import asyncio # New import
+    import json # New import
+
+    from python.helpers import runtime, dotenv, process, api, settings # Assuming these exist
+    from python.helpers.api import ApiHandler # Assuming this exists
+    from agent import AgentContext # Assuming this exists
+
+    # Import StreamTransport from the StreamProtocolTool module
+    from python.tools.stream_protocol_tool import StreamTransport, RunAgentInput, StreamProtocolTool # Added StreamProtocolTool for context
+
+    # ... (existing app initialization)
+    app = Flask("app") # Or however Agent Zero initializes Flask
+    app.config["JSON_SORT_KEYS"] = False
+    sock = Sock(app) # Initialize Flask-Sock
+
+    # Create and store the global StreamTransport instance
+    # This ensures all parts of the application use the same transport layer.
+    # The Singleton pattern in StreamTransport from Task 2 also achieves this.
+    # Explicitly creating it here and making it available is also an option.
+    app.stream_transport = StreamTransport() 
+
+    # ... (existing API routes from agent zero full code.md, e.g., /api/message, /api/poll)
+
+    # New WebSocket route for AG-UI streaming
+    @sock.route('/ws/agui/<string:thread_id>')
+    async def agui_websocket(ws, thread_id: str):
+        """
+        WebSocket endpoint for AG-UI protocol communication.
+        Clients connect to ws://server/ws/agui/{thread_id}
+        """
+        user_id = request.args.get('userId') # Optional user_id from query params
+        context_id_for_agent = request.args.get('contextId', thread_id) # Use thread_id as context_id if not specified
+
+        # Get the global StreamTransport instance
+        transport = app.stream_transport 
+        
+        connection_id = await transport.register_connection(ws, thread_id, user_id)
+        print(f"WebSocket connection opened: id={connection_id}, thread_id={thread_id}, user_id={user_id}")
+
+        try:
+            # Initial message to client confirming connection (optional)
+            # await ws.send(json.dumps({"type": "connection_ack", "connection_id": connection_id, "thread_id": thread_id}))
+
+            # Get or create AgentContext. This ensures the context is aware of the thread_id and user_id.
+            # The StreamProtocolTool will later use agent.get_thread_id() which gets it from the context.
+            context = AgentContext.get(id=context_id_for_agent, thread_id=thread_id, user_id=user_id)
+            
+            # If there's a specific action to take upon WebSocket connection (e.g., start a session via the tool)
+            # you could do it here. For now, we assume the client or another API call might trigger a session start.
+            # Example:
+            # agent_instance = context.agent0 or Agent(context=context) # Simplified agent retrieval
+            # stream_tool = StreamProtocolTool(agent_instance)
+            # await stream_tool.execute(action="start_session", thread_id=thread_id, user_id=user_id)
+
+
+            while True:
+                # This loop primarily listens for client messages (e.g., client-side pings, control messages)
+                # Most AG-UI events are server-to-client, pushed via transport.emit_event()
+                try:
+                    # Set a timeout to prevent blocking indefinitely if the client is silent
+                    # but still connected. This allows the server to periodically check connection state.
+                    message_str = await asyncio.wait_for(ws.receive(), timeout=60.0) 
+                    if message_str is None: # Connection closed by client
+                        print(f"WebSocket client for thread {thread_id} (conn: {connection_id}) sent None, closing.")
+                        break 
+
+                    print(f"WebSocket (thread {thread_id}, conn: {connection_id}) received: {message_str[:200]}")
+                    
+                    # Handle incoming messages if the AG-UI protocol defines client-to-server messages
+                    # For example, a client might send a "request_current_state" or custom commands.
+                    # If AG-UI primarily uses HTTP POST for RunAgentInput, this loop might mostly handle pings/pong or control.
+                    try:
+                        data = json.loads(message_str)
+                        if data.get("type") == "ping":
+                            await ws.send(json.dumps({"type": "pong"}))
+                        # Add other client-to-server message handling here if needed
+                        # For example, if client directly sends RunAgentInput-like structures over WS:
+                        # elif data.get("action") == "run_agent_input_ws":
+                        #     stream_tool = StreamProtocolTool(context.agent0 or Agent(context=context))
+                        #     await stream_tool.execute(action="handle_input", input_data=data.get("payload", {}))
+
+                    except json.JSONDecodeError:
+                        print(f"WebSocket (thread {thread_id}, conn: {connection_id}) received invalid JSON: {message_str[:200]}")
+                    except Exception as e_inner:
+                        print(f"WebSocket (thread {thread_id}, conn: {connection_id}) error processing message: {e_inner}")
+
+                except asyncio.TimeoutError:
+                    # No message received in timeout period, good time to check ws.connected or send a ping
+                    if ws.closed:
+                        print(f"WebSocket (thread {thread_id}, conn: {connection_id}) detected closed during timeout.")
+                        break
+                    # Optionally send a server-side ping here
+                    # await ws.send(json.dumps({"type": "server_ping"}))
+                    pass # Continue listening
+                except Exception as e_outer: # Catch other WebSocket errors during receive
+                    print(f"WebSocket (thread {thread_id}, conn: {connection_id}) receive error: {e_outer}")
+                    break
+
+
+        except Exception as e:
+            print(f"WebSocket error for thread {thread_id} (conn: {connection_id}): {e}")
+        finally:
+            transport.unregister_connection(connection_id)
+            print(f"WebSocket connection closed: id={connection_id}, thread_id={thread_id}")
+
+    # ... (The rest of run_ui.py, including main block to run the app)
+    # Ensure the main execution block correctly runs the Flask app with WebSocket support
+    # For example, if using Gunicorn or another WSGI server, ensure it's compatible with WebSockets.
+    # For development, app.run() might need specific configurations or a different runner like A2WSCI.
+
+    # Existing main section from agent zero full code.md `run_ui.py`
+    # This needs to be adapted if the server is not Flask, or if A2WSCI is used differently.
+    # For Flask with flask-sock, app.run() is fine for development.
+    if __name__ == "__main__":
+        runtime.initialize()
+        dotenv.load_dotenv()
+        
+        # Initialize settings and other startup tasks
+        settings.initialize_settings() 
+        api.initialize_api_handlers(app) # Assuming this registers HTTP routes
+
+        # Start the job loop (from existing Agent Zero code)
+        # asyncio.create_task(job_loop.run_loop()) # If job_loop is async
+
+        port = runtime.get_port()
+        host = runtime.get_host()
+        
+        print(f"Agent Zero UI starting on http://{host}:{port}")
+        print(f"WebSocket endpoint available at ws://{host}:{port}/ws/agui/<thread_id>")
+
+        # For Flask + Flask-Sock, app.run() is sufficient for dev.
+        # For production, a more robust ASGI/WSGI server setup is needed (e.g., Gunicorn with Uvicorn workers for ASGI parts).
+        # Agent Zero's existing run_ui.py uses a2wsgi.WSGIMiddleware to serve Flask via ASGI.
+        # To integrate flask-sock with a2wsgi, no special changes are usually needed as flask-sock
+        # relies on the underlying WSGI server's WebSocket capabilities (often via eventlet or gevent).
+        # If Agent Zero directly uses an ASGI framework like FastAPI or Starlette, native WebSocket support would be used.
+        
+        # Assuming Agent Zero continues with its A2WSCI approach:
+        from werkzeug.serving import run_simple # For development with Flask's built-in server
+        from a2wsgi import ASGIMiddleware
+
+        if runtime.is_development():
+             # Flask's built-in server with flask-sock works well for dev
+            app.run(host=host, port=port, debug=False, threaded=True) # threaded=True for concurrent requests
+        else:
+            # For production, using A2WSCI (as hinted in original Agent Zero setup)
+            # Ensure the production WSGI/ASGI server (e.g., Uvicorn, Hypercorn) is configured correctly.
+            # If A2WSCI is wrapping Flask, flask-sock should work if the ASGI server supports WebSocket passthrough.
+            # However, a pure ASGI framework would be more direct for WebSockets.
+            # For simplicity, we'll stick to Flask's dev server for this task's illustration.
+            # Production deployment would need careful consideration of the WSGI/ASGI server.
+            print("Production server setup with A2WSCI would need specific configuration for WebSockets.")
+            print("Running with Flask's development server for now.")
+            app.run(host=host, port=port, debug=False, threaded=True)
+```
+
+3.  **Update `python/tools/stream_protocol_tool.py` (StreamTransport):**
+    *   The `StreamTransport` class was made a singleton placeholder in Task 2. Now, it will be instantiated globally in `run_ui.py` and passed to, or accessed by, the `StreamProtocolTool`. The `emit_event` method in `StreamTransport` will now interact with the actual WebSocket connections registered by the server endpoint.
+
+    ```python
+# python/tools/stream_protocol_tool.py (Illustrative Changes for StreamTransport)
+    # ... (StreamEventType, RunAgentInput, StreamEvent dataclasses)
+
+    class StreamTransport: # No longer a singleton here; instance managed by app
+        """
+        Transport layer for AG-UI events. Manages active WebSocket connections.
+        An instance of this class should be globally available in the application.
+        """
+        def __init__(self):
+            self.connections: Dict[str, Dict[str, Any]] = {} # connection_id -> {"websocket": ws, "thread_id": str, "user_id": str}
+            self.lock = asyncio.Lock() # To protect access to self.connections
+            print("StreamTransport: Instance created.")
+            
+        async def emit_event(self, event: StreamEvent):
+            """Emit event to all connected clients relevant to the event's thread_id."""
+            event_data_str = json.dumps({
+                "id": event.event_id,
+                "type": event.type.value,
+                "payload": event.payload,
+                "timestamp": event.timestamp,
+                "threadId": event.thread_id,
+                "userId": event.user_id
+            })
+            
+            connections_to_send = []
+            async with self.lock:
+                for conn_id, conn_info in self.connections.items():
+                    if conn_info.get("thread_id") == event.thread_id:
+                        connections_to_send.append(conn_info["websocket"])
+            
+            if not connections_to_send:
+                # print(f"StreamTransport: No active connections for thread_id {event.thread_id} to emit event {event.type.value}")
+                return
+
+            for ws in connections_to_send:
+                try:
+                    if not ws.closed:
+                        await ws.send(event_data_str) # Use send() for flask-sock
+                    else:
+                        print(f"StreamTransport: WebSocket for thread {event.thread_id} was closed. Cannot send event.")
+                        # Consider removing closed WebSockets from self.connections here or during unregister.
+                except Exception as e:
+                    print(f"StreamTransport: Error sending event to WebSocket for thread {event.thread_id}: {e}")
+                    # Consider removing this WebSocket or handling disconnection.
+        
+        async def register_connection(self, websocket, thread_id: str, user_id: Optional[str] = None) -> str:
+            """Register new websocket connection."""
+            connection_id = str(uuid.uuid4())
+            async with self.lock:
+                self.connections[connection_id] = {
+                    "websocket": websocket,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "created_at": datetime.utcnow()
+                }
+            print(f"StreamTransport: Registered WS connection {connection_id} for thread {thread_id}")
+            return connection_id
+        
+        async def unregister_connection(self, connection_id: str):
+            """Remove websocket connection."""
+            async with self.lock:
+                if connection_id in self.connections:
+                    del self.connections[connection_id]
+                    print(f"StreamTransport: Unregistered WS connection {connection_id}")
+
+    class StreamProtocolTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+            # Access the globally managed StreamTransport instance (e.g., from Flask app context)
+            # This assumes run_ui.py sets app.stream_transport
+            current_app = agent.context.get_custom_data('flask_app_instance') # This needs to be set during app init
+            if not current_app or not hasattr(current_app, 'stream_transport'):
+                raise RuntimeError("StreamTransport not initialized or not found in Flask app context.")
+            self.transport: StreamTransport = current_app.stream_transport
+            
+            self.active_threads: Dict[str, Dict[str, Any]] = {} 
+            self.middleware_stack: List[callable] = []
+            print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using shared StreamTransport.")
+
+        # ... (The rest of StreamProtocolTool methods from Task 2, like _emit_event, _handle_input, etc.
+        # They will now use self.transport which refers to the globally managed instance.)
+        # Make sure _emit_event_internal also uses self.transport
+        async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                                 thread_id: Optional[str], user_id: Optional[str]):
+            event = StreamEvent(
+                type=event_type,
+                payload=payload,
+                thread_id=thread_id,
+                user_id=user_id
+            )
+            await self.transport.emit_event(event)
+```
+
+4.  **Update `python/helpers/runtime.py` or `python/helpers/api.py` for app context:**
+    *   Agent Zero's `ApiHandler` or a similar central place might need a way to pass the Flask `app` instance to the `AgentContext` or make `app.stream_transport` accessible.
+    *   One way is to store the `app` instance in `AgentContext.custom_data` when the context is first created or accessed within an app request.
+
+    ```python
+# python/helpers/api.py (Illustrative change in ApiHandler or context creation)
+    from flask import current_app # If using Flask application context
+
+    class ApiHandler:
+        # ...
+        def get_context(self, ctxid: Optional[str] = None) -> AgentContext:
+            # When getting/creating a context, ensure it knows about the app instance
+            # if it's within a Flask request context.
+            context = AgentContext.get(ctxid) # Or your existing context retrieval logic
+            if 'flask_app_instance' not in context.custom_data and current_app:
+                context.set_custom_data('flask_app_instance', current_app._get_current_object())
+            return context
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1 and 2 completed.
+*   A running Flask (or equivalent) server setup in Agent Zero (`run_ui.py`).
+*   Installation of a WebSocket library (e.g., `pip install flask-sock`).
+
+**Integration with Agent Zero:**
+*   `run_ui.py` is modified to handle WebSocket connections on a specific route.
+*   A single, shared `StreamTransport` instance is created and managed by `run_ui.py`.
+*   `StreamProtocolTool` instances will now use this shared `StreamTransport` for emitting events to the correct WebSockets.
+*   Agent Zero's `AgentContext` may need a way to access this global `StreamTransport` or the `app` instance, so tools can use it.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. This task focuses on the WebSocket communication layer.
+
+**Docker Compatibility:**
+*   Add `flask-sock` (or chosen WebSocket library) to `requirements.txt`.
+*   The Dockerfile (`docker/base/fs/ins/install_python.sh` or `docker/run/fs/ins/install_A0.sh`) which handles `pip install -r requirements.txt` will automatically pick this up. No other changes to Dockerfiles should be needed *for this specific task's dependencies*.
+
+**Summary of Task 3:**
+This task establishes the server-side WebSocket handling mechanism. It modifies the main server script (`run_ui.py`) to listen for WebSocket connections, registers these connections with a globally managed `StreamTransport` instance, and ensures that the `StreamProtocolTool` can use this transport to send AG-UI events over the established WebSockets. This is a crucial step for enabling real-time, bi-directional communication between the Agent Zero backend and any AG-UI compliant frontend.
+
+Please confirm to proceed.Okay, let's move on to Task 3.
+
+## Task 3: Implement Server-Side WebSocket and StreamTransport Management
+
+**Focus:**
+This task focuses on setting up the server-side infrastructure for handling WebSocket connections and managing the `StreamTransport` instance. This involves modifying `run_ui.py` (or a similar entry point for the Flask/A2WSCI server) to include WebSocket endpoints and to make the `StreamTransport` accessible to the `StreamProtocolTool`. We will use a simple WebSocket library for Python, like `websockets` or `flask-sock` (if Flask is the base server). For this example, I'll assume a Flask-based setup and use `flask-sock` as it integrates nicely. If Agent Zero uses A2WSCI directly or another framework, the WebSocket handling part would need to be adapted.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add the WebSocket library. If using Flask, `flask-sock` is a good choice.
+
+    ```
+    # requirements.txt
+    # ... (existing requirements)
+    flask-sock # Or another suitable WebSocket library like 'websockets'
+    ```
+
+2.  **Modify `run_ui.py` (or main server script):**
+
+    *   Initialize `Flask-Sock`.
+    *   Create a global or app-contextual instance of `StreamTransport` from `stream_protocol_tool.py`.
+    *   Define a WebSocket route (e.g., `/ws/<thread_id>`).
+    *   In the WebSocket handler:
+        *   Register new connections with the `StreamTransport`.
+        *   Listen for incoming messages (these are client-to-server control messages for the stream, or potentially client-initiated AG-UI events, though the primary flow is server-to-client for AG-UI events).
+        *   Handle WebSocket disconnections by unregistering from `StreamTransport`.
+    *   Make the `StreamTransport` instance accessible, perhaps by attaching it to the Flask `app` object or by ensuring the singleton pattern in `StreamTransport` (as stubbed in Task 2) works correctly in the application context.
+
+    ```python
+    # run_ui.py (Illustrative Changes - adapt to Agent Zero's actual server setup)
+    # ... (existing imports)
+    from flask import Flask, request, jsonify # Ensure jsonify is imported
+    from flask_sock import Sock # New import
+    import asyncio # New import
+    import json # New import
+
+    from python.helpers import runtime, dotenv, process, api, settings # Assuming these exist
+    from python.helpers.api import ApiHandler # Assuming this exists
+    from agent import AgentContext # Assuming this exists
+
+    # Import StreamTransport from the StreamProtocolTool module
+    from python.tools.stream_protocol_tool import StreamTransport, RunAgentInput, StreamProtocolTool # Added StreamProtocolTool for context
+
+    # ... (existing app initialization)
+    app = Flask("app") # Or however Agent Zero initializes Flask
+    app.config["JSON_SORT_KEYS"] = False
+    sock = Sock(app) # Initialize Flask-Sock
+
+    # Create and store the global StreamTransport instance
+    # This ensures all parts of the application use the same transport layer.
+    # The Singleton pattern in StreamTransport from Task 2 also achieves this.
+    # Explicitly creating it here and making it available is also an option.
+    app.stream_transport = StreamTransport() 
+
+    # ... (existing API routes from agent zero full code.md, e.g., /api/message, /api/poll)
+
+    # New WebSocket route for AG-UI streaming
+    @sock.route('/ws/agui/<string:thread_id>')
+    async def agui_websocket(ws, thread_id: str):
+        """
+        WebSocket endpoint for AG-UI protocol communication.
+        Clients connect to ws://server/ws/agui/{thread_id}
+        """
+        user_id = request.args.get('userId') # Optional user_id from query params
+        context_id_for_agent = request.args.get('contextId', thread_id) # Use thread_id as context_id if not specified
+
+        # Get the global StreamTransport instance
+        transport = app.stream_transport 
+        
+        connection_id = await transport.register_connection(ws, thread_id, user_id)
+        print(f"WebSocket connection opened: id={connection_id}, thread_id={thread_id}, user_id={user_id}")
+
+        try:
+            # Initial message to client confirming connection (optional)
+            # await ws.send(json.dumps({"type": "connection_ack", "connection_id": connection_id, "thread_id": thread_id}))
+
+            # Get or create AgentContext. This ensures the context is aware of the thread_id and user_id.
+            # The StreamProtocolTool will later use agent.get_thread_id() which gets it from the context.
+            context = AgentContext.get(id=context_id_for_agent, thread_id=thread_id, user_id=user_id)
+            
+            # If there's a specific action to take upon WebSocket connection (e.g., start a session via the tool)
+            # you could do it here. For now, we assume the client or another API call might trigger a session start.
+            # Example:
+            # agent_instance = context.agent0 or Agent(context=context) # Simplified agent retrieval
+            # stream_tool = StreamProtocolTool(agent_instance)
+            # await stream_tool.execute(action="start_session", thread_id=thread_id, user_id=user_id)
+
+
+            while True:
+                # This loop primarily listens for client messages (e.g., client-side pings, control messages)
+                # Most AG-UI events are server-to-client, pushed via transport.emit_event()
+                try:
+                    # Set a timeout to prevent blocking indefinitely if the client is silent
+                    # but still connected. This allows the server to periodically check connection state.
+                    message_str = await asyncio.wait_for(ws.receive(), timeout=60.0) 
+                    if message_str is None: # Connection closed by client
+                        print(f"WebSocket client for thread {thread_id} (conn: {connection_id}) sent None, closing.")
+                        break 
+
+                    print(f"WebSocket (thread {thread_id}, conn: {connection_id}) received: {message_str[:200]}")
+                    
+                    # Handle incoming messages if the AG-UI protocol defines client-to-server messages
+                    # For example, a client might send a "request_current_state" or custom commands.
+                    # If AG-UI primarily uses HTTP POST for RunAgentInput, this loop might mostly handle pings/pong or control.
+                    try:
+                        data = json.loads(message_str)
+                        if data.get("type") == "ping":
+                            await ws.send(json.dumps({"type": "pong"}))
+                        # Add other client-to-server message handling here if needed
+                        # For example, if client directly sends RunAgentInput-like structures over WS:
+                        # elif data.get("action") == "run_agent_input_ws":
+                        #     stream_tool = StreamProtocolTool(context.agent0 or Agent(context=context))
+                        #     await stream_tool.execute(action="handle_input", input_data=data.get("payload", {}))
+
+                    except json.JSONDecodeError:
+                        print(f"WebSocket (thread {thread_id}, conn: {connection_id}) received invalid JSON: {message_str[:200]}")
+                    except Exception as e_inner:
+                        print(f"WebSocket (thread {thread_id}, conn: {connection_id}) error processing message: {e_inner}")
+
+                except asyncio.TimeoutError:
+                    # No message received in timeout period, good time to check ws.connected or send a ping
+                    if ws.closed:
+                        print(f"WebSocket (thread {thread_id}, conn: {connection_id}) detected closed during timeout.")
+                        break
+                    # Optionally send a server-side ping here
+                    # await ws.send(json.dumps({"type": "server_ping"}))
+                    pass # Continue listening
+                except Exception as e_outer: # Catch other WebSocket errors during receive
+                    print(f"WebSocket (thread {thread_id}, conn: {connection_id}) receive error: {e_outer}")
+                    break
+
+
+        except Exception as e:
+            print(f"WebSocket error for thread {thread_id} (conn: {connection_id}): {e}")
+        finally:
+            transport.unregister_connection(connection_id)
+            print(f"WebSocket connection closed: id={connection_id}, thread_id={thread_id}")
+
+    # ... (The rest of run_ui.py, including main block to run the app)
+    # Ensure the main execution block correctly runs the Flask app with WebSocket support
+    # For example, if using Gunicorn or another WSGI server, ensure it's compatible with WebSockets.
+    # For development, app.run() might need specific configurations or a different runner like A2WSCI.
+
+    # Existing main section from agent zero full code.md `run_ui.py`
+    # This needs to be adapted if the server is not Flask, or if A2WSCI is used differently.
+    # For Flask with flask-sock, app.run() is fine for development.
+    if __name__ == "__main__":
+        runtime.initialize()
+        dotenv.load_dotenv()
+        
+        # Initialize settings and other startup tasks
+        settings.initialize_settings() 
+        api.initialize_api_handlers(app) # Assuming this registers HTTP routes
+
+        # Start the job loop (from existing Agent Zero code)
+        # asyncio.create_task(job_loop.run_loop()) # If job_loop is async
+
+        port = runtime.get_port()
+        host = runtime.get_host()
+        
+        print(f"Agent Zero UI starting on http://{host}:{port}")
+        print(f"WebSocket endpoint available at ws://{host}:{port}/ws/agui/<thread_id>")
+
+        # For Flask + Flask-Sock, app.run() is sufficient for dev.
+        # For production, a more robust ASGI/WSGI server setup is needed (e.g., Gunicorn with Uvicorn workers for ASGI parts).
+        # Agent Zero's existing run_ui.py uses a2wsgi.WSGIMiddleware to serve Flask via ASGI.
+        # To integrate flask-sock with a2wsgi, no special changes are usually needed as flask-sock
+        # relies on the underlying WSGI server's WebSocket capabilities (often via eventlet or gevent).
+        # If Agent Zero directly uses an ASGI framework like FastAPI or Starlette, native WebSocket support would be used.
+        
+        # Assuming Agent Zero continues with its A2WSCI approach:
+        from werkzeug.serving import run_simple # For development with Flask's built-in server
+        from a2wsgi import ASGIMiddleware
+
+        if runtime.is_development():
+             # Flask's built-in server with flask-sock works well for dev
+            app.run(host=host, port=port, debug=False, threaded=True) # threaded=True for concurrent requests
+        else:
+            # For production, using A2WSCI (as hinted in original Agent Zero setup)
+            # Ensure the production WSGI/ASGI server (e.g., Uvicorn, Hypercorn) is configured correctly.
+            # If A2WSCI is wrapping Flask, flask-sock should work if the ASGI server supports WebSocket passthrough.
+            # However, a pure ASGI framework would be more direct for WebSockets.
+            # For simplicity, we'll stick to Flask's dev server for this task's illustration.
+            # Production deployment would need careful consideration of the WSGI/ASGI server.
+            print("Production server setup with A2WSCI would need specific configuration for WebSockets.")
+            print("Running with Flask's development server for now.")
+            app.run(host=host, port=port, debug=False, threaded=True)
+
+    ```
+
+3.  **Update `python/tools/stream_protocol_tool.py` (StreamTransport):**
+    *   The `StreamTransport` class was made a singleton placeholder in Task 2. Now, it will be instantiated globally in `run_ui.py` and passed to, or accessed by, the `StreamProtocolTool`. The `emit_event` method in `StreamTransport` will now interact with the actual WebSocket connections registered by the server endpoint.
+
+    ```python
+    # python/tools/stream_protocol_tool.py (Illustrative Changes for StreamTransport)
+    # ... (StreamEventType, RunAgentInput, StreamEvent dataclasses)
+
+    class StreamTransport: # No longer a singleton here; instance managed by app
+        """
+        Transport layer for AG-UI events. Manages active WebSocket connections.
+        An instance of this class should be globally available in the application.
+        """
+        def __init__(self):
+            self.connections: Dict[str, Dict[str, Any]] = {} # connection_id -> {"websocket": ws, "thread_id": str, "user_id": str}
+            self.lock = asyncio.Lock() # To protect access to self.connections
+            print("StreamTransport: Instance created.")
+            
+        async def emit_event(self, event: StreamEvent):
+            """Emit event to all connected clients relevant to the event's thread_id."""
+            event_data_str = json.dumps({
+                "id": event.event_id,
+                "type": event.type.value,
+                "payload": event.payload,
+                "timestamp": event.timestamp,
+                "threadId": event.thread_id,
+                "userId": event.user_id
+            })
+            
+            connections_to_send = []
+            async with self.lock:
+                for conn_id, conn_info in self.connections.items():
+                    if conn_info.get("thread_id") == event.thread_id:
+                        connections_to_send.append(conn_info["websocket"])
+            
+            if not connections_to_send:
+                # print(f"StreamTransport: No active connections for thread_id {event.thread_id} to emit event {event.type.value}")
+                return
+
+            for ws in connections_to_send:
+                try:
+                    if not ws.closed:
+                        await ws.send(event_data_str) # Use send() for flask-sock
+                    else:
+                        print(f"StreamTransport: WebSocket for thread {event.thread_id} was closed. Cannot send event.")
+                        # Consider removing closed WebSockets from self.connections here or during unregister.
+                except Exception as e:
+                    print(f"StreamTransport: Error sending event to WebSocket for thread {event.thread_id}: {e}")
+                    # Consider removing this WebSocket or handling disconnection.
+        
+        async def register_connection(self, websocket, thread_id: str, user_id: Optional[str] = None) -> str:
+            """Register new websocket connection."""
+            connection_id = str(uuid.uuid4())
+            async with self.lock:
+                self.connections[connection_id] = {
+                    "websocket": websocket,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "created_at": datetime.utcnow()
+                }
+            print(f"StreamTransport: Registered WS connection {connection_id} for thread {thread_id}")
+            return connection_id
+        
+        async def unregister_connection(self, connection_id: str):
+            """Remove websocket connection."""
+            async with self.lock:
+                if connection_id in self.connections:
+                    del self.connections[connection_id]
+                    print(f"StreamTransport: Unregistered WS connection {connection_id}")
+
+    class StreamProtocolTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+            # Access the globally managed StreamTransport instance (e.g., from Flask app context)
+            # This assumes run_ui.py sets app.stream_transport
+            current_app = agent.context.get_custom_data('flask_app_instance') # This needs to be set during app init
+            if not current_app or not hasattr(current_app, 'stream_transport'):
+                raise RuntimeError("StreamTransport not initialized or not found in Flask app context.")
+            self.transport: StreamTransport = current_app.stream_transport
+            
+            self.active_threads: Dict[str, Dict[str, Any]] = {} 
+            self.middleware_stack: List[callable] = []
+            print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using shared StreamTransport.")
+
+        # ... (The rest of StreamProtocolTool methods from Task 2, like _emit_event, _handle_input, etc.
+        # They will now use self.transport which refers to the globally managed instance.)
+        # Make sure _emit_event_internal also uses self.transport
+        async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                                 thread_id: Optional[str], user_id: Optional[str]):
+            event = StreamEvent(
+                type=event_type,
+                payload=payload,
+                thread_id=thread_id,
+                user_id=user_id
+            )
+            await self.transport.emit_event(event) 
+    ```
+
+4.  **Update `python/helpers/runtime.py` or `python/helpers/api.py` for app context:**
+    *   Agent Zero's `ApiHandler` or a similar central place might need a way to pass the Flask `app` instance to the `AgentContext` or make `app.stream_transport` accessible.
+    *   One way is to store the `app` instance in `AgentContext.custom_data` when the context is first created or accessed within an app request.
+
+    ```python
+    # python/helpers/api.py (Illustrative change in ApiHandler or context creation)
+    from flask import current_app # If using Flask application context
+
+    class ApiHandler:
+        # ...
+        def get_context(self, ctxid: Optional[str] = None) -> AgentContext:
+            # When getting/creating a context, ensure it knows about the app instance
+            # if it's within a Flask request context.
+            context = AgentContext.get(ctxid) # Or your existing context retrieval logic
+            if 'flask_app_instance' not in context.custom_data and current_app:
+                context.set_custom_data('flask_app_instance', current_app._get_current_object())
+            return context
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1 and 2 completed.
+*   A running Flask (or equivalent) server setup in Agent Zero (`run_ui.py`).
+*   Installation of a WebSocket library (e.g., `pip install flask-sock`).
+
+**Integration with Agent Zero:**
+*   `run_ui.py` is modified to handle WebSocket connections on a specific route.
+*   A single, shared `StreamTransport` instance is created and managed by `run_ui.py`.
+*   `StreamProtocolTool` instances will now use this shared `StreamTransport` for emitting events to the correct WebSockets.
+*   Agent Zero's `AgentContext` may need a way to access this global `StreamTransport` or the `app` instance, so tools can use it.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. This task focuses on the WebSocket communication layer.
+
+**Docker Compatibility:**
+*   Add `flask-sock` (or chosen WebSocket library) to `requirements.txt`.
+*   The Dockerfile (`docker/base/fs/ins/install_python.sh` or `docker/run/fs/ins/install_A0.sh`) which handles `pip install -r requirements.txt` will automatically pick this up. No other changes to Dockerfiles should be needed *for this specific task's dependencies*.
+
+**Summary of Task 3:**
+This task establishes the server-side WebSocket handling mechanism. It modifies the main server script (`run_ui.py`) to listen for WebSocket connections, registers these connections with a globally managed `StreamTransport` instance, and ensures that the `StreamProtocolTool` can use this transport to send AG-UI events over the established WebSockets. This is a crucial step for enabling real-time, bi-directional communication between the Agent Zero backend and any AG-UI compliant frontend.
+
+Please confirm to proceed.

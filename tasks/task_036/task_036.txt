@@ -1,0 +1,683 @@
+## Task 36: Comprehensive Update of `settings.yaml` / `.env` and Agent Configuration
+
+**Focus:**
+This task focuses on ensuring all new tools, models, API keys, and configurations introduced or anticipated by the "Phoenix" upgrade are manageable through Agent Zero's existing settings mechanisms (primarily `.env` and `settings.yaml`, and how `python/helpers/settings.py` loads and provides them).
+
+**Key Areas for Configuration:**
+
+1.  **BrowserAgentTool (Playwright):**
+    *   `BROWSER_AGENT_HEADLESS` (boolean, e.g., `true`/`false`)
+    *   `BROWSER_AGENT_BROWSER_TYPE` (string, e.g., `"chromium"`, `"firefox"`)
+    *   `BROWSER_AGENT_PLAYWRIGHT_TIMEOUT` (integer, milliseconds, e.g., `30000`)
+    *   `BROWSER_LLM_MODEL` (string, for `act` and `extract` actions, e.g., `"gpt-4o-mini"`)
+
+2.  **WebCrawlerTool (Crawl4AI):**
+    *   `WEB_CRAWLER_MAX_CONCURRENT` (integer, e.g., `5`)
+    *   `WEB_CRAWLER_DEFAULT_MAX_DEPTH` (integer, e.g., `2`)
+    *   `WEB_CRAWLER_DEFAULT_MAX_PAGES` (integer, e.g., `50`)
+    *   `WEB_CRAWLER_BROWSER_HEADLESS` (boolean, for crawl4ai's browser)
+    *   `WEB_CRAWLER_CACHE_MODE` (string, e.g., `"BYPASS"`, `"USE_CACHE"`)
+
+3.  **KnowledgeAgentTool (Foundational RAG):**
+    *   `SUPABASE_URL` (already in `.env.example` from `foundational-rag-agent`)
+    *   `SUPABASE_KEY` (already in `.env.example`)
+    *   `OPENAI_EMBEDDING_MODEL` (already `EMBEDDING_MODEL` in `.env.example`)
+    *   `RAG_LLM_MODEL` (string, for answer generation, e.g., `"gpt-4o-mini"`) - This might be the same as `OPENAI_MODEL` or a separate one.
+
+4.  **MemoryAgentTool (Mem0):**
+    *   `MEM0_CONFIG_JSON` (string, a JSON string for mem0's own configuration, e.g., `{"llm": {"provider": "openai", "config": {"model": "gpt-3.5-turbo"}}, "embedder": ...}`. Alternatively, individual keys if preferred.)
+    *   `MEM0_PERSISTENCE_DIR_BASE` (string, e.g., `"memory/mem0_data"`)
+    *   `MEM0_AGENT_ID_STRATEGY` (string, e.g., `"user_id"`, `"thread_id"`, `"context_id"`) to define how the `agent_id` for `Mem0MemorySystem` is derived.
+
+5.  **ChatterboxTTSTool:**
+    *   `CHATTERBOX_DEVICE` (string, e.g., `"cuda"`, `"cpu"`, `"mps"`)
+    *   `CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH` (string, optional path to a default voice)
+    *   `CHATTERBOX_OUTPUT_DIR_RELATIVE` (string, e.g., `"tmp/audio_outputs"`, relative to work_dir)
+
+6.  **General Agent Zero / StreamProtocol:**
+    *   `AGENT_DEFAULT_USER_ID` (string, e.g., `"default_user"`)
+    *   `STREAM_PROTOCOL_WEBSOCKET_TIMEOUT` (integer, seconds, e.g., `60`)
+
+**File Paths and Code Changes:**
+
+1.  **Update `example.env`:**
+    Add all new environment variables with placeholder values or comments.
+
+    ```ini
+# example.env
+    # ... (existing OpenAI, Perplexity, etc. API keys)
+    # OPENAI_API_KEY=your_openai_api_key
+    # OPENAI_MODEL=gpt-4o-mini # General purpose model for agent
+
+    # --- BrowserAgentTool (Playwright/Stagehand) ---
+    BROWSER_AGENT_HEADLESS=true
+    BROWSER_AGENT_BROWSER_TYPE="chromium"
+    BROWSER_AGENT_PLAYWRIGHT_TIMEOUT=60000
+    BROWSER_LLM_MODEL="gpt-4o-mini" # Model for browser action/extraction interpretation
+
+    # --- WebCrawlerTool (Crawl4AI) ---
+    WEB_CRAWLER_MAX_CONCURRENT=5
+    WEB_CRAWLER_DEFAULT_MAX_DEPTH=2
+    WEB_CRAWLER_DEFAULT_MAX_PAGES=20 # Reduced for general use
+    WEB_CRAWLER_BROWSER_HEADLESS=true
+    WEB_CRAWLER_CACHE_MODE="BYPASS" # "USE_CACHE" or "REFRESH_CACHE" for persistence
+
+    # --- KnowledgeAgentTool (Foundational RAG / Supabase) ---
+    SUPABASE_URL=your_supabase_url_here
+    SUPABASE_KEY=your_supabase_service_role_or_anon_key_here 
+    # EMBEDDING_MODEL="text-embedding-3-small" # Already exists
+    RAG_LLM_MODEL="gpt-4o-mini" # Model for RAG answer generation
+
+    # --- MemoryAgentTool (Mem0) ---
+    # For mem0 config, either individual vars or a JSON string:
+    # MEM0_LLM_PROVIDER="openai"
+    # MEM0_LLM_MODEL="gpt-3.5-turbo"
+    # MEM0_EMBEDDER_PROVIDER="openai"
+    # MEM0_EMBEDDER_MODEL="text-embedding-ada-002"
+    # OR
+    MEM0_CONFIG_JSON='{"llm": {"provider": "openai", "config": {"model": "gpt-3.5-turbo"}}, "embedder": {"provider": "openai", "config": {"model": "text-embedding-ada-002"}}}'
+    MEM0_PERSISTENCE_DIR_BASE="memory/mem0_data" # Relative to work_dir
+    MEM0_AGENT_ID_STRATEGY="user_id" # "user_id", "thread_id", "context_id"
+
+    # --- ChatterboxTTSTool ---
+    CHATTERBOX_DEVICE="cpu" # "cuda", "cpu", "mps"
+    # CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH="" # Optional: path within work_dir to a default .wav
+    CHATTERBOX_OUTPUT_DIR_RELATIVE="tmp/audio_outputs" # Relative to work_dir
+
+    # --- General Agent Zero / StreamProtocol ---
+    AGENT_DEFAULT_USER_ID="default_user"
+    STREAM_PROTOCOL_WEBSOCKET_TIMEOUT=60
+    AGENT_WORK_DIR="work_dir" # For local, might be "root" in Docker. Used by helpers/files.py
+
+    # Ensure TOKENIZERS_PARALLELISM=false if issues with HuggingFace tokenizers arise in some environments
+    # TOKENIZERS_PARALLELISM=false
+```
+
+2.  **Modify `python/helpers/settings.py`:**
+    *   Update `DEFAULT_SETTINGS` dictionary to include defaults for these new settings.
+    *   Update the `AgentConfig` TypedDict (or Pydantic model if Agent Zero uses one) to include fields for these new settings.
+    *   Ensure `load_settings` and `get_agent_config` correctly process and provide these new settings.
+
+    ```python
+# python/helpers/settings.py
+    # ... (existing imports, dotenv)
+    from typing import TypedDict, List, Optional, Any # Ensure Any is imported
+
+    # ... (existing ModelConfig, etc.)
+
+    class BrowserAgentToolConfig(TypedDict, total=False):
+        headless: bool
+        browser_type: str
+        playwright_timeout: int
+        llm_model: str
+
+    class WebCrawlerToolConfig(TypedDict, total=False):
+        max_concurrent: int
+        default_max_depth: int
+        default_max_pages: int
+        browser_headless: bool
+        cache_mode: str
+
+    class KnowledgeAgentToolConfig(TypedDict, total=False):
+        # Supabase URL/Key are secrets, usually direct from .env, not in settings.yaml
+        rag_llm_model: str
+        # embedding_model is part of main AgentConfig.embed_model_name
+
+    class Mem0ToolConfig(TypedDict, total=False):
+        client_config_json: str # Store the JSON string here
+        persistence_dir_base: str
+        agent_id_strategy: str # "user_id", "thread_id", "context_id"
+
+    class ChatterboxToolConfig(TypedDict, total=False):
+        device: str
+        default_audio_prompt_path: Optional[str]
+        output_dir_relative: str
+        
+    class StreamProtocolConfig(TypedDict, total=False):
+        websocket_timeout: int
+
+    class AgentConfig(TypedDict, total=False): # Existing class, add to it
+        # ... (existing fields like agent_name, chat_model, system_prompt_dir, etc.)
+        default_user_id: str
+        work_dir: str # Base working directory
+        
+        browser_agent_tool: BrowserAgentToolConfig
+        web_crawler_tool: WebCrawlerToolConfig
+        knowledge_agent_tool: KnowledgeAgentToolConfig # Supabase creds usually not here
+        mem0_tool: Mem0ToolConfig
+        chatterbox_tool: ChatterboxToolConfig
+        stream_protocol: StreamProtocolConfig
+        # ... (other tool configs if any)
+
+    # Update DEFAULT_SETTINGS
+    DEFAULT_SETTINGS = {
+        # ... (existing defaults)
+        "default_user_id": "default_user",
+        "work_dir": "work_dir", # Should align with AGENT_WORK_DIR from .env
+        
+        "browser_agent_tool": {
+            "headless": True,
+            "browser_type": "chromium",
+            "playwright_timeout": 60000,
+            "llm_model": "gpt-4o-mini",
+        },
+        "web_crawler_tool": {
+            "max_concurrent": 5,
+            "default_max_depth": 2,
+            "default_max_pages": 20,
+            "browser_headless": True,
+            "cache_mode": "BYPASS",
+        },
+        "knowledge_agent_tool": {
+            "rag_llm_model": "gpt-4o-mini",
+        },
+        "mem0_tool": {
+            "client_config_json": '{}', # Empty JSON by default, mem0 uses its own defaults
+            "persistence_dir_base": "memory/mem0_data",
+            "agent_id_strategy": "user_id",
+        },
+        "chatterbox_tool": {
+            "device": "cpu",
+            "default_audio_prompt_path": None,
+            "output_dir_relative": "tmp/audio_outputs",
+        },
+        "stream_protocol": {
+            "websocket_timeout": 60,
+        }
+        # ...
+    }
+
+    _agent_config: Optional[AgentConfig] = None
+    _settings_loaded = False
+
+    def load_settings() -> Dict[str, Any]:
+        # ... (existing load_settings logic: load from settings.yaml, override with .env)
+        # Ensure it now loads the new .env variables and maps them correctly
+        # to the structure in DEFAULT_SETTINGS and AgentConfig.
+        
+        # Example of loading new .env vars into the settings dict:
+        # settings_from_yaml = ...
+        # final_settings = DEFAULT_SETTINGS.copy()
+        # deep_update(final_settings, settings_from_yaml) # If using deep_update
+
+        env_vars_map = {
+            "DEFAULT_USER_ID": ("default_user_id", str),
+            "AGENT_WORK_DIR": ("work_dir", str),
+
+            "BROWSER_AGENT_HEADLESS": ("browser_agent_tool", "headless", bool),
+            "BROWSER_AGENT_BROWSER_TYPE": ("browser_agent_tool", "browser_type", str),
+            "BROWSER_AGENT_PLAYWRIGHT_TIMEOUT": ("browser_agent_tool", "playwright_timeout", int),
+            "BROWSER_LLM_MODEL": ("browser_agent_tool", "llm_model", str),
+
+            "WEB_CRAWLER_MAX_CONCURRENT": ("web_crawler_tool", "max_concurrent", int),
+            "WEB_CRAWLER_DEFAULT_MAX_DEPTH": ("web_crawler_tool", "default_max_depth", int),
+            "WEB_CRAWLER_DEFAULT_MAX_PAGES": ("web_crawler_tool", "default_max_pages", int),
+            "WEB_CRAWLER_BROWSER_HEADLESS": ("web_crawler_tool", "browser_headless", bool),
+            "WEB_CRAWLER_CACHE_MODE": ("web_crawler_tool", "cache_mode", str),
+            
+            "RAG_LLM_MODEL": ("knowledge_agent_tool", "rag_llm_model", str),
+
+            "MEM0_CONFIG_JSON": ("mem0_tool", "client_config_json", str),
+            "MEM0_PERSISTENCE_DIR_BASE": ("mem0_tool", "persistence_dir_base", str),
+            "MEM0_AGENT_ID_STRATEGY": ("mem0_tool", "agent_id_strategy", str),
+
+            "CHATTERBOX_DEVICE": ("chatterbox_tool", "device", str),
+            "CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH": ("chatterbox_tool", "default_audio_prompt_path", str), # Optional
+            "CHATTERBOX_OUTPUT_DIR_RELATIVE": ("chatterbox_tool", "output_dir_relative", str),
+            
+            "STREAM_PROTOCOL_WEBSOCKET_TIMEOUT": ("stream_protocol", "websocket_timeout", int),
+        }
+
+        for env_key, path_keys_type in env_vars_map.items():
+            env_val = dotenv.get_dotenv_value(env_key)
+            if env_val is not None:
+                target_dict = final_settings
+                keys = path_keys_type[:-1] if isinstance(path_keys_type, tuple) else [path_keys_type]
+                value_type = path_keys_type[-1] if isinstance(path_keys_type, tuple) else str
+
+                # Navigate to the target nested dictionary
+                for key_part_index, key_part in enumerate(keys[:-1]):
+                    target_dict = target_dict.setdefault(key_part, {})
+                
+                # Set the value, casting to type
+                final_key = keys[-1]
+                if value_type == bool: target_dict[final_key] = env_val.lower() == 'true'
+                elif value_type == int: target_dict[final_key] = int(env_val)
+                elif value_type == float: target_dict[final_key] = float(env_val)
+                else: target_dict[final_key] = str(env_val)
+        
+        # ... (rest of load_settings, then global _agent_config = final_settings)
+        # Ensure Supabase URL/Key are loaded directly by SupabaseClient from .env, not via settings.yaml
+        return final_settings
+
+    def get_agent_config() -> AgentConfig:
+        # ... (existing logic, now returns AgentConfig with new fields)
+        global _agent_config, _settings_loaded
+        if not _settings_loaded:
+            _agent_config = load_settings() # type: ignore
+            _settings_loaded = True
+        return _agent_config # type: ignore
+
+    # ... (get_default_settings, set_settings, etc., need to be aware of the new structure if they manipulate it)
+    # The `convert_in` and `convert_out` methods might need adjustment if settings structure changes for UI.
+```
+    **Note on `load_settings`:** The example shows how to map .env variables to nested structures in the `final_settings` dict. The actual implementation in Agent Zero's `settings.py` might use a different approach (e.g., Pydantic model parsing `ConfigDict(env_nested_delimiter='__')`), but the principle is to load these new .env variables into the `AgentConfig`.
+
+3.  **Update relevant tool `__init__` methods:**
+    *   Each tool (`BrowserAgentTool`, `WebCrawlerTool`, `KnowledgeAgentTool`, `MemoryAgentTool`, `ChatterboxTTSTool`) should now fetch its specific configuration from `self.agent.config.<tool_name_key>`.
+
+    ```python
+# Example for python/tools/browser_agent_tool.py
+    class BrowserAgentTool(Tool):
+        _browser_manager_instance: Optional[BrowserManager] = None
+        
+        @classmethod
+        def get_browser_manager(cls, config: BrowserAgentToolConfig) -> BrowserManager: # Pass config
+            if cls._browser_manager_instance is None:
+                cls._browser_manager_instance = BrowserManager(
+                    headless=config.get("headless", True),
+                    browser_type=config.get("browser_type", "chromium"),
+                    playwright_timeout=config.get("playwright_timeout", 60000)
+                )
+            return cls._browser_manager_instance
+
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="browser_agent", ...)
+            self.tool_config: BrowserAgentToolConfig = agent.config.get("browser_agent_tool", {})
+            
+            self.browser_manager = BrowserAgentTool.get_browser_manager(self.tool_config)
+            
+            # AIProvider might also take config for LLM model
+            self.ai_provider = AIModelProvider(llm_model=self.tool_config.get("llm_model"))
+            self.action_executor = ActionExecutor(llm_model=self.tool_config.get("llm_model")) # ActionExecutor needs LLM too
+            print(f"BrowserAgentTool initialized with config: {self.tool_config}")
+        # ...
+```
+    Similar updates would be needed for `WebCrawlerTool`, `MemoryAgentTool` (passing `mem0_config_json` and `persistence_dir_base` to `Mem0MemorySystem`), and `ChatterboxTTSTool` (passing `device`, etc. to its handlers).
+
+4.  **Update `python/helpers/files.py` for `get_tts_output_dir_abs`:**
+    It should use `agent.config.get("work_dir")` and `agent.config.get("chatterbox_tool", {}).get("output_dir_relative")`. This requires the `agent` instance or its config to be passed or accessible. A simpler way is to make it rely on `settings.get_agent_config()`.
+
+    ```python
+# python/helpers/files.py
+    from python.helpers import settings # Import settings
+
+    def get_tts_output_dir_abs() -> Path:
+        agent_cfg = settings.get_agent_config()
+        base_work_dir_name = agent_cfg.get("work_dir", "work_dir")
+        base_work_dir_abs = get_abs_path(base_work_dir_name) # get_abs_path should be robust
+        
+        chatterbox_cfg = agent_cfg.get("chatterbox_tool", {})
+        relative_output_dir = chatterbox_cfg.get("output_dir_relative", "tmp/audio_outputs")
+        
+        output_path = base_work_dir_abs / relative_output_dir
+        output_path.mkdir(parents=True, exist_ok=True)
+        return output_path
+
+    def get_tts_output_web_path(filename: str) -> str:
+        agent_cfg = settings.get_agent_config()
+        chatterbox_cfg = agent_cfg.get("chatterbox_tool", {})
+        relative_output_dir = chatterbox_cfg.get("output_dir_relative", "tmp/audio_outputs")
+        return f"{relative_output_dir.strip('/')}/{filename}"
+```
+
+**Dependencies/Prerequisites:**
+*   All previous tasks that introduced new tools and their potential configurations.
+
+**Integration with Agent Zero:**
+*   Agent Zero's settings system (`.env`, `settings.yaml`, `python/helpers/settings.py`) becomes the central place to configure the behavior and parameters of all new and existing tools.
+*   Tools are updated to read their specific configurations from the global `AgentConfig` object.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   This task specifically adds configuration options for `ChatterboxTTSTool` (device, default prompt, output dir).
+
+**Docker Compatibility:**
+*   All new environment variables in `example.env` should be considered for passing to Docker containers at runtime (e.g., via `docker-compose.yml` environment section or `.env` file used by Docker Compose).
+*   The `AGENT_WORK_DIR` variable becomes important for Docker to define the base path correctly (often `/root` or `/a0/work_dir` inside the container).
+
+**Summary of Task 36:**
+This task updates Agent Zero's configuration system (`.env` and `settings.py`) to include settings for all the new tools and functionalities introduced by the Phoenix upgrade. Tools are refactored to fetch their configurations from the central `AgentConfig`. This makes the upgraded system more manageable and customizable. Helper functions for paths are also updated to use these configurations.
+
+Please confirm to proceed.Okay, let's proceed with Task 36.
+
+## Task 36: Comprehensive Update of `settings.yaml` / `.env` and Agent Configuration
+
+**Focus:**
+This task focuses on ensuring all new tools, models, API keys, and configurations introduced or anticipated by the "Phoenix" upgrade are manageable through Agent Zero's existing settings mechanisms (primarily `.env` and `settings.yaml`, and how `python/helpers/settings.py` loads and provides them).
+
+**Key Areas for Configuration:**
+
+1.  **BrowserAgentTool (Playwright):**
+    *   `BROWSER_AGENT_HEADLESS` (boolean, e.g., `true`/`false`)
+    *   `BROWSER_AGENT_BROWSER_TYPE` (string, e.g., `"chromium"`, `"firefox"`)
+    *   `BROWSER_AGENT_PLAYWRIGHT_TIMEOUT` (integer, milliseconds, e.g., `30000`)
+    *   `BROWSER_LLM_MODEL` (string, for `act` and `extract` actions, e.g., `"gpt-4o-mini"`)
+
+2.  **WebCrawlerTool (Crawl4AI):**
+    *   `WEB_CRAWLER_MAX_CONCURRENT` (integer, e.g., `5`)
+    *   `WEB_CRAWLER_DEFAULT_MAX_DEPTH` (integer, e.g., `2`)
+    *   `WEB_CRAWLER_DEFAULT_MAX_PAGES` (integer, e.g., `50`)
+    *   `WEB_CRAWLER_BROWSER_HEADLESS` (boolean, for crawl4ai's browser)
+    *   `WEB_CRAWLER_CACHE_MODE` (string, e.g., `"BYPASS"`, `"USE_CACHE"`)
+
+3.  **KnowledgeAgentTool (Foundational RAG):**
+    *   `SUPABASE_URL` (already in `.env.example` from `foundational-rag-agent`)
+    *   `SUPABASE_KEY` (already in `.env.example`)
+    *   `OPENAI_EMBEDDING_MODEL` (already `EMBEDDING_MODEL` in `.env.example`)
+    *   `RAG_LLM_MODEL` (string, for answer generation, e.g., `"gpt-4o-mini"`) - This might be the same as `OPENAI_MODEL` or a separate one.
+
+4.  **MemoryAgentTool (Mem0):**
+    *   `MEM0_CONFIG_JSON` (string, a JSON string for mem0's own configuration, e.g., `{"llm": {"provider": "openai", "config": {"model": "gpt-3.5-turbo"}}, "embedder": ...}`. Alternatively, individual keys if preferred.)
+    *   `MEM0_PERSISTENCE_DIR_BASE` (string, e.g., `"memory/mem0_data"`)
+    *   `MEM0_AGENT_ID_STRATEGY` (string, e.g., `"user_id"`, `"thread_id"`, `"context_id"`) to define how the `agent_id` for `Mem0MemorySystem` is derived.
+
+5.  **ChatterboxTTSTool:**
+    *   `CHATTERBOX_DEVICE` (string, e.g., `"cuda"`, `"cpu"`, `"mps"`)
+    *   `CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH` (string, optional path to a default voice)
+    *   `CHATTERBOX_OUTPUT_DIR_RELATIVE` (string, e.g., `"tmp/audio_outputs"`, relative to work_dir)
+
+6.  **General Agent Zero / StreamProtocol:**
+    *   `AGENT_DEFAULT_USER_ID` (string, e.g., `"default_user"`)
+    *   `STREAM_PROTOCOL_WEBSOCKET_TIMEOUT` (integer, seconds, e.g., `60`)
+
+**File Paths and Code Changes:**
+
+1.  **Update `example.env`:**
+    Add all new environment variables with placeholder values or comments.
+
+    ```ini
+    # example.env
+    # ... (existing OpenAI, Perplexity, etc. API keys)
+    # OPENAI_API_KEY=your_openai_api_key
+    # OPENAI_MODEL=gpt-4o-mini # General purpose model for agent
+
+    # --- BrowserAgentTool (Playwright/Stagehand) ---
+    BROWSER_AGENT_HEADLESS=true
+    BROWSER_AGENT_BROWSER_TYPE="chromium"
+    BROWSER_AGENT_PLAYWRIGHT_TIMEOUT=60000
+    BROWSER_LLM_MODEL="gpt-4o-mini" # Model for browser action/extraction interpretation
+
+    # --- WebCrawlerTool (Crawl4AI) ---
+    WEB_CRAWLER_MAX_CONCURRENT=5
+    WEB_CRAWLER_DEFAULT_MAX_DEPTH=2
+    WEB_CRAWLER_DEFAULT_MAX_PAGES=20 # Reduced for general use
+    WEB_CRAWLER_BROWSER_HEADLESS=true
+    WEB_CRAWLER_CACHE_MODE="BYPASS" # "USE_CACHE" or "REFRESH_CACHE" for persistence
+
+    # --- KnowledgeAgentTool (Foundational RAG / Supabase) ---
+    SUPABASE_URL=your_supabase_url_here
+    SUPABASE_KEY=your_supabase_service_role_or_anon_key_here 
+    # EMBEDDING_MODEL="text-embedding-3-small" # Already exists
+    RAG_LLM_MODEL="gpt-4o-mini" # Model for RAG answer generation
+
+    # --- MemoryAgentTool (Mem0) ---
+    # For mem0 config, either individual vars or a JSON string:
+    # MEM0_LLM_PROVIDER="openai"
+    # MEM0_LLM_MODEL="gpt-3.5-turbo"
+    # MEM0_EMBEDDER_PROVIDER="openai"
+    # MEM0_EMBEDDER_MODEL="text-embedding-ada-002"
+    # OR
+    MEM0_CONFIG_JSON='{"llm": {"provider": "openai", "config": {"model": "gpt-3.5-turbo"}}, "embedder": {"provider": "openai", "config": {"model": "text-embedding-ada-002"}}}'
+    MEM0_PERSISTENCE_DIR_BASE="memory/mem0_data" # Relative to work_dir
+    MEM0_AGENT_ID_STRATEGY="user_id" # "user_id", "thread_id", "context_id"
+
+    # --- ChatterboxTTSTool ---
+    CHATTERBOX_DEVICE="cpu" # "cuda", "cpu", "mps"
+    # CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH="" # Optional: path within work_dir to a default .wav
+    CHATTERBOX_OUTPUT_DIR_RELATIVE="tmp/audio_outputs" # Relative to work_dir
+
+    # --- General Agent Zero / StreamProtocol ---
+    AGENT_DEFAULT_USER_ID="default_user"
+    STREAM_PROTOCOL_WEBSOCKET_TIMEOUT=60
+    AGENT_WORK_DIR="work_dir" # For local, might be "root" in Docker. Used by helpers/files.py
+
+    # Ensure TOKENIZERS_PARALLELISM=false if issues with HuggingFace tokenizers arise in some environments
+    # TOKENIZERS_PARALLELISM=false 
+    ```
+
+2.  **Modify `python/helpers/settings.py`:**
+    *   Update `DEFAULT_SETTINGS` dictionary to include defaults for these new settings.
+    *   Update the `AgentConfig` TypedDict (or Pydantic model if Agent Zero uses one) to include fields for these new settings.
+    *   Ensure `load_settings` and `get_agent_config` correctly process and provide these new settings.
+
+    ```python
+    # python/helpers/settings.py
+    # ... (existing imports, dotenv)
+    from typing import TypedDict, List, Optional, Any # Ensure Any is imported
+
+    # ... (existing ModelConfig, etc.)
+
+    class BrowserAgentToolConfig(TypedDict, total=False):
+        headless: bool
+        browser_type: str
+        playwright_timeout: int
+        llm_model: str
+
+    class WebCrawlerToolConfig(TypedDict, total=False):
+        max_concurrent: int
+        default_max_depth: int
+        default_max_pages: int
+        browser_headless: bool
+        cache_mode: str
+
+    class KnowledgeAgentToolConfig(TypedDict, total=False):
+        # Supabase URL/Key are secrets, usually direct from .env, not in settings.yaml
+        rag_llm_model: str
+        # embedding_model is part of main AgentConfig.embed_model_name
+
+    class Mem0ToolConfig(TypedDict, total=False):
+        client_config_json: str # Store the JSON string here
+        persistence_dir_base: str
+        agent_id_strategy: str # "user_id", "thread_id", "context_id"
+
+    class ChatterboxToolConfig(TypedDict, total=False):
+        device: str
+        default_audio_prompt_path: Optional[str]
+        output_dir_relative: str
+        
+    class StreamProtocolConfig(TypedDict, total=False):
+        websocket_timeout: int
+
+    class AgentConfig(TypedDict, total=False): # Existing class, add to it
+        # ... (existing fields like agent_name, chat_model, system_prompt_dir, etc.)
+        default_user_id: str
+        work_dir: str # Base working directory
+        
+        browser_agent_tool: BrowserAgentToolConfig
+        web_crawler_tool: WebCrawlerToolConfig
+        knowledge_agent_tool: KnowledgeAgentToolConfig # Supabase creds usually not here
+        mem0_tool: Mem0ToolConfig
+        chatterbox_tool: ChatterboxToolConfig
+        stream_protocol: StreamProtocolConfig
+        # ... (other tool configs if any)
+
+    # Update DEFAULT_SETTINGS
+    DEFAULT_SETTINGS = {
+        # ... (existing defaults)
+        "default_user_id": "default_user",
+        "work_dir": "work_dir", # Should align with AGENT_WORK_DIR from .env
+        
+        "browser_agent_tool": {
+            "headless": True,
+            "browser_type": "chromium",
+            "playwright_timeout": 60000,
+            "llm_model": "gpt-4o-mini",
+        },
+        "web_crawler_tool": {
+            "max_concurrent": 5,
+            "default_max_depth": 2,
+            "default_max_pages": 20,
+            "browser_headless": True,
+            "cache_mode": "BYPASS",
+        },
+        "knowledge_agent_tool": {
+            "rag_llm_model": "gpt-4o-mini",
+        },
+        "mem0_tool": {
+            "client_config_json": '{}', # Empty JSON by default, mem0 uses its own defaults
+            "persistence_dir_base": "memory/mem0_data",
+            "agent_id_strategy": "user_id",
+        },
+        "chatterbox_tool": {
+            "device": "cpu",
+            "default_audio_prompt_path": None,
+            "output_dir_relative": "tmp/audio_outputs",
+        },
+        "stream_protocol": {
+            "websocket_timeout": 60,
+        }
+        # ...
+    }
+
+    _agent_config: Optional[AgentConfig] = None
+    _settings_loaded = False
+
+    def load_settings() -> Dict[str, Any]:
+        # ... (existing load_settings logic: load from settings.yaml, override with .env)
+        # Ensure it now loads the new .env variables and maps them correctly
+        # to the structure in DEFAULT_SETTINGS and AgentConfig.
+        
+        # Example of loading new .env vars into the settings dict:
+        # settings_from_yaml = ...
+        # final_settings = DEFAULT_SETTINGS.copy()
+        # deep_update(final_settings, settings_from_yaml) # If using deep_update
+
+        env_vars_map = {
+            "DEFAULT_USER_ID": ("default_user_id", str),
+            "AGENT_WORK_DIR": ("work_dir", str),
+
+            "BROWSER_AGENT_HEADLESS": ("browser_agent_tool", "headless", bool),
+            "BROWSER_AGENT_BROWSER_TYPE": ("browser_agent_tool", "browser_type", str),
+            "BROWSER_AGENT_PLAYWRIGHT_TIMEOUT": ("browser_agent_tool", "playwright_timeout", int),
+            "BROWSER_LLM_MODEL": ("browser_agent_tool", "llm_model", str),
+
+            "WEB_CRAWLER_MAX_CONCURRENT": ("web_crawler_tool", "max_concurrent", int),
+            "WEB_CRAWLER_DEFAULT_MAX_DEPTH": ("web_crawler_tool", "default_max_depth", int),
+            "WEB_CRAWLER_DEFAULT_MAX_PAGES": ("web_crawler_tool", "default_max_pages", int),
+            "WEB_CRAWLER_BROWSER_HEADLESS": ("web_crawler_tool", "browser_headless", bool),
+            "WEB_CRAWLER_CACHE_MODE": ("web_crawler_tool", "cache_mode", str),
+            
+            "RAG_LLM_MODEL": ("knowledge_agent_tool", "rag_llm_model", str),
+
+            "MEM0_CONFIG_JSON": ("mem0_tool", "client_config_json", str),
+            "MEM0_PERSISTENCE_DIR_BASE": ("mem0_tool", "persistence_dir_base", str),
+            "MEM0_AGENT_ID_STRATEGY": ("mem0_tool", "agent_id_strategy", str),
+
+            "CHATTERBOX_DEVICE": ("chatterbox_tool", "device", str),
+            "CHATTERBOX_DEFAULT_AUDIO_PROMPT_PATH": ("chatterbox_tool", "default_audio_prompt_path", str), # Optional
+            "CHATTERBOX_OUTPUT_DIR_RELATIVE": ("chatterbox_tool", "output_dir_relative", str),
+            
+            "STREAM_PROTOCOL_WEBSOCKET_TIMEOUT": ("stream_protocol", "websocket_timeout", int),
+        }
+
+        for env_key, path_keys_type in env_vars_map.items():
+            env_val = dotenv.get_dotenv_value(env_key)
+            if env_val is not None:
+                target_dict = final_settings
+                keys = path_keys_type[:-1] if isinstance(path_keys_type, tuple) else [path_keys_type]
+                value_type = path_keys_type[-1] if isinstance(path_keys_type, tuple) else str
+
+                # Navigate to the target nested dictionary
+                for key_part_index, key_part in enumerate(keys[:-1]):
+                    target_dict = target_dict.setdefault(key_part, {})
+                
+                # Set the value, casting to type
+                final_key = keys[-1]
+                if value_type == bool: target_dict[final_key] = env_val.lower() == 'true'
+                elif value_type == int: target_dict[final_key] = int(env_val)
+                elif value_type == float: target_dict[final_key] = float(env_val)
+                else: target_dict[final_key] = str(env_val)
+        
+        # ... (rest of load_settings, then global _agent_config = final_settings)
+        # Ensure Supabase URL/Key are loaded directly by SupabaseClient from .env, not via settings.yaml
+        return final_settings
+
+    def get_agent_config() -> AgentConfig:
+        # ... (existing logic, now returns AgentConfig with new fields)
+        global _agent_config, _settings_loaded
+        if not _settings_loaded:
+            _agent_config = load_settings() # type: ignore
+            _settings_loaded = True
+        return _agent_config # type: ignore
+
+    # ... (get_default_settings, set_settings, etc., need to be aware of the new structure if they manipulate it)
+    # The `convert_in` and `convert_out` methods might need adjustment if settings structure changes for UI.
+    ```
+    **Note on `load_settings`:** The example shows how to map .env variables to nested structures in the `final_settings` dict. The actual implementation in Agent Zero's `settings.py` might use a different approach (e.g., Pydantic model parsing `ConfigDict(env_nested_delimiter='__')`), but the principle is to load these new .env variables into the `AgentConfig`.
+
+3.  **Update relevant tool `__init__` methods:**
+    *   Each tool (`BrowserAgentTool`, `WebCrawlerTool`, `KnowledgeAgentTool`, `MemoryAgentTool`, `ChatterboxTTSTool`) should now fetch its specific configuration from `self.agent.config.<tool_name_key>`.
+
+    ```python
+    # Example for python/tools/browser_agent_tool.py
+    class BrowserAgentTool(Tool):
+        _browser_manager_instance: Optional[BrowserManager] = None
+        
+        @classmethod
+        def get_browser_manager(cls, config: BrowserAgentToolConfig) -> BrowserManager: # Pass config
+            if cls._browser_manager_instance is None:
+                cls._browser_manager_instance = BrowserManager(
+                    headless=config.get("headless", True),
+                    browser_type=config.get("browser_type", "chromium"),
+                    playwright_timeout=config.get("playwright_timeout", 60000)
+                )
+            return cls._browser_manager_instance
+
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="browser_agent", ...)
+            self.tool_config: BrowserAgentToolConfig = agent.config.get("browser_agent_tool", {})
+            
+            self.browser_manager = BrowserAgentTool.get_browser_manager(self.tool_config)
+            
+            # AIProvider might also take config for LLM model
+            self.ai_provider = AIModelProvider(llm_model=self.tool_config.get("llm_model"))
+            self.action_executor = ActionExecutor(llm_model=self.tool_config.get("llm_model")) # ActionExecutor needs LLM too
+            print(f"BrowserAgentTool initialized with config: {self.tool_config}")
+        # ...
+    ```
+    Similar updates would be needed for `WebCrawlerTool`, `MemoryAgentTool` (passing `mem0_config_json` and `persistence_dir_base` to `Mem0MemorySystem`), and `ChatterboxTTSTool` (passing `device`, etc. to its handlers).
+
+4.  **Update `python/helpers/files.py` for `get_tts_output_dir_abs`:**
+    It should use `agent.config.get("work_dir")` and `agent.config.get("chatterbox_tool", {}).get("output_dir_relative")`. This requires the `agent` instance or its config to be passed or accessible. A simpler way is to make it rely on `settings.get_agent_config()`.
+
+    ```python
+    # python/helpers/files.py
+    from python.helpers import settings # Import settings
+
+    def get_tts_output_dir_abs() -> Path:
+        agent_cfg = settings.get_agent_config()
+        base_work_dir_name = agent_cfg.get("work_dir", "work_dir")
+        base_work_dir_abs = get_abs_path(base_work_dir_name) # get_abs_path should be robust
+        
+        chatterbox_cfg = agent_cfg.get("chatterbox_tool", {})
+        relative_output_dir = chatterbox_cfg.get("output_dir_relative", "tmp/audio_outputs")
+        
+        output_path = base_work_dir_abs / relative_output_dir
+        output_path.mkdir(parents=True, exist_ok=True)
+        return output_path
+
+    def get_tts_output_web_path(filename: str) -> str:
+        agent_cfg = settings.get_agent_config()
+        chatterbox_cfg = agent_cfg.get("chatterbox_tool", {})
+        relative_output_dir = chatterbox_cfg.get("output_dir_relative", "tmp/audio_outputs")
+        return f"{relative_output_dir.strip('/')}/{filename}"
+    ```
+
+**Dependencies/Prerequisites:**
+*   All previous tasks that introduced new tools and their potential configurations.
+
+**Integration with Agent Zero:**
+*   Agent Zero's settings system (`.env`, `settings.yaml`, `python/helpers/settings.py`) becomes the central place to configure the behavior and parameters of all new and existing tools.
+*   Tools are updated to read their specific configurations from the global `AgentConfig` object.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   This task specifically adds configuration options for `ChatterboxTTSTool` (device, default prompt, output dir).
+
+**Docker Compatibility:**
+*   All new environment variables in `example.env` should be considered for passing to Docker containers at runtime (e.g., via `docker-compose.yml` environment section or `.env` file used by Docker Compose).
+*   The `AGENT_WORK_DIR` variable becomes important for Docker to define the base path correctly (often `/root` or `/a0/work_dir` inside the container).
+
+**Summary of Task 36:**
+This task updates Agent Zero's configuration system (`.env` and `settings.py`) to include settings for all the new tools and functionalities introduced by the Phoenix upgrade. Tools are refactored to fetch their configurations from the central `AgentConfig`. This makes the upgraded system more manageable and customizable. Helper functions for paths are also updated to use these configurations.
+
+Please confirm to proceed.

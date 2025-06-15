@@ -1,0 +1,281 @@
+## Task 28: Configure and Implement Persistence for Mem0 (Conceptual Local JSON/File Store)
+
+**Focus:**
+This task focuses on adding a basic persistence layer to our `Mem0MemorySystem` placeholder/wrapper. Since integrating a full-fledged database backend for `mem0` (if it doesn't handle it transparently) is complex, we will simulate persistence by saving and loading the in-memory stores (`self.store` for vector-like memories, and `self.graph_store` / `self.graph_store_list_fallback` for graph memories) to local JSON/pickle files. This is a conceptual step towards how `mem0` might offer persistence if not using a cloud backend by default.
+
+**Note:** The actual `mem0` library might have its own specific ways to configure persistence (e.g., to SQLite, specific file formats, or cloud services). This task implements a *generic local file persistence mechanism for our wrapper* as a conceptual stand-in or a supplement if `mem0`'s default is purely in-memory and we want some durability during development/testing of Agent Zero.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/memory_agent/memory.py`:**
+    *   Update `Mem0MemorySystem.__init__` to load data from files if they exist.
+    *   Add methods to save data to files.
+    *   Modify `add`, `update`, `delete`, `add_knowledge_graph_triplets` to also save after modification.
+
+    ```python
+# python/agents/memory_agent/memory.py
+    import asyncio
+    from typing import List, Dict, Any, Optional
+    import uuid
+    import numpy as np
+    import json # For saving/loading simple data structures
+    import pickle # For saving/loading networkx graph objects
+    from pathlib import Path
+    
+    # ... (Mem0Client import/placeholder, networkx import/placeholder, cosine_similarity as before) ...
+    try:
+        from mem0 import Memory as Mem0Client
+        MEM0_AVAILABLE = True
+    except ImportError:
+        MEM0_AVAILABLE = False
+        class Mem0Client: # type: ignore
+            # ... (placeholder methods as in Task 27)
+            pass
+
+    try:
+        import networkx as nx
+        NETWORKX_AVAILABLE = True
+    except ImportError:
+        NETWORKX_AVAILABLE = False
+        print("Mem0MemorySystem: networkx library not found. Graph memory persistence will use simple list.")
+
+
+    class Mem0MemorySystem:
+        def __init__(self, agent_id: str = "default_agent_zero_user", config: Optional[Dict] = None, 
+                     persistence_dir: str = "memory/mem0_persistence"):
+            self.agent_id = agent_id
+            self.persistence_dir = Path(persistence_dir) / self.agent_id
+            self.persistence_dir.mkdir(parents=True, exist_ok=True)
+
+            self.vector_store_file = self.persistence_dir / "vector_store.json"
+            self.graph_store_file_nx = self.persistence_dir / "graph_store.gpickle" # For networkx
+            self.graph_store_file_list = self.persistence_dir / "graph_store_list.json" # For list fallback
+
+            # Initialize mem0 client
+            if not MEM0_AVAILABLE:
+                self._mem0_client = Mem0Client() 
+                self._llm_client_for_summary = None
+            else:
+                try:
+                    # If mem0 has its own persistence config, it would be passed in `config`
+                    # For this task, we are adding persistence to OUR WRAPPER of mem0's potentially in-memory store
+                    self._mem0_client = Mem0Client(config=config) 
+                    self._llm_client_for_summary = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
+                    self.summary_llm_model = os.getenv("OPENAI_MODEL_SUMMARY", "gpt-4o-mini")
+                    print(f"Mem0MemorySystem: Initialized real mem0.Memory client for agent_id scope: {self.agent_id}")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error initializing real mem0.Memory client: {e}. Fallback to placeholder.")
+                    self._mem0_client = Mem0Client()
+                    self._llm_client_for_summary = None
+            
+            # Initialize in-memory stores (which will be loaded from files)
+            self.store: Dict[str, Dict[str, Any]] = {} 
+            if NETWORKX_AVAILABLE:
+                self.graph_store: Optional[nx.MultiDiGraph] = nx.MultiDiGraph()
+                self.graph_store_list_fallback = None # Not used if networkx is available
+            else:
+                self.graph_store = None
+                self.graph_store_list_fallback: List[Dict[str,Any]] = []
+
+            # Load data from persistence files
+            self._load_vector_store()
+            self._load_graph_store()
+
+            print(f"Mem0MemorySystem: Persistence enabled at {self.persistence_dir}")
+
+        def _load_vector_store(self):
+            if self.vector_store_file.exists():
+                try:
+                    with open(self.vector_store_file, 'r') as f:
+                        self.store = json.load(f)
+                    print(f"Mem0MemorySystem: Loaded {len(self.store)} items from vector store file.")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error loading vector store from {self.vector_store_file}: {e}. Starting fresh.")
+                    self.store = {}
+        
+        def _save_vector_store(self):
+            try:
+                with open(self.vector_store_file, 'w') as f:
+                    json.dump(self.store, f, indent=2)
+                # print(f"Mem0MemorySystem: Saved vector store to {self.vector_store_file}.")
+            except Exception as e:
+                print(f"Mem0MemorySystem: Error saving vector store to {self.vector_store_file}: {e}")
+
+        def _load_graph_store(self):
+            if NETWORKX_AVAILABLE and self.graph_store_file_nx.exists():
+                try:
+                    with open(self.graph_store_file_nx, 'rb') as f:
+                        self.graph_store = pickle.load(f)
+                    print(f"Mem0MemorySystem: Loaded graph store from {self.graph_store_file_nx}. Nodes: {len(self.graph_store.nodes)}, Edges: {len(self.graph_store.edges)}") # type: ignore
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error loading graph store from {self.graph_store_file_nx}: {e}. Starting fresh graph.")
+                    self.graph_store = nx.MultiDiGraph()
+            elif not NETWORKX_AVAILABLE and self.graph_store_file_list.exists():
+                try:
+                    with open(self.graph_store_file_list, 'r') as f:
+                        self.graph_store_list_fallback = json.load(f)
+                    print(f"Mem0MemorySystem: Loaded graph store (list fallback) from {self.graph_store_file_list}.")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error loading graph store (list fallback) from {self.graph_store_file_list}: {e}. Starting fresh list.")
+                    self.graph_store_list_fallback = []
+
+
+        def _save_graph_store(self):
+            if NETWORKX_AVAILABLE and self.graph_store is not None:
+                try:
+                    with open(self.graph_store_file_nx, 'wb') as f:
+                        pickle.dump(self.graph_store, f)
+                    # print(f"Mem0MemorySystem: Saved graph store to {self.graph_store_file_nx}.")
+                except Exception as e:
+                    print(f"Mem0MemorySystem: Error saving graph store to {self.graph_store_file_nx}: {e}")
+            elif not NETWORKX_AVAILABLE and self.graph_store_list_fallback is not None:
+                 try:
+                    with open(self.graph_store_file_list, 'w') as f:
+                        json.dump(self.graph_store_list_fallback, f, indent=2)
+                    # print(f"Mem0MemorySystem: Saved graph store (list fallback) to {self.graph_store_file_list}.")
+                 except Exception as e:
+                    print(f"Mem0MemorySystem: Error saving graph store (list fallback): {e}")
+
+
+        # Modify methods that change data to call save methods
+        async def add(self, memory_data: Any, memory_id: Optional[str] = None, 
+                      metadata: Optional[Dict[str,Any]] = None, text_for_embedding: Optional[str] = None) -> str:
+            # ... (existing add logic from Task 27)
+            _id = memory_id or f"mem_{str(uuid.uuid4())}"
+            text_to_embed = text_for_embedding if text_for_embedding else await self._get_text_for_embedding(memory_data)
+            embedding = await self.embedding_generator.generate_single_embedding(text_to_embed) if text_to_embed else []
+            self.store[_id] = {
+                "id": _id, "data": memory_data, "text_for_embedding": text_to_embed,
+                "embedding": embedding, "type": "generic_memory", "metadata": metadata or {}
+            }
+            self._save_vector_store() # Persist after adding
+            print(f"{self.__class__.__name__}: Added memory '{_id}' and saved store.")
+            return _id
+
+        async def add_messages(self, messages: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> List[str]:
+            # ... (existing logic from Task 27, relies on self.add which now saves)
+            target_user_id = user_id_override or self.agent_id
+            stored_ids = []
+            for i, msg in enumerate(messages):
+                content = msg.get("content"); role = msg.get("role", "unknown")
+                if content and content.strip():
+                    memory_data = {"role": role, "content": content, "original_message_index": i}
+                    text_for_embedding = f"{role}: {content}"
+                    # This add call will now trigger _save_vector_store
+                    mem_id = await self.add(memory_data=memory_data, text_for_embedding=text_for_embedding,
+                                            metadata={"source_type": "message", "role": role, "user_id": target_user_id})
+                    stored_ids.append(mem_id)
+            # No need for explicit save here if self.add() saves
+            return stored_ids
+
+
+        async def update(self, memory_id: str, new_data: Any, user_id_override: Optional[str] = None, 
+                         new_text_for_embedding: Optional[str] = None, new_metadata: Optional[Dict] = None) -> bool:
+            # ... (existing update logic from Task 27)
+            if memory_id in self.store:
+                # ... (update logic)
+                text_to_embed = new_text_for_embedding if new_text_for_embedding else await self._get_text_for_embedding(new_data)
+                embedding = await self.embedding_generator.generate_single_embedding(text_to_embed) if text_to_embed else []
+                self.store[memory_id]["data"] = new_data
+                self.store[memory_id]["text_for_embedding"] = text_to_embed
+                self.store[memory_id]["embedding"] = embedding
+                if new_metadata is not None: self.store[memory_id]["metadata"].update(new_metadata)
+                self.store[memory_id]["updated_at"] = "mock_timestamp_updated"
+                self._save_vector_store() # Persist after update
+                print(f"{self.__class__.__name__}: Updated memory '{memory_id}' and saved store.")
+                return True
+            return False
+
+        async def delete(self, memory_id: str, user_id_override: Optional[str] = None) -> bool:
+            # ... (existing delete logic from Task 27)
+            if memory_id in self.store:
+                del self.store[memory_id]
+                self._save_vector_store() # Persist after delete
+                print(f"{self.__class__.__name__}: Deleted memory '{memory_id}' and saved store.")
+                return True
+            return False
+
+        async def add_knowledge_graph_triplets(self, triplets: List[Dict[str, Any]], user_id_override: Optional[str] = None) -> Dict[str, Any]:
+            # ... (existing graph add logic from Task 26)
+            target_user_id = user_id_override or self.agent_id
+            added_count = 0
+            if NETWORKX_AVAILABLE and self.graph_store is not None:
+                # ... (networkx add logic)
+                for triplet in triplets:
+                    head, relation, tail, props = triplet.get("head"), triplet.get("relation"), triplet.get("tail"), triplet.get("properties", {})
+                    if head and relation and tail:
+                        if not self.graph_store.has_node(head): self.graph_store.add_node(head, type="entity", user_id=target_user_id)
+                        if not self.graph_store.has_node(tail): self.graph_store.add_node(tail, type="entity", user_id=target_user_id)
+                        self.graph_store.add_edge(head, tail, key=relation, relation_type=relation, user_id=target_user_id, **props)
+                        added_count +=1
+            elif self.graph_store_list_fallback is not None:
+                # ... (list fallback add logic)
+                for triplet in triplets: triplet["user_id"] = target_user_id; self.graph_store_list_fallback.append(triplet); added_count +=1
+            
+            if added_count > 0:
+                self._save_graph_store() # Persist graph store after adding
+            return {"status": "success", "triplets_added": added_count}
+
+        # search, get, get_all, summarize_memory_content, search_knowledge_graph are read operations, no save needed.
+        # ... (other methods like _get_text_for_embedding, search, get_all, summarize_memory_content, search_knowledge_graph as before)
+```
+
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   When `MemoryAgentTool` is initialized, it creates `Mem0MemorySystem`. The `Mem0MemorySystem` constructor now handles loading from persistence.
+    *   No other direct changes needed in `MemoryAgentTool` for this task, as persistence is managed within `Mem0MemorySystem`.
+    *   We might want to pass the persistence directory via agent config.
+
+    ```python
+# python/tools/memory_agent_tool.py
+    # ...
+    class MemoryAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="memory_agent_tool",
+                             description="Manages an intelligent memory system...",
+                             args_schema=None,
+                             **kwargs)
+            
+            agent_id_for_mem0 = self.agent.get_user_id() or self.agent.get_thread_id() or "agent0_default_user"
+            mem0_config = self.agent.config.get("mem0_config", {})
+            
+            # Get persistence directory from agent config or use a default
+            # Agent Zero stores memory in "memory/{ctxid}/..."
+            # We can adopt a similar structure for mem0 data.
+            default_persistence_base_dir = Path(self.agent.context.get_custom_data("base_dir", ".")) / "memory" / "mem0_data"
+            persistence_dir_for_agent = mem0_config.get("persistence_dir_base", str(default_persistence_base_dir))
+            
+            self.memory_system = Mem0MemorySystem(
+                agent_id=agent_id_for_mem0, 
+                config=mem0_config.get("client_config"), # Pass specific client config to mem0
+                persistence_dir=persistence_dir_for_agent # Pass full path including agent_id subdir
+            )
+            # Mem0MemorySystem's __init__ now handles loading from its agent_id specific path
+            
+            print(f"MemoryAgentTool initialized for agent {agent.agent_name} "
+                  f"with Mem0MemorySystem (agent_id_scope: {self.memory_system.agent_id}), "
+                  f"persistence at: {self.memory_system.persistence_dir}")
+        # ... (rest of the methods as in Task 27)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-27 completed.
+*   `networkx` library (optional, for better graph simulation) and `json`, `pickle` (standard library).
+*   `Mem0MemorySystem` structure from Task 27.
+
+**Integration with Agent Zero:**
+*   The `Mem0MemorySystem` (our wrapper/placeholder for `mem0` interaction) now attempts to load its state from local files upon initialization and saves its state after modifications.
+*   The `MemoryAgentTool` uses this persistence-aware `Mem0MemorySystem`.
+*   The persistence path is derived from agent context or configuration, making it somewhat aligned with Agent Zero's existing memory storage patterns (e.g., `memory/<context_id>`).
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Add `networkx` to `requirements.txt` if used.
+*   The persistence directory (e.g., `./memory/mem0_persistence/`) needs to be writable by the Agent Zero process inside Docker. If this path is within the main application directory (`/a0`), it will be part of the Docker image or a mounted volume.
+*   For true persistence across container restarts, this directory should be mapped to a Docker volume in `docker-compose.yml` or `docker run` command. Example: `- ./agent-zero/memory/mem0_persistence:/a0/memory/mem0_persistence` (adjust path based on where `persistence_dir` resolves).
+
+**Summary of Task 28:**
+This task adds a basic local file persistence layer to the `Mem0MemorySystem` wrapper. Vector-like memories are saved/loaded as JSON, and graph data is saved/loaded using `pickle` (if `networkx` is used) or JSON (for the list fallback). This provides a conceptual demonstration of how `mem0` might achieve persistence if it doesn't use a cloud backend or a complex local DB by default, and ensures that memories managed by `MemoryAgentTool` can survive application restarts during development and testing within the Agent Zero framework. The actual persistence mechanism of the `mem0` library itself might be different and would be adopted during full library integration.
+
+Please confirm to proceed.

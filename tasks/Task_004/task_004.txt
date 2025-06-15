@@ -1,0 +1,585 @@
+## Task 4: Integrate StreamProtocol Event Emission into Agent Core Logic
+
+**Focus:**
+This task involves modifying the core `Agent` class in `agent.py` to emit `StreamEventType` events using the `StreamProtocolTool` during its operation. This includes emitting events for agent thoughts, tool calls (start/end), and final responses. This will make the agent's internal workings transparent to an AG-UI compliant frontend.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py`:**
+
+    *   **In `Agent.monologue`:**
+        *   Before calling the LLM, emit an `AGENT_THOUGHT` event with a preliminary thought (e.g., "Processing user request...").
+        *   If the monologue loop finishes and the agent is about to wait for input (e.g., `_90_waiting_for_input_msg.py` extension in `agent zero full code.md`), emit a `PROGRESS_UPDATE` or a specific "waiting_for_input" `STATE_DELTA`.
+    *   **In `Agent._get_response` (or equivalent LLM call method):**
+        *   Stream `AGENT_THOUGHT` events if the LLM generates thoughts/reasoning steps before the final JSON. This might require adapting the LLM calling utilities if they don't already support streaming intermediate thoughts. For now, we can emit a general "Thinking..." thought.
+    *   **In `Agent._extract_and_call_tool` (or equivalent tool execution logic):**
+        *   Before executing a tool, emit `TOOL_CALL_START` with tool name and arguments.
+        *   After tool execution, emit `TOOL_CALL_END` with tool name and the result (or error).
+    *   **Modify `Tool.execute_tool_with_response` (or `Agent._process_tool_response`):**
+        *   The `response` tool currently directly signals the end of the loop. We need to ensure that before it breaks the loop, a `TEXT_MESSAGE_CONTENT` (role: assistant) event is emitted for its final textual response. This might involve the `response` tool itself calling the `StreamProtocolTool`, or the `Agent` class handling it after the `response` tool indicates completion.
+    *   The `Agent` class will need access to an instance of `StreamProtocolTool` or a method to easily invoke its `emit_event` action. This could be done by instantiating the tool if needed or having a helper method.
+
+    ```python
+# agent.py (Illustrative Changes - apply to existing Agent Zero code)
+    # ... (other imports)
+    from python.tools.stream_protocol_tool import StreamProtocolTool, StreamEventType # New import
+
+    # ... (AgentContext class)
+
+    class Agent:
+        # ... (Existing __init__ and other methods)
+
+        async def _get_stream_protocol_tool(self) -> StreamProtocolTool:
+            """Helper to get or create an instance of StreamProtocolTool."""
+            # This tool might be better initialized once per agent or context
+            # For now, creating it on-demand if not found.
+            # Ensure proper context passing if it relies on agent.context.stream_transport
+            if not hasattr(self, '_stream_protocol_tool_instance'):
+                self._stream_protocol_tool_instance = StreamProtocolTool(self)
+            return self._stream_protocol_tool_instance
+
+        async def _emit_stream_event(self, event_type: StreamEventType, payload: Dict[str, Any]):
+            """Convenience method for emitting stream events."""
+            try:
+                tool = await self._get_stream_protocol_tool()
+                await tool.execute(
+                    action="emit_event", 
+                    event_type=event_type.value, # Pass the string value of the enum
+                    payload=payload,
+                    thread_id=self.get_thread_id(), # Assumes get_thread_id() exists from Task 2
+                    user_id=self.get_user_id()     # Assumes get_user_id() exists from Task 2
+                )
+            except Exception as e:
+                print(f"Agent {self.agent_name}: Error emitting stream event {event_type.value}: {e}")
+
+
+        async def monologue(self) -> Optional[str]:
+            # ... (existing monologue setup)
+            self.context.log.set_progress("Thinking...") # Existing progress update
+
+            # Emit an initial thought
+            await self._emit_stream_event(
+                StreamEventType.AGENT_THOUGHT,
+                {"content": "Starting to process the request."}
+            )
+
+            while True:
+                # ... (existing loop condition and intervention handling)
+
+                # Emit a general "thinking" thought before LLM call in each iteration
+                await self._emit_stream_event(
+                    StreamEventType.AGENT_THOUGHT,
+                    {"content": f"Iteration {self.iteration_no}: Preparing to call LLM."} # Assuming iteration_no exists
+                )
+
+                response_json = await self._get_response() # Existing LLM call
+                
+                if not response_json:
+                    # ... (handle no response, e.g., break or emit error)
+                    await self._emit_stream_event(
+                        StreamEventType.ERROR_EVENT,
+                        {"error": "LLM did not return a valid response."}
+                    )
+                    break
+                
+                # Extract thoughts from response_json and emit them
+                # Assuming response_json might have a 'thoughts' key based on Agent Zero's system prompts
+                agent_thoughts = response_json.get("thoughts", [])
+                if isinstance(agent_thoughts, list) and agent_thoughts:
+                    for thought in agent_thoughts:
+                        await self._emit_stream_event(
+                            StreamEventType.AGENT_THOUGHT,
+                            {"content": thought}
+                        )
+                elif isinstance(agent_thoughts, str) and agent_thoughts: # Handle single thought string
+                     await self._emit_stream_event(
+                            StreamEventType.AGENT_THOUGHT,
+                            {"content": agent_thoughts}
+                        )
+
+
+                tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+                # ... (existing tool extraction and handling logic)
+
+                if tool_name:
+                    # Emit TOOL_CALL_START before execution
+                    await self._emit_stream_event(
+                        StreamEventType.TOOL_CALL_START,
+                        {"tool_name": tool_name, "tool_args": tool_args}
+                    )
+                    
+                    # Log tool use (existing logic from Agent Zero)
+                    tool_log = self.context.log.log(
+                        type="tool", 
+                        heading=f"{self.agent_name}: Using tool '{tool_name}'", 
+                        content=str(tool_args)
+                    )
+                    self.context.current_tool_log_id = tool_log.id if tool_log else None
+
+                    tool_response = await self._call_tool(tool_name, tool_args, tool_message)
+                    
+                    # Update tool log with result (existing logic)
+                    if tool_log:
+                        tool_log.update(content=tool_response.message if tool_response else "No tool response")
+                    self.context.current_tool_log_id = None
+
+                    # Emit TOOL_CALL_END after execution
+                    await self._emit_stream_event(
+                        StreamEventType.TOOL_CALL_END,
+                        {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "result": tool_response.message if tool_response else None,
+                            "error": tool_response.error if tool_response and hasattr(tool_response, 'error') else None
+                        }
+                    )
+
+                    if tool_response and tool_response.break_loop:
+                        # If it's the 'response' tool (or any tool that breaks loop and provides final answer)
+                        if tool_name == "response" and tool_response.message:
+                            await self._emit_stream_event(
+                                StreamEventType.TEXT_MESSAGE_CONTENT,
+                                {"role": "assistant", "content": tool_response.message}
+                            )
+                            await self._emit_stream_event( # Indicate session might be idle or task complete
+                                StreamEventType.SESSION_END, # Or a custom "TASK_COMPLETE" if more appropriate
+                                {"reason": "Final response provided by agent."}
+                            )
+                        # ... (existing logic for breaking loop)
+                        return tool_response.message # Or handle as per Agent Zero's flow
+                # ... (rest of the loop)
+
+            # If monologue loop finishes without a 'response' tool breaking it (e.g., max iterations)
+            # This part might be reached if the agent is designed to "give up" or if it's waiting.
+            # The existing _90_waiting_for_input_msg.py extension logic might be relevant here.
+            # For now, let's assume if the loop ends, it implies a certain state.
+            await self._emit_stream_event(
+                StreamEventType.STATE_DELTA, # Or PROGRESS_UPDATE
+                {"status": "idle", "message": "Agent is waiting for input."}
+            )
+            return None # Or a default "waiting" message
+            
+        # Modify _extract_and_call_tool or where tools are invoked, if it's not already covered by monologue changes.
+        # The above monologue changes cover emitting TOOL_CALL_START and TOOL_CALL_END around _call_tool.
+
+        async def process_streamed_message(self, content: str, role: str = "user", attachments: Optional[List[Dict[str, Any]]] = None):
+            """
+            Processes a message received via the StreamProtocol, adds it to history,
+            and triggers the agent's monologue if it's a user message.
+            This was added in Task 2, now ensure it can lead to event emission.
+            """
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) processing streamed message: Role='{role}', Content='{content[:100]}...'")
+            
+            # Emit event that user message was received by the agent logic
+            # This is distinct from the StreamProtocolTool echoing the message.
+            await self._emit_stream_event(
+                StreamEventType.CONTEXT_UPDATE, # Or a more specific "USER_MESSAGE_INGESTED"
+                {"role": role, "content": content, "status": "processing_started"}
+            )
+
+            if role.lower() == "user":
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj) 
+                
+                # Monologue will now emit its own events (thoughts, tool calls, final response)
+                final_agent_response_text = await self.monologue()
+                
+                # If monologue doesn't end with 'response' tool (which emits TEXT_MESSAGE_CONTENT),
+                # but returns text, emit it here. However, the 'response' tool should be the one
+                # to emit the final assistant message.
+                if final_agent_response_text and not self.last_tool_was_response_tool: # Need a flag for this
+                    # This case should ideally be handled by the 'response' tool itself.
+                     await self._emit_stream_event(
+                        StreamEventType.TEXT_MESSAGE_CONTENT,
+                        {"role": "assistant", "content": final_agent_response_text}
+                    )
+                
+                return final_agent_response_text # Keep consistent with original return type if needed
+            else:
+                print(f"Agent {self.agent_name} received non-user streamed message (role: {role}), not triggering monologue.")
+                return None
+```
+
+    **Notes on `agent.py` changes:**
+    *   `_get_stream_protocol_tool()`: A helper to obtain the tool instance. Consider if this tool should be a member of the `Agent` class, initialized in `__init__`.
+    *   `_emit_stream_event()`: A convenience wrapper.
+    *   `monologue()`: Emits `AGENT_THOUGHT` at the start and before LLM calls.
+    *   `_extract_tool_from_response()` (and related logic): If the LLM response contains "thoughts", these should be emitted as `AGENT_THOUGHT` events before `TOOL_CALL_START`.
+    *   Tool Execution: `TOOL_CALL_START` and `TOOL_CALL_END` are emitted around the actual tool call. The `result` payload for `TOOL_CALL_END` should ideally be a serializable representation of the tool's output.
+    *   Final Response: The `response` tool (or the mechanism that produces the final assistant message) should be responsible for emitting a `TEXT_MESSAGE_CONTENT` event. The `monologue` is adjusted to emit `SESSION_END` or `TASK_COMPLETE` after a `response` tool.
+    *   `process_streamed_message()`: This now integrates more deeply, triggering `monologue` which in turn emits events.
+
+2.  **Modify `python/helpers/tool.py` (specifically the `response` tool or how it's handled):**
+    *   The existing `ResponseTool` in `python/tools/response.py` just returns a `Response` object that breaks the loop.
+    *   It needs to be augmented or the agent's handling of it needs to change so that `TEXT_MESSAGE_CONTENT` for the assistant's final reply is emitted *before* the loop breaks.
+
+    **Option A: Modify `ResponseTool`**
+    ```python
+# python/tools/response.py (Illustrative change)
+    from python.helpers.tool import Tool, Response as ToolResponse # Keep original Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType # Import needed items
+
+    class ResponseTool(Tool):
+        async def _emit_final_response_event(self, text_content: str):
+            # Helper to get stream tool instance, similar to Agent._get_stream_protocol_tool
+            # This is a bit tricky as tools don't usually create other tools.
+            # It might be better for the Agent class to handle this emission after ResponseTool signals completion.
+            # For now, let's assume direct emission for simplicity of this task.
+            try:
+                stream_tool = self.agent._get_stream_protocol_tool() # Access agent's helper
+                await stream_tool.execute(
+                    action="emit_event",
+                    event_type=StreamEventType.TEXT_MESSAGE_CONTENT.value,
+                    payload={"role": "assistant", "content": text_content},
+                    thread_id=self.agent.get_thread_id(),
+                    user_id=self.agent.get_user_id()
+                )
+                # Optionally, also emit a session/task end event here or let Agent.monologue handle it
+                await stream_tool.execute(
+                    action="emit_event",
+                    event_type=StreamEventType.SESSION_END.value, # Or a more specific "TASK_COMPLETED"
+                    payload={"reason": "Final response provided by agent."},
+                    thread_id=self.agent.get_thread_id(),
+                    user_id=self.agent.get_user_id()
+                )
+
+            except Exception as e:
+                print(f"ResponseTool: Error emitting final response event: {e}")
+
+        async def execute(self, **kwargs):
+            text_content = self.args.get("text", "No response content provided.")
+            
+            # Emit the final response content event
+            await self._emit_final_response_event(text_content)
+            
+            # Return the ToolResponse to break the loop as before
+            return ToolResponse(message=text_content, break_loop=True)
+
+        async def before_execution(self, **kwargs):
+            # Existing logging
+            self.log = self.agent.context.log.log(
+                type="response", 
+                heading=f"{self.agent.agent_name}: Responding", 
+                content=self.args.get("text", "")
+            )
+        
+        async def after_execution(self, response, **kwargs):
+            pass # History addition is usually handled by Agent class based on tool result
+```
+    **Option B (Preferred): Agent handles emission after `ResponseTool`**
+    The `monologue` changes shown above already try to address this by checking `if tool_name == "response"`. This is cleaner as the `ResponseTool`'s sole job is to signal completion with text.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1, 2, and 3 completed.
+*   `StreamProtocolTool` is functional for emitting events.
+*   `Agent` and `AgentContext` have `thread_id` and `user_id` support.
+*   A shared `StreamTransport` instance is accessible.
+
+**Integration with Agent Zero:**
+*   The core `Agent.monologue` and tool-handling logic are modified to make calls to `StreamProtocolTool._emit_event` (or its wrapper `Agent._emit_stream_event`).
+*   This makes the agent's internal steps observable via the AG-UI protocol.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Still indirect. If Chatterbox TTS were integrated as a tool (e.g., `tts_tool`), then `TOOL_CALL_START` and `TOOL_CALL_END` events would naturally be emitted for it.
+*   The `TEXT_MESSAGE_CONTENT` events emitted are for textual responses. If TTS is to be streamed, a different event type (e.g., custom `AUDIO_CHUNK` or `SSML_OUTPUT`) or a mechanism to send binary audio data over WebSockets would be needed, which is beyond this task but would leverage the `StreamProtocolTool`'s `emit_event`.
+
+**Docker Compatibility:**
+*   No new package dependencies. Changes are within existing Python files. Ensure these are correctly updated in the Docker image.
+
+**Summary of Task 4:**
+This task integrates event emission into the Agent Zero's core processing loop. Key stages like agent thoughts, tool invocations, and final responses will now generate corresponding `StreamEventType` events, making the agent's behavior streamable and observable by an AG-UI compliant frontend. The `ResponseTool` (or agent's handling of it) is adjusted to ensure final text responses are also emitted as standard events.
+
+Please confirm to proceed.Okay, let's proceed with Task 4.
+
+## Task 4: Integrate StreamProtocol Event Emission into Agent Core Logic
+
+**Focus:**
+This task involves modifying the core `Agent` class in `agent.py` to emit `StreamEventType` events using the `StreamProtocolTool` during its operation. This includes emitting events for agent thoughts, tool calls (start/end), and final responses. This will make the agent's internal workings transparent to an AG-UI compliant frontend.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py`:**
+
+    *   **In `Agent.monologue`:**
+        *   Before calling the LLM, emit an `AGENT_THOUGHT` event with a preliminary thought (e.g., "Processing user request...").
+        *   If the monologue loop finishes and the agent is about to wait for input (e.g., `_90_waiting_for_input_msg.py` extension in `agent zero full code.md`), emit a `PROGRESS_UPDATE` or a specific "waiting_for_input" `STATE_DELTA`.
+    *   **In `Agent._get_response` (or equivalent LLM call method):**
+        *   Stream `AGENT_THOUGHT` events if the LLM generates thoughts/reasoning steps before the final JSON. This might require adapting the LLM calling utilities if they don't already support streaming intermediate thoughts. For now, we can emit a general "Thinking..." thought.
+    *   **In `Agent._extract_and_call_tool` (or equivalent tool execution logic):**
+        *   Before executing a tool, emit `TOOL_CALL_START` with tool name and arguments.
+        *   After tool execution, emit `TOOL_CALL_END` with tool name and the result (or error).
+    *   **Modify `Tool.execute_tool_with_response` (or `Agent._process_tool_response`):**
+        *   The `response` tool currently directly signals the end of the loop. We need to ensure that before it breaks the loop, a `TEXT_MESSAGE_CONTENT` (role: assistant) event is emitted for its final textual response. This might involve the `response` tool itself calling the `StreamProtocolTool`, or the `Agent` class handling it after the `response` tool indicates completion.
+    *   The `Agent` class will need access to an instance of `StreamProtocolTool` or a method to easily invoke its `emit_event` action. This could be done by instantiating the tool if needed or having a helper method.
+
+    ```python
+    # agent.py (Illustrative Changes - apply to existing Agent Zero code)
+    # ... (other imports)
+    from python.tools.stream_protocol_tool import StreamProtocolTool, StreamEventType # New import
+
+    # ... (AgentContext class)
+
+    class Agent:
+        # ... (Existing __init__ and other methods)
+
+        async def _get_stream_protocol_tool(self) -> StreamProtocolTool:
+            """Helper to get or create an instance of StreamProtocolTool."""
+            # This tool might be better initialized once per agent or context
+            # For now, creating it on-demand if not found.
+            # Ensure proper context passing if it relies on agent.context.stream_transport
+            if not hasattr(self, '_stream_protocol_tool_instance'):
+                self._stream_protocol_tool_instance = StreamProtocolTool(self)
+            return self._stream_protocol_tool_instance
+
+        async def _emit_stream_event(self, event_type: StreamEventType, payload: Dict[str, Any]):
+            """Convenience method for emitting stream events."""
+            try:
+                tool = await self._get_stream_protocol_tool()
+                await tool.execute(
+                    action="emit_event", 
+                    event_type=event_type.value, # Pass the string value of the enum
+                    payload=payload,
+                    thread_id=self.get_thread_id(), # Assumes get_thread_id() exists from Task 2
+                    user_id=self.get_user_id()     # Assumes get_user_id() exists from Task 2
+                )
+            except Exception as e:
+                print(f"Agent {self.agent_name}: Error emitting stream event {event_type.value}: {e}")
+
+
+        async def monologue(self) -> Optional[str]:
+            # ... (existing monologue setup)
+            self.context.log.set_progress("Thinking...") # Existing progress update
+
+            # Emit an initial thought
+            await self._emit_stream_event(
+                StreamEventType.AGENT_THOUGHT,
+                {"content": "Starting to process the request."}
+            )
+
+            while True:
+                # ... (existing loop condition and intervention handling)
+
+                # Emit a general "thinking" thought before LLM call in each iteration
+                await self._emit_stream_event(
+                    StreamEventType.AGENT_THOUGHT,
+                    {"content": f"Iteration {self.iteration_no}: Preparing to call LLM."} # Assuming iteration_no exists
+                )
+
+                response_json = await self._get_response() # Existing LLM call
+                
+                if not response_json:
+                    # ... (handle no response, e.g., break or emit error)
+                    await self._emit_stream_event(
+                        StreamEventType.ERROR_EVENT,
+                        {"error": "LLM did not return a valid response."}
+                    )
+                    break
+                
+                # Extract thoughts from response_json and emit them
+                # Assuming response_json might have a 'thoughts' key based on Agent Zero's system prompts
+                agent_thoughts = response_json.get("thoughts", [])
+                if isinstance(agent_thoughts, list) and agent_thoughts:
+                    for thought in agent_thoughts:
+                        await self._emit_stream_event(
+                            StreamEventType.AGENT_THOUGHT,
+                            {"content": thought}
+                        )
+                elif isinstance(agent_thoughts, str) and agent_thoughts: # Handle single thought string
+                     await self._emit_stream_event(
+                            StreamEventType.AGENT_THOUGHT,
+                            {"content": agent_thoughts}
+                        )
+
+
+                tool_name, tool_args, tool_message = self._extract_tool_from_response(response_json)
+                # ... (existing tool extraction and handling logic)
+
+                if tool_name:
+                    # Emit TOOL_CALL_START before execution
+                    await self._emit_stream_event(
+                        StreamEventType.TOOL_CALL_START,
+                        {"tool_name": tool_name, "tool_args": tool_args}
+                    )
+                    
+                    # Log tool use (existing logic from Agent Zero)
+                    tool_log = self.context.log.log(
+                        type="tool", 
+                        heading=f"{self.agent_name}: Using tool '{tool_name}'", 
+                        content=str(tool_args)
+                    )
+                    self.context.current_tool_log_id = tool_log.id if tool_log else None
+
+                    tool_response = await self._call_tool(tool_name, tool_args, tool_message)
+                    
+                    # Update tool log with result (existing logic)
+                    if tool_log:
+                        tool_log.update(content=tool_response.message if tool_response else "No tool response")
+                    self.context.current_tool_log_id = None
+
+                    # Emit TOOL_CALL_END after execution
+                    await self._emit_stream_event(
+                        StreamEventType.TOOL_CALL_END,
+                        {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "result": tool_response.message if tool_response else None,
+                            "error": tool_response.error if tool_response and hasattr(tool_response, 'error') else None
+                        }
+                    )
+
+                    if tool_response and tool_response.break_loop:
+                        # If it's the 'response' tool (or any tool that breaks loop and provides final answer)
+                        if tool_name == "response" and tool_response.message:
+                            await self._emit_stream_event(
+                                StreamEventType.TEXT_MESSAGE_CONTENT,
+                                {"role": "assistant", "content": tool_response.message}
+                            )
+                            await self._emit_stream_event( # Indicate session might be idle or task complete
+                                StreamEventType.SESSION_END, # Or a custom "TASK_COMPLETE" if more appropriate
+                                {"reason": "Final response provided by agent."}
+                            )
+                        # ... (existing logic for breaking loop)
+                        return tool_response.message # Or handle as per Agent Zero's flow
+                # ... (rest of the loop)
+
+            # If monologue loop finishes without a 'response' tool breaking it (e.g., max iterations)
+            # This part might be reached if the agent is designed to "give up" or if it's waiting.
+            # The existing _90_waiting_for_input_msg.py extension logic might be relevant here.
+            # For now, let's assume if the loop ends, it implies a certain state.
+            await self._emit_stream_event(
+                StreamEventType.STATE_DELTA, # Or PROGRESS_UPDATE
+                {"status": "idle", "message": "Agent is waiting for input."}
+            )
+            return None # Or a default "waiting" message
+            
+        # Modify _extract_and_call_tool or where tools are invoked, if it's not already covered by monologue changes.
+        # The above monologue changes cover emitting TOOL_CALL_START and TOOL_CALL_END around _call_tool.
+
+        async def process_streamed_message(self, content: str, role: str = "user", attachments: Optional[List[Dict[str, Any]]] = None):
+            """
+            Processes a message received via the StreamProtocol, adds it to history,
+            and triggers the agent's monologue if it's a user message.
+            This was added in Task 2, now ensure it can lead to event emission.
+            """
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) processing streamed message: Role='{role}', Content='{content[:100]}...'")
+            
+            # Emit event that user message was received by the agent logic
+            # This is distinct from the StreamProtocolTool echoing the message.
+            await self._emit_stream_event(
+                StreamEventType.CONTEXT_UPDATE, # Or a more specific "USER_MESSAGE_INGESTED"
+                {"role": role, "content": content, "status": "processing_started"}
+            )
+
+            if role.lower() == "user":
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj) 
+                
+                # Monologue will now emit its own events (thoughts, tool calls, final response)
+                final_agent_response_text = await self.monologue()
+                
+                # If monologue doesn't end with 'response' tool (which emits TEXT_MESSAGE_CONTENT),
+                # but returns text, emit it here. However, the 'response' tool should be the one
+                # to emit the final assistant message.
+                if final_agent_response_text and not self.last_tool_was_response_tool: # Need a flag for this
+                    # This case should ideally be handled by the 'response' tool itself.
+                     await self._emit_stream_event(
+                        StreamEventType.TEXT_MESSAGE_CONTENT,
+                        {"role": "assistant", "content": final_agent_response_text}
+                    )
+                
+                return final_agent_response_text # Keep consistent with original return type if needed
+            else:
+                print(f"Agent {self.agent_name} received non-user streamed message (role: {role}), not triggering monologue.")
+                return None
+    ```
+
+    **Notes on `agent.py` changes:**
+    *   `_get_stream_protocol_tool()`: A helper to obtain the tool instance. Consider if this tool should be a member of the `Agent` class, initialized in `__init__`.
+    *   `_emit_stream_event()`: A convenience wrapper.
+    *   `monologue()`: Emits `AGENT_THOUGHT` at the start and before LLM calls.
+    *   `_extract_tool_from_response()` (and related logic): If the LLM response contains "thoughts", these should be emitted as `AGENT_THOUGHT` events before `TOOL_CALL_START`.
+    *   Tool Execution: `TOOL_CALL_START` and `TOOL_CALL_END` are emitted around the actual tool call. The `result` payload for `TOOL_CALL_END` should ideally be a serializable representation of the tool's output.
+    *   Final Response: The `response` tool (or the mechanism that produces the final assistant message) should be responsible for emitting a `TEXT_MESSAGE_CONTENT` event. The `monologue` is adjusted to emit `SESSION_END` or `TASK_COMPLETE` after a `response` tool.
+    *   `process_streamed_message()`: This now integrates more deeply, triggering `monologue` which in turn emits events.
+
+2.  **Modify `python/helpers/tool.py` (specifically the `response` tool or how it's handled):**
+    *   The existing `ResponseTool` in `python/tools/response.py` just returns a `Response` object that breaks the loop.
+    *   It needs to be augmented or the agent's handling of it needs to change so that `TEXT_MESSAGE_CONTENT` for the assistant's final reply is emitted *before* the loop breaks.
+
+    **Option A: Modify `ResponseTool`**
+    ```python
+    # python/tools/response.py (Illustrative change)
+    from python.helpers.tool import Tool, Response as ToolResponse # Keep original Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType # Import needed items
+
+    class ResponseTool(Tool):
+        async def _emit_final_response_event(self, text_content: str):
+            # Helper to get stream tool instance, similar to Agent._get_stream_protocol_tool
+            # This is a bit tricky as tools don't usually create other tools.
+            # It might be better for the Agent class to handle this emission after ResponseTool signals completion.
+            # For now, let's assume direct emission for simplicity of this task.
+            try:
+                stream_tool = self.agent._get_stream_protocol_tool() # Access agent's helper
+                await stream_tool.execute(
+                    action="emit_event",
+                    event_type=StreamEventType.TEXT_MESSAGE_CONTENT.value,
+                    payload={"role": "assistant", "content": text_content},
+                    thread_id=self.agent.get_thread_id(),
+                    user_id=self.agent.get_user_id()
+                )
+                # Optionally, also emit a session/task end event here or let Agent.monologue handle it
+                await stream_tool.execute(
+                    action="emit_event",
+                    event_type=StreamEventType.SESSION_END.value, # Or a more specific "TASK_COMPLETED"
+                    payload={"reason": "Final response provided by agent."},
+                    thread_id=self.agent.get_thread_id(),
+                    user_id=self.agent.get_user_id()
+                )
+
+            except Exception as e:
+                print(f"ResponseTool: Error emitting final response event: {e}")
+
+        async def execute(self, **kwargs):
+            text_content = self.args.get("text", "No response content provided.")
+            
+            # Emit the final response content event
+            await self._emit_final_response_event(text_content)
+            
+            # Return the ToolResponse to break the loop as before
+            return ToolResponse(message=text_content, break_loop=True)
+
+        async def before_execution(self, **kwargs):
+            # Existing logging
+            self.log = self.agent.context.log.log(
+                type="response", 
+                heading=f"{self.agent.agent_name}: Responding", 
+                content=self.args.get("text", "")
+            )
+        
+        async def after_execution(self, response, **kwargs):
+            pass # History addition is usually handled by Agent class based on tool result
+    ```
+    **Option B (Preferred): Agent handles emission after `ResponseTool`**
+    The `monologue` changes shown above already try to address this by checking `if tool_name == "response"`. This is cleaner as the `ResponseTool`'s sole job is to signal completion with text.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1, 2, and 3 completed.
+*   `StreamProtocolTool` is functional for emitting events.
+*   `Agent` and `AgentContext` have `thread_id` and `user_id` support.
+*   A shared `StreamTransport` instance is accessible.
+
+**Integration with Agent Zero:**
+*   The core `Agent.monologue` and tool-handling logic are modified to make calls to `StreamProtocolTool._emit_event` (or its wrapper `Agent._emit_stream_event`).
+*   This makes the agent's internal steps observable via the AG-UI protocol.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Still indirect. If Chatterbox TTS were integrated as a tool (e.g., `tts_tool`), then `TOOL_CALL_START` and `TOOL_CALL_END` events would naturally be emitted for it.
+*   The `TEXT_MESSAGE_CONTENT` events emitted are for textual responses. If TTS is to be streamed, a different event type (e.g., custom `AUDIO_CHUNK` or `SSML_OUTPUT`) or a mechanism to send binary audio data over WebSockets would be needed, which is beyond this task but would leverage the `StreamProtocolTool`'s `emit_event`.
+
+**Docker Compatibility:**
+*   No new package dependencies. Changes are within existing Python files. Ensure these are correctly updated in the Docker image.
+
+**Summary of Task 4:**
+This task integrates event emission into the Agent Zero's core processing loop. Key stages like agent thoughts, tool invocations, and final responses will now generate corresponding `StreamEventType` events, making the agent's behavior streamable and observable by an AG-UI compliant frontend. The `ResponseTool` (or agent's handling of it) is adjusted to ensure final text responses are also emitted as standard events.
+
+Please confirm to proceed.

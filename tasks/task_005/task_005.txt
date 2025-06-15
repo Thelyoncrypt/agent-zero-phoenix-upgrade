@@ -1,0 +1,806 @@
+## Task 5: Implement Basic BrowserAgent (Stagehand) Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `BrowserAgentTool` within Agent Zero. It will include placeholder implementations for the core Stagehand actions (`navigate`, `act`, `extract`, `agent_execute`). Actual browser automation logic (e.g., Playwright integration, AI model calls for `act` and `extract`) will be deferred to later tasks. The goal here is to create the tool's interface and integrate it into Agent Zero's tool system, allowing the agent to "call" these browser actions, even if they only log or return mock data for now. This task also involves setting up the necessary directory structure for `BrowserAgent` components as outlined in the "Enhanced Agent Zero Architecture."
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories:**
+    *   `python/agents/`
+    *   `python/agents/browser_agent/`
+
+2.  **Create `python/agents/browser_agent/browser.py` (Placeholder):**
+    This file will eventually contain the `BrowserManager` and related classes from Stagehand. For now, a simple placeholder.
+
+    ```python
+# python/agents/browser_agent/browser.py
+    import asyncio
+
+    class PageMock:
+        """A mock for a Playwright Page object."""
+        def __init__(self, url="about:blank"):
+            self.current_url = url
+            self.current_title = "Mock Page"
+            print(f"PageMock initialized for URL: {self.current_url}")
+
+        async def goto(self, url: str):
+            self.current_url = url
+            self.current_title = f"Mock Page for {url.split('//')[-1].split('/')[0]}"
+            print(f"PageMock: Navigated to {url}")
+            await asyncio.sleep(0.1) # Simulate network latency
+            return {"status": "success", "url": self.current_url}
+
+        async def title(self) -> str:
+            return self.current_title
+        
+        @property
+        def url(self) -> str:
+            return self.current_url
+
+        async def close(self):
+            print(f"PageMock: Closed page {self.current_url}")
+
+    class BrowserMock:
+        """A mock for a Playwright Browser object."""
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+            self.pages = []
+            self._current_page: PageMock = PageMock() # Default page
+            print(f"BrowserMock session {session_id} initialized.")
+
+        async def new_page(self) -> PageMock:
+            # For simplicity, let's reuse/reset a single mock page per browser mock instance
+            self._current_page = PageMock() 
+            print(f"BrowserMock ({self.session_id}): New page created/reset.")
+            return self._current_page
+        
+        @property
+        def page(self) -> PageMock: # Convenience to get the "current" page
+            if not self._current_page:
+                asyncio.run(self.new_page()) # Should not happen in async context if always new_page is called
+            return self._current_page
+
+
+        async def close(self):
+            print(f"BrowserMock session {self.session_id} closed.")
+
+
+    class BrowserManager:
+        """
+        Manages browser instances (mocked for now).
+        In a real implementation, this would handle Playwright browser contexts.
+        """
+        def __init__(self):
+            self.browsers: Dict[str, BrowserMock] = {}
+            print("BrowserManager (Mock) initialized.")
+
+        async def get_browser(self, session_id: str = "default") -> BrowserMock:
+            if session_id not in self.browsers:
+                print(f"BrowserManager: Creating new mock browser session for {session_id}")
+                self.browsers[session_id] = BrowserMock(session_id)
+            return self.browsers[session_id]
+
+        async def close_browser(self, session_id: str = "default"):
+            if session_id in self.browsers:
+                await self.browsers[session_id].close()
+                del self.browsers[session_id]
+                print(f"BrowserManager: Closed mock browser session for {session_id}")
+
+        async def close_all_browsers(self):
+            for session_id in list(self.browsers.keys()):
+                await self.close_browser(session_id)
+            print("BrowserManager: All mock browser sessions closed.")
+```
+
+3.  **Create `python/agents/browser_agent/ai_models.py` (Placeholder):**
+
+    ```python
+# python/agents/browser_agent/ai_models.py
+    from typing import Dict, Any
+
+    class AIModelProvider:
+        """
+        Manages AI models for browser automation (mocked for now).
+        In a real implementation, this would integrate with OpenAI, Anthropic, etc.
+        """
+        def __init__(self):
+            print("AIModelProvider (Mock) initialized.")
+
+        async def get_computer_use_agent(self, model_name: str = "computer-use-preview"):
+            print(f"AIModelProvider: Mocking get_computer_use_agent for model {model_name}")
+            return ComputerUseAgentMock(model_name)
+
+    class ComputerUseAgentMock:
+        def __init__(self, model_name: str):
+            self.model_name = model_name
+            print(f"ComputerUseAgentMock initialized with model: {model_name}")
+
+        async def execute(self, instructions: str) -> Dict[str, Any]:
+            print(f"ComputerUseAgentMock: Executing instructions: '{instructions[:100]}...'")
+            # Simulate some action
+            if "login" in instructions.lower():
+                return {"status": "success", "action_taken": "simulated login", "details": "Logged in to mock service."}
+            elif "search" in instructions.lower():
+                return {"status": "success", "action_taken": "simulated search", "results_summary": "Found 3 mock results."}
+            else:
+                return {"status": "success", "action_taken": "simulated generic action", "details": f"Processed: {instructions[:50]}"}
+```
+
+4.  **Create `python/agents/browser_agent/actions.py` (Placeholder):**
+
+    ```python
+# python/agents/browser_agent/actions.py
+    from typing import Dict, Any, Optional
+    # from .browser import PageMock # Assuming PageMock is defined in browser.py
+
+    class ActionExecutor:
+        """
+        Executes actions on a browser page (mocked for now).
+        In a real implementation, this would use AI to interpret instructions
+        and interact with the DOM.
+        """
+        def __init__(self):
+            print("ActionExecutor (Mock) initialized.")
+
+        async def execute_ai_action(self, page, instructions: str) -> Dict[str, Any]:
+            # page would be a Playwright Page object in real Stagehand
+            print(f"ActionExecutor: Mock AI action on page {page.url} with instructions: '{instructions[:100]}...'")
+            if "click" in instructions.lower():
+                action_detail = "simulated click on a button"
+            elif "type" in instructions.lower():
+                action_detail = "simulated typing into a field"
+            else:
+                action_detail = "simulated generic page interaction"
+            
+            return {"status": "success", "action_taken": action_detail, "target_url": page.url}
+
+        async def extract_data(self, page, instructions: str, schema: Optional[Dict] = None) -> Dict[str, Any]:
+            # page would be a Playwright Page object
+            print(f"ActionExecutor: Mock data extraction from page {page.url} with instructions: '{instructions[:100]}...'")
+            if schema:
+                mock_data = {key: f"mock_value_for_{key}" for key in schema.get("properties", {}).keys()}
+                return {"status": "success", "extracted_data": mock_data, "schema_used": True}
+            else:
+                return {"status": "success", "extracted_data": {"title": page.title, "first_heading": "Mock Heading"}, "schema_used": False}
+```
+
+5.  **Create `python/tools/browser_agent_tool.py`:**
+    This file implements the Agent Zero tool that interfaces with the `BrowserManager`, `AIModelProvider`, and `ActionExecutor`.
+
+    ```python
+# python/tools/browser_agent_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse # Agent Zero's Tool and Response
+    from python.tools.stream_protocol_tool import StreamEventType # For emitting browser action events
+    from agents.browser_agent.browser import BrowserManager
+    from agents.browser_agent.ai_models import AIModelProvider
+    from agents.browser_agent.actions import ActionExecutor
+    import asyncio
+    import json
+    from typing import Dict, Any, Optional
+
+    class BrowserAgentTool(Tool):
+        """
+        BrowserAgent (Stagehand inspired) integration for Agent Zero.
+        Provides AI-powered browser automation and computer use capabilities.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="browser_agent", 
+                             description="Controls a browser to navigate, interact with web pages, and extract information using AI.",
+                             args_schema=None, # A proper JSON schema should be defined later for args
+                             **kwargs)
+            # These should ideally be singletons or managed at a higher level if shared across tool instances/agents
+            self.browser_manager = BrowserManager()
+            self.ai_provider = AIModelProvider()
+            self.action_executor = ActionExecutor()
+            # self.active_sessions = {} # State for browser sessions, managed by BrowserManager now
+            print(f"BrowserAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        async def _emit_browser_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit browser_action events via StreamProtocolTool."""
+            payload = {"action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            # Access StreamProtocolTool through the agent (assuming it's available)
+            # This assumes Task 4's _get_stream_protocol_tool() or similar is on the Agent class
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.BROWSER_ACTION, payload)
+            else:
+                print(f"BrowserAgentTool: Agent does not have _emit_stream_event method. Cannot emit BROWSER_ACTION.")
+
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute BrowserAgent operations.
+            
+            Args:
+                action (str): The browser action to perform (e.g., "navigate", "act", "extract").
+                **kwargs: Arguments specific to the action.
+            """
+            
+            session_id = kwargs.get("session_id", self.agent.get_thread_id() or "default_browser_session")
+
+            try:
+                if action == "navigate":
+                    url = kwargs.get("url")
+                    if not url:
+                        return ToolResponse(message="Error: 'url' is required for navigate action.", error=True)
+                    return await self._navigate(url, session_id)
+                elif action == "act":
+                    instructions = kwargs.get("instructions")
+                    if not instructions:
+                        return ToolResponse(message="Error: 'instructions' are required for act action.", error=True)
+                    return await self._ai_act(instructions, session_id)
+                elif action == "extract":
+                    instructions = kwargs.get("instructions")
+                    schema = kwargs.get("schema") # Optional
+                    if not instructions:
+                        return ToolResponse(message="Error: 'instructions' are required for extract action.", error=True)
+                    return await self._extract(instructions, schema, session_id)
+                elif action == "agent_execute": # Computer use agent
+                    instructions = kwargs.get("instructions")
+                    model = kwargs.get("model", "computer-use-preview")
+                    if not instructions:
+                        return ToolResponse(message="Error: 'instructions' are required for agent_execute action.", error=True)
+                    return await self._agent_execute(instructions, model)
+                elif action == "close_session":
+                    return await self._close_session(session_id)
+                else:
+                    return ToolResponse(message=f"Unknown BrowserAgent action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"BrowserAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_browser_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _navigate(self, url: str, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("navigate", "starting", {"url": url, "session_id": session_id})
+            
+            browser_mock = await self.browser_manager.get_browser(session_id)
+            page_mock = await browser_mock.new_page() # Ensure a fresh page context for navigation
+            nav_result = await page_mock.goto(url)
+            
+            result_payload = {
+                "url": page_mock.url, "title": await page_mock.title(), "session_id": session_id,
+                "details": f"Mock navigation to {url} successful."
+            }
+            await self._emit_browser_event("navigate", "completed", result_payload)
+            return ToolResponse(message=json.dumps(result_payload))
+
+        async def _ai_act(self, instructions: str, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("ai_act", "processing", {"instructions": instructions, "session_id": session_id})
+            
+            browser_mock = await self.browser_manager.get_browser(session_id)
+            page_mock = browser_mock.page # Get current page of the session
+            
+            act_result = await self.action_executor.execute_ai_action(page_mock, instructions)
+            
+            await self._emit_browser_event("ai_act", "completed", {"result": act_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(act_result))
+
+        async def _extract(self, instructions: str, schema: Optional[Dict], session_id: str) -> ToolResponse:
+            await self._emit_browser_event("extract_data", "processing", {"instructions": instructions, "session_id": session_id})
+
+            browser_mock = await self.browser_manager.get_browser(session_id)
+            page_mock = browser_mock.page
+            
+            extract_result = await self.action_executor.extract_data(page_mock, instructions, schema)
+            
+            await self._emit_browser_event("extract_data", "completed", {"result": extract_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(extract_result))
+
+        async def _agent_execute(self, instructions: str, model: str) -> ToolResponse:
+            # This action might not be tied to a specific browser session_id in the same way,
+            # as it's more about general computer use instruction.
+            # However, if it implies browser interaction, it would need a session.
+            # For now, let's assume it's a general computer use model.
+            session_id = self.agent.get_thread_id() or "default_computer_use_session" # Or a dedicated session ID
+            await self._emit_browser_event("agent_execute", "processing", {"instructions": instructions, "model": model, "session_id": session_id})
+
+            # Stagehand's computer use agent might manage its own browser instance or take one.
+            # Here, we use a mock AI model provider.
+            computer_agent_mock = await self.ai_provider.get_computer_use_agent(model)
+            exec_result = await computer_agent_mock.execute(instructions)
+            
+            await self._emit_browser_event("agent_execute", "completed", {"result": exec_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(exec_result))
+
+        async def _close_session(self, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("close_session", "processing", {"session_id": session_id})
+            await self.browser_manager.close_browser(session_id)
+            await self._emit_browser_event("close_session", "completed", {"session_id": session_id})
+            return ToolResponse(message=f"Browser session {session_id} closed.")
+```
+
+6.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `browser_agent` to the list of available tools.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing tools)
+
+    {{ include './agent.system.tool.browser.md' }}
+```
+
+7.  **Create `prompts/default/agent.system.tool.browser.md`:**
+    This was specified in `agent zero full code.md` already but verify its content. The content provided in `agent zero full code.md` is suitable as a starting point.
+
+    ```markdown
+# prompts/default/agent.system.tool.browser.md
+    ### browser_agent:
+    # 
+    # subordinate agent controls playwright browser
+    # message argument talks to agent give clear instructions credentials task based
+    # reset argument spawns new agent
+    # do not reset if iterating
+    # be precise descriptive like: open google login and end task, log in using ... and end task
+    # when following up start: considering open pages
+    # dont use phrase wait for instructions use end task
+    # downloads default in /a0/tmp/downloads
+    # 
+    # Usage for specific actions:
+    # To navigate:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { "action": "navigate", "url": "https://example.com", "session_id": "optional_session_name" }
+    # }
+    # To perform AI actions on the current page:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { "action": "act", "instructions": "Click the 'Login' button and then type 'testuser' into the username field.", "session_id": "optional_session_name" }
+    # }
+    # To extract structured data:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { 
+    #     "action": "extract", 
+    #     "instructions": "Extract the article title and author name.", 
+    #     "schema": { "type": "object", "properties": { "title": {"type": "string"}, "author": {"type": "string"} } },
+    #     "session_id": "optional_session_name" 
+    #   }
+    # }
+    # To use computer use agent for complex tasks:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { "action": "agent_execute", "instructions": "Find the latest NVIDIA stock price and save it to a file named stock_price.txt." }
+    # }
+    # To close a browser session:
+    # {
+    #  "tool_name": "browser_agent",
+    #  "tool_args": { "action": "close_session", "session_id": "session_to_close" }
+    # }
+    #
+    # If session_id is omitted, a default session related to the current conversation/thread will be used.
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-4 completed.
+*   `StreamProtocolTool` available for emitting `BROWSER_ACTION` events.
+*   `Agent` class has `_emit_stream_event` helper method.
+
+**Integration with Agent Zero:**
+*   `BrowserAgentTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `BROWSER_ACTION` events via the agent's `_emit_stream_event` method, which in turn uses the `StreamProtocolTool`.
+*   The tool's description and usage examples are added to the system prompts.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies are added by these placeholder files.
+*   Ensure the new directory structure `python/agents/browser_agent/` and the new tool file `python/tools/browser_agent_tool.py` are included in the Docker image.
+*   The prompt file `prompts/default/agent.system.tool.browser.md` also needs to be included.
+
+**Summary of Task 5:**
+This task sets up the skeleton for the `BrowserAgentTool` and its underlying (mocked) components. It defines the tool's interface within Agent Zero, allowing the agent to invoke browser-related actions. While these actions are placeholders for now, their invocation and the emission of corresponding `BROWSER_ACTION` events via the StreamProtocol are established. This prepares for the later integration of actual browser automation libraries (like Playwright) and AI models for page interaction.
+
+Please confirm to proceed.Okay, let's proceed with Task 5.
+
+## Task 5: Implement Basic BrowserAgent (Stagehand) Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `BrowserAgentTool` within Agent Zero. It will include placeholder implementations for the core Stagehand actions (`navigate`, `act`, `extract`, `agent_execute`). Actual browser automation logic (e.g., Playwright integration, AI model calls for `act` and `extract`) will be deferred to later tasks. The goal here is to create the tool's interface and integrate it into Agent Zero's tool system, allowing the agent to "call" these browser actions, even if they only log or return mock data for now. This task also involves setting up the necessary directory structure for `BrowserAgent` components as outlined in the "Enhanced Agent Zero Architecture."
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories:**
+    *   `python/agents/`
+    *   `python/agents/browser_agent/`
+
+2.  **Create `python/agents/browser_agent/browser.py` (Placeholder):**
+    This file will eventually contain the `BrowserManager` and related classes from Stagehand. For now, a simple placeholder.
+
+    ```python
+    # python/agents/browser_agent/browser.py
+    import asyncio
+
+    class PageMock:
+        """A mock for a Playwright Page object."""
+        def __init__(self, url="about:blank"):
+            self.current_url = url
+            self.current_title = "Mock Page"
+            print(f"PageMock initialized for URL: {self.current_url}")
+
+        async def goto(self, url: str):
+            self.current_url = url
+            self.current_title = f"Mock Page for {url.split('//')[-1].split('/')[0]}"
+            print(f"PageMock: Navigated to {url}")
+            await asyncio.sleep(0.1) # Simulate network latency
+            return {"status": "success", "url": self.current_url}
+
+        async def title(self) -> str:
+            return self.current_title
+        
+        @property
+        def url(self) -> str:
+            return self.current_url
+
+        async def close(self):
+            print(f"PageMock: Closed page {self.current_url}")
+
+    class BrowserMock:
+        """A mock for a Playwright Browser object."""
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+            self.pages = []
+            self._current_page: PageMock = PageMock() # Default page
+            print(f"BrowserMock session {session_id} initialized.")
+
+        async def new_page(self) -> PageMock:
+            # For simplicity, let's reuse/reset a single mock page per browser mock instance
+            self._current_page = PageMock() 
+            print(f"BrowserMock ({self.session_id}): New page created/reset.")
+            return self._current_page
+        
+        @property
+        def page(self) -> PageMock: # Convenience to get the "current" page
+            if not self._current_page:
+                asyncio.run(self.new_page()) # Should not happen in async context if always new_page is called
+            return self._current_page
+
+
+        async def close(self):
+            print(f"BrowserMock session {self.session_id} closed.")
+
+
+    class BrowserManager:
+        """
+        Manages browser instances (mocked for now).
+        In a real implementation, this would handle Playwright browser contexts.
+        """
+        def __init__(self):
+            self.browsers: Dict[str, BrowserMock] = {}
+            print("BrowserManager (Mock) initialized.")
+
+        async def get_browser(self, session_id: str = "default") -> BrowserMock:
+            if session_id not in self.browsers:
+                print(f"BrowserManager: Creating new mock browser session for {session_id}")
+                self.browsers[session_id] = BrowserMock(session_id)
+            return self.browsers[session_id]
+
+        async def close_browser(self, session_id: str = "default"):
+            if session_id in self.browsers:
+                await self.browsers[session_id].close()
+                del self.browsers[session_id]
+                print(f"BrowserManager: Closed mock browser session for {session_id}")
+
+        async def close_all_browsers(self):
+            for session_id in list(self.browsers.keys()):
+                await self.close_browser(session_id)
+            print("BrowserManager: All mock browser sessions closed.")
+
+    ```
+
+3.  **Create `python/agents/browser_agent/ai_models.py` (Placeholder):**
+
+    ```python
+    # python/agents/browser_agent/ai_models.py
+    from typing import Dict, Any
+
+    class AIModelProvider:
+        """
+        Manages AI models for browser automation (mocked for now).
+        In a real implementation, this would integrate with OpenAI, Anthropic, etc.
+        """
+        def __init__(self):
+            print("AIModelProvider (Mock) initialized.")
+
+        async def get_computer_use_agent(self, model_name: str = "computer-use-preview"):
+            print(f"AIModelProvider: Mocking get_computer_use_agent for model {model_name}")
+            return ComputerUseAgentMock(model_name)
+
+    class ComputerUseAgentMock:
+        def __init__(self, model_name: str):
+            self.model_name = model_name
+            print(f"ComputerUseAgentMock initialized with model: {model_name}")
+
+        async def execute(self, instructions: str) -> Dict[str, Any]:
+            print(f"ComputerUseAgentMock: Executing instructions: '{instructions[:100]}...'")
+            # Simulate some action
+            if "login" in instructions.lower():
+                return {"status": "success", "action_taken": "simulated login", "details": "Logged in to mock service."}
+            elif "search" in instructions.lower():
+                return {"status": "success", "action_taken": "simulated search", "results_summary": "Found 3 mock results."}
+            else:
+                return {"status": "success", "action_taken": "simulated generic action", "details": f"Processed: {instructions[:50]}"}
+    ```
+
+4.  **Create `python/agents/browser_agent/actions.py` (Placeholder):**
+
+    ```python
+    # python/agents/browser_agent/actions.py
+    from typing import Dict, Any, Optional
+    # from .browser import PageMock # Assuming PageMock is defined in browser.py
+
+    class ActionExecutor:
+        """
+        Executes actions on a browser page (mocked for now).
+        In a real implementation, this would use AI to interpret instructions
+        and interact with the DOM.
+        """
+        def __init__(self):
+            print("ActionExecutor (Mock) initialized.")
+
+        async def execute_ai_action(self, page, instructions: str) -> Dict[str, Any]:
+            # page would be a Playwright Page object in real Stagehand
+            print(f"ActionExecutor: Mock AI action on page {page.url} with instructions: '{instructions[:100]}...'")
+            if "click" in instructions.lower():
+                action_detail = "simulated click on a button"
+            elif "type" in instructions.lower():
+                action_detail = "simulated typing into a field"
+            else:
+                action_detail = "simulated generic page interaction"
+            
+            return {"status": "success", "action_taken": action_detail, "target_url": page.url}
+
+        async def extract_data(self, page, instructions: str, schema: Optional[Dict] = None) -> Dict[str, Any]:
+            # page would be a Playwright Page object
+            print(f"ActionExecutor: Mock data extraction from page {page.url} with instructions: '{instructions[:100]}...'")
+            if schema:
+                mock_data = {key: f"mock_value_for_{key}" for key in schema.get("properties", {}).keys()}
+                return {"status": "success", "extracted_data": mock_data, "schema_used": True}
+            else:
+                return {"status": "success", "extracted_data": {"title": page.title, "first_heading": "Mock Heading"}, "schema_used": False}
+
+    ```
+
+5.  **Create `python/tools/browser_agent_tool.py`:**
+    This file implements the Agent Zero tool that interfaces with the `BrowserManager`, `AIModelProvider`, and `ActionExecutor`.
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse # Agent Zero's Tool and Response
+    from python.tools.stream_protocol_tool import StreamEventType # For emitting browser action events
+    from agents.browser_agent.browser import BrowserManager
+    from agents.browser_agent.ai_models import AIModelProvider
+    from agents.browser_agent.actions import ActionExecutor
+    import asyncio
+    import json
+    from typing import Dict, Any, Optional
+
+    class BrowserAgentTool(Tool):
+        """
+        BrowserAgent (Stagehand inspired) integration for Agent Zero.
+        Provides AI-powered browser automation and computer use capabilities.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="browser_agent", 
+                             description="Controls a browser to navigate, interact with web pages, and extract information using AI.",
+                             args_schema=None, # A proper JSON schema should be defined later for args
+                             **kwargs)
+            # These should ideally be singletons or managed at a higher level if shared across tool instances/agents
+            self.browser_manager = BrowserManager()
+            self.ai_provider = AIModelProvider()
+            self.action_executor = ActionExecutor()
+            # self.active_sessions = {} # State for browser sessions, managed by BrowserManager now
+            print(f"BrowserAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        async def _emit_browser_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit browser_action events via StreamProtocolTool."""
+            payload = {"action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            # Access StreamProtocolTool through the agent (assuming it's available)
+            # This assumes Task 4's _get_stream_protocol_tool() or similar is on the Agent class
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.BROWSER_ACTION, payload)
+            else:
+                print(f"BrowserAgentTool: Agent does not have _emit_stream_event method. Cannot emit BROWSER_ACTION.")
+
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute BrowserAgent operations.
+            
+            Args:
+                action (str): The browser action to perform (e.g., "navigate", "act", "extract").
+                **kwargs: Arguments specific to the action.
+            """
+            
+            session_id = kwargs.get("session_id", self.agent.get_thread_id() or "default_browser_session")
+
+            try:
+                if action == "navigate":
+                    url = kwargs.get("url")
+                    if not url:
+                        return ToolResponse(message="Error: 'url' is required for navigate action.", error=True)
+                    return await self._navigate(url, session_id)
+                elif action == "act":
+                    instructions = kwargs.get("instructions")
+                    if not instructions:
+                        return ToolResponse(message="Error: 'instructions' are required for act action.", error=True)
+                    return await self._ai_act(instructions, session_id)
+                elif action == "extract":
+                    instructions = kwargs.get("instructions")
+                    schema = kwargs.get("schema") # Optional
+                    if not instructions:
+                        return ToolResponse(message="Error: 'instructions' are required for extract action.", error=True)
+                    return await self._extract(instructions, schema, session_id)
+                elif action == "agent_execute": # Computer use agent
+                    instructions = kwargs.get("instructions")
+                    model = kwargs.get("model", "computer-use-preview")
+                    if not instructions:
+                        return ToolResponse(message="Error: 'instructions' are required for agent_execute action.", error=True)
+                    return await self._agent_execute(instructions, model)
+                elif action == "close_session":
+                    return await self._close_session(session_id)
+                else:
+                    return ToolResponse(message=f"Unknown BrowserAgent action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"BrowserAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_browser_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _navigate(self, url: str, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("navigate", "starting", {"url": url, "session_id": session_id})
+            
+            browser_mock = await self.browser_manager.get_browser(session_id)
+            page_mock = await browser_mock.new_page() # Ensure a fresh page context for navigation
+            nav_result = await page_mock.goto(url)
+            
+            result_payload = {
+                "url": page_mock.url, "title": await page_mock.title(), "session_id": session_id,
+                "details": f"Mock navigation to {url} successful."
+            }
+            await self._emit_browser_event("navigate", "completed", result_payload)
+            return ToolResponse(message=json.dumps(result_payload))
+
+        async def _ai_act(self, instructions: str, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("ai_act", "processing", {"instructions": instructions, "session_id": session_id})
+            
+            browser_mock = await self.browser_manager.get_browser(session_id)
+            page_mock = browser_mock.page # Get current page of the session
+            
+            act_result = await self.action_executor.execute_ai_action(page_mock, instructions)
+            
+            await self._emit_browser_event("ai_act", "completed", {"result": act_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(act_result))
+
+        async def _extract(self, instructions: str, schema: Optional[Dict], session_id: str) -> ToolResponse:
+            await self._emit_browser_event("extract_data", "processing", {"instructions": instructions, "session_id": session_id})
+
+            browser_mock = await self.browser_manager.get_browser(session_id)
+            page_mock = browser_mock.page
+            
+            extract_result = await self.action_executor.extract_data(page_mock, instructions, schema)
+            
+            await self._emit_browser_event("extract_data", "completed", {"result": extract_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(extract_result))
+
+        async def _agent_execute(self, instructions: str, model: str) -> ToolResponse:
+            # This action might not be tied to a specific browser session_id in the same way,
+            # as it's more about general computer use instruction.
+            # However, if it implies browser interaction, it would need a session.
+            # For now, let's assume it's a general computer use model.
+            session_id = self.agent.get_thread_id() or "default_computer_use_session" # Or a dedicated session ID
+            await self._emit_browser_event("agent_execute", "processing", {"instructions": instructions, "model": model, "session_id": session_id})
+
+            # Stagehand's computer use agent might manage its own browser instance or take one.
+            # Here, we use a mock AI model provider.
+            computer_agent_mock = await self.ai_provider.get_computer_use_agent(model)
+            exec_result = await computer_agent_mock.execute(instructions)
+            
+            await self._emit_browser_event("agent_execute", "completed", {"result": exec_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(exec_result))
+
+        async def _close_session(self, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("close_session", "processing", {"session_id": session_id})
+            await self.browser_manager.close_browser(session_id)
+            await self._emit_browser_event("close_session", "completed", {"session_id": session_id})
+            return ToolResponse(message=f"Browser session {session_id} closed.")
+
+    ```
+
+6.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `browser_agent` to the list of available tools.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing tools)
+
+    {{ include './agent.system.tool.browser.md' }} 
+    ```
+
+7.  **Create `prompts/default/agent.system.tool.browser.md`:**
+    This was specified in `agent zero full code.md` already but verify its content. The content provided in `agent zero full code.md` is suitable as a starting point.
+
+    ```markdown
+    # prompts/default/agent.system.tool.browser.md
+    ### browser_agent:
+    # 
+    # subordinate agent controls playwright browser
+    # message argument talks to agent give clear instructions credentials task based
+    # reset argument spawns new agent
+    # do not reset if iterating
+    # be precise descriptive like: open google login and end task, log in using ... and end task
+    # when following up start: considering open pages
+    # dont use phrase wait for instructions use end task
+    # downloads default in /a0/tmp/downloads
+    # 
+    # Usage for specific actions:
+    # To navigate:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { "action": "navigate", "url": "https://example.com", "session_id": "optional_session_name" }
+    # }
+    # To perform AI actions on the current page:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { "action": "act", "instructions": "Click the 'Login' button and then type 'testuser' into the username field.", "session_id": "optional_session_name" }
+    # }
+    # To extract structured data:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { 
+    #     "action": "extract", 
+    #     "instructions": "Extract the article title and author name.", 
+    #     "schema": { "type": "object", "properties": { "title": {"type": "string"}, "author": {"type": "string"} } },
+    #     "session_id": "optional_session_name" 
+    #   }
+    # }
+    # To use computer use agent for complex tasks:
+    # {
+    #   "tool_name": "browser_agent",
+    #   "tool_args": { "action": "agent_execute", "instructions": "Find the latest NVIDIA stock price and save it to a file named stock_price.txt." }
+    # }
+    # To close a browser session:
+    # {
+    #  "tool_name": "browser_agent",
+    #  "tool_args": { "action": "close_session", "session_id": "session_to_close" }
+    # }
+    #
+    # If session_id is omitted, a default session related to the current conversation/thread will be used.
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-4 completed.
+*   `StreamProtocolTool` available for emitting `BROWSER_ACTION` events.
+*   `Agent` class has `_emit_stream_event` helper method.
+
+**Integration with Agent Zero:**
+*   `BrowserAgentTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `BROWSER_ACTION` events via the agent's `_emit_stream_event` method, which in turn uses the `StreamProtocolTool`.
+*   The tool's description and usage examples are added to the system prompts.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies are added by these placeholder files.
+*   Ensure the new directory structure `python/agents/browser_agent/` and the new tool file `python/tools/browser_agent_tool.py` are included in the Docker image.
+*   The prompt file `prompts/default/agent.system.tool.browser.md` also needs to be included.
+
+**Summary of Task 5:**
+This task sets up the skeleton for the `BrowserAgentTool` and its underlying (mocked) components. It defines the tool's interface within Agent Zero, allowing the agent to invoke browser-related actions. While these actions are placeholders for now, their invocation and the emission of corresponding `BROWSER_ACTION` events via the StreamProtocol are established. This prepares for the later integration of actual browser automation libraries (like Playwright) and AI models for page interaction.
+
+Please confirm to proceed.

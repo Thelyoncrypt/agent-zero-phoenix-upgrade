@@ -1,0 +1,494 @@
+## Task 17: Implement Real Logic for `KnowledgeAgentTool` - RAG Response Generation
+
+**Focus:**
+This task focuses on completing the RAG (Retrieval-Augmented Generation) loop within the `KnowledgeAgentTool` (specifically in `python/agents/knowledge_agent/agent.py`). After retrieving relevant document chunks from Supabase (Task 16), this task will implement the "generation" part by sending the query and the retrieved context to an LLM (e.g., OpenAI via Pydantic AI's `Agent` or a direct client call) to generate a final answer.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `pydantic-ai` is in `requirements.txt` (should be from `foundational-rag-agent` context):**
+    If not already present for other reasons, or if we decide to use Pydantic AI's `Agent` for the generation step within `KnowledgeRAGAgent`.
+    Alternatively, we can use the `openai` client directly, which is already a dependency. For simplicity and to align with the `foundational-rag-agent`'s structure that uses Pydantic AI for its main agent, let's assume `KnowledgeRAGAgent` itself might use an LLM call directly for its generation step, or it could even invoke *another* Pydantic AI `Agent` instance configured for summarization/answering.
+
+    Let's opt for a direct OpenAI client call within `KnowledgeRAGAgent` for the generation step to keep it encapsulated, similar to how `EmbeddingGenerator` uses the OpenAI client.
+
+2.  **Modify `python/agents/knowledge_agent/prompts.py` (Create if it doesn't exist):**
+    This file was mentioned in `foundational-rag-agent`'s structure. We'll define a prompt template for the RAG generation step.
+
+    ```python
+# python/agents/knowledge_agent/prompts.py
+    RAG_GENERATION_SYSTEM_PROMPT = """You are an AI assistant designed to answer questions based on provided context from a knowledge base.
+    Use the following pieces of retrieved context to answer the user's question.
+    If you don't know the answer from the context or the context isn't relevant, say that you couldn't find the information in the provided documents and try to answer based on your general knowledge if appropriate, clearly stating that this part of the answer is from general knowledge.
+    If the context is sufficient, base your answer primarily on it.
+    Cite the sources if multiple distinct sources are evident in the context. For example, "According to document X..." or "Information from document Y suggests...".
+    Keep your answer concise and directly address the question.
+    """
+
+    def format_rag_prompt(query: str, context_chunks: list[str]) -> str:
+        context_str = "\n\n---\n\n".join(context_chunks)
+        prompt = f"""
+        User Query: {query}
+
+        Retrieved Context from Knowledge Base:
+        ---
+        {context_str}
+        ---
+
+        Based on the retrieved context and your general knowledge, please answer the user's query.
+        """
+        return prompt
+```
+
+3.  **Modify `python/agents/knowledge_agent/agent.py`:**
+    *   Update `KnowledgeRAGAgent.__init__` to accept an OpenAI client (or initialize one).
+    *   Implement the LLM call in `KnowledgeRAGAgent.query_knowledge_base` to generate the final answer.
+
+    ```python
+# python/agents/knowledge_agent/agent.py
+    import os
+    from typing import List, Dict, Any, Optional
+    from openai import OpenAI, APIError, RateLimitError # For direct LLM calls
+    import asyncio
+    from dotenv import load_dotenv
+    from pathlib import Path
+
+    # Assuming these are correctly pathed for your project structure
+    from .database import DatabaseManager
+    from .embeddings import EmbeddingGenerator # We still need this for the retriever
+    from .retrieval import InformationRetriever
+    from .prompts import RAG_GENERATION_SYSTEM_PROMPT, format_rag_prompt
+
+    # Load environment variables
+    project_root = Path(__file__).resolve().parents[2]
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    class KnowledgeRAGAgent:
+        """
+        RAG Agent logic, now with LLM-based answer generation.
+        """
+        def __init__(self, 
+                     database_manager: Optional[DatabaseManager] = None, 
+                     information_retriever: Optional[InformationRetriever] = None,
+                     embedding_generator: Optional[EmbeddingGenerator] = None, # Added for retriever
+                     openai_api_key: Optional[str] = None,
+                     llm_model_name: Optional[str] = None):
+            
+            self.db_manager = database_manager or DatabaseManager()
+            self.embed_generator = embedding_generator or EmbeddingGenerator() # Retriever needs this
+            self.retriever = information_retriever or InformationRetriever(self.db_manager, self.embed_generator)
+            
+            self.api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            self.llm_model = llm_model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini") # Use a chat model
+
+            if not self.api_key:
+                raise ValueError("OpenAI API key is required for KnowledgeRAGAgent.")
+            
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"KnowledgeRAGAgent: Initialized with LLM '{self.llm_model}'.")
+
+        async def ingest_document_chunks(self, chunks_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+            # (Implementation from Task 16 - no changes needed here for RAG generation)
+            print(f"KnowledgeRAGAgent (Mock Ingestion): Ingesting {len(chunks_data)} chunks.")
+            stored_ids = await self.db_manager.store_chunks(chunks_data) # Assumes store_chunks takes this format
+            return {"status": "success", "ingested_chunk_ids": stored_ids, "count": len(stored_ids)}
+
+
+        async def _generate_answer_from_context(self, query: str, context_chunks: List[str]) -> str:
+            """Generates an answer using an LLM based on the query and retrieved context."""
+            if not context_chunks:
+                # Fallback if no context, could be a direct LLM call or a canned response
+                print("KnowledgeRAGAgent: No context retrieved, attempting general knowledge answer.")
+                formatted_prompt = query # Or a prompt asking to answer from general knowledge
+                messages = [
+                    {"role": "system", "content": "You are a helpful AI assistant. Answer the user's question based on your general knowledge as no specific documents were found."},
+                    {"role": "user", "content": formatted_prompt}
+                ]
+            else:
+                formatted_prompt = format_rag_prompt(query, context_chunks)
+                messages = [
+                    {"role": "system", "content": RAG_GENERATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": formatted_prompt}
+                ]
+            
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.llm_client.chat.completions.create,
+                        model=self.llm_model,
+                        messages=messages,
+                        temperature=0.3, # Lower temperature for more factual RAG
+                        max_tokens=500  # Adjust as needed
+                    )
+                    answer = response.choices[0].message.content.strip()
+                    print(f"KnowledgeRAGAgent: Generated answer using LLM: '{answer[:100]}...'")
+                    return answer
+                except RateLimitError as rle:
+                    wait_time = (2 ** attempt) + np.random.rand() 
+                    print(f"KnowledgeRAGAgent (LLM): Rate limit (attempt {attempt+1}/{max_retries}). Retrying in {wait_time:.2f}s. Error: {rle}")
+                    await asyncio.sleep(wait_time)
+                except APIError as apie:
+                    print(f"KnowledgeRAGAgent (LLM): APIError (attempt {attempt+1}/{max_retries}): {apie}.")
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + np.random.rand())
+                    else:
+                        return "I apologize, but I encountered an issue while generating an answer."
+                except Exception as e:
+                    print(f"KnowledgeRAGAgent (LLM): Unexpected error (attempt {attempt+1}/{max_retries}): {e}.")
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + np.random.rand())
+                    else:
+                        return "I am sorry, I couldn't process your request at this time."
+            return "I was unable to generate an answer after multiple attempts."
+
+
+        async def query_knowledge_base(self, query: str, limit: int = 5, filter_metadata: Optional[Dict] = None) -> Dict[str, Any]:
+            """Queries the knowledge base, then uses an LLM to generate an answer from retrieved context."""
+            print(f"KnowledgeRAGAgent: Received query: '{query}', limit: {limit}, filter: {filter_metadata}")
+            
+            retrieved_docs_from_db = await self.retriever.retrieve_documents(query, limit, filter_metadata)
+            
+            context_chunks_for_llm = []
+            sources_for_ui = []
+
+            if retrieved_docs_from_db:
+                print(f"KnowledgeRAGAgent: Retrieved {len(retrieved_docs_from_db)} documents from DB.")
+                for doc in retrieved_docs_from_db:
+                    context_chunks_for_llm.append(doc.get("content", ""))
+                    sources_for_ui.append({
+                        "id": doc.get("id"),
+                        "source": doc.get("metadata", {}).get("source_url", doc.get("metadata", {}).get("url", "Unknown")),
+                        "content_preview": doc.get("content", "")[:150]+"...",
+                        "similarity": doc.get("similarity", 0.0),
+                        "metadata": doc.get("metadata", {})
+                    })
+            else:
+                print("KnowledgeRAGAgent: No documents retrieved from DB for this query.")
+            
+            # Generate the answer using the LLM
+            llm_generated_answer = await self._generate_answer_from_context(query, context_chunks_for_llm)
+            
+            return {
+                "response": llm_generated_answer, 
+                "sources": sources_for_ui, 
+                "retrieved_count": len(retrieved_docs_from_db)
+            }
+```
+
+4.  **Verify `python/tools/knowledge_agent_tool.py`:**
+    *   Ensure it correctly instantiates `KnowledgeRAGAgent` (passing necessary configs like API key, model name if not handled by env vars within `KnowledgeRAGAgent` itself).
+    *   The `_query_kb` method in the tool should correctly call `self.rag_agent_logic.query_knowledge_base` and return its structured response.
+
+    ```python
+# python/tools/knowledge_agent_tool.py
+    # ... (imports)
+
+    class KnowledgeAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="knowledge_agent_tool",
+                             description="Manages and queries a knowledge base using RAG principles.",
+                             args_schema=None, 
+                             **kwargs)
+            
+            # These components are now more functional
+            self.db_manager = DatabaseManager() # Uses Supabase
+            self.embed_generator = EmbeddingGenerator() # Uses OpenAI
+            self.retriever = InformationRetriever(self.db_manager, self.embed_generator)
+            
+            # KnowledgeRAGAgent now also needs LLM client for generation
+            self.rag_agent_logic = KnowledgeRAGAgent(
+                database_manager=self.db_manager, 
+                information_retriever=self.retriever,
+                # openai_api_key and llm_model_name will be picked from env by KnowledgeRAGAgent
+            ) 
+            print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} with real RAG components.")
+
+        # ... (_emit_knowledge_event method remains the same)
+        # ... (execute method calls _query_kb, _ingest_chunks, etc. as before)
+
+        async def _query_kb(self, query: str, limit: int, filter_metadata: Optional[Dict] = None) -> ToolResponse: # Added filter_metadata
+            await self._emit_knowledge_event("query_kb", "processing", {"query": query, "filter": filter_metadata})
+            
+            # Pass filter_metadata to the RAG logic
+            rag_response_dict = await self.rag_agent_logic.query_knowledge_base(query, limit, filter_metadata)
+            
+            await self._emit_knowledge_event("query_kb", "completed", rag_response_dict)
+            # The tool returns the structured dictionary from KnowledgeRAGAgent
+            return ToolResponse(message=rag_response_dict["response"], data=rag_response_dict)
+
+
+        # _ingest_chunks, _raw_search, _list_sources largely remain the same as in Task 16,
+        # as they primarily interact with db_manager and embed_generator.
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-16 completed.
+*   `openai` library installed and `OPENAI_API_KEY`, `OPENAI_MODEL` (for chat/generation) configured in `.env`.
+*   `DatabaseManager` (Task 16) successfully connects to Supabase and performs vector searches.
+*   `EmbeddingGenerator` (Task 14) successfully generates embeddings.
+
+**Integration with Agent Zero:**
+*   The `KnowledgeRAGAgent` component within the `KnowledgeAgentTool` now uses an LLM to synthesize answers based on retrieved context.
+*   The tool returns a more comprehensive response dictionary including the LLM-generated answer and the source documents.
+*   Agent Zero's main loop, when calling this tool's `query` action, will receive this structured data. The `TEXT_MESSAGE_CONTENT` event containing the agent's final textual answer should then be based on the `"response"` field of this data.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, the textual output from this RAG tool could be a prime candidate for TTS synthesis via the `ChatterboxTTSTool`.
+
+**Docker Compatibility:**
+*   Ensure `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables are correctly passed to the Docker container at runtime.
+*   No new Python package dependencies beyond `openai` (already added).
+
+**Summary of Task 17:**
+This task completes the core RAG loop for the `KnowledgeAgentTool` by implementing LLM-based answer generation. After retrieving relevant chunks from Supabase, the tool now uses an OpenAI model to synthesize a natural language answer based on the query and context. This makes the `query` action of the `KnowledgeAgentTool` fully functional from a RAG perspective (though the LLM part of RAG in `KnowledgeRAGAgent` is still a mock).
+
+Please confirm to proceed.Okay, let's proceed with Task 17.
+
+## Task 17: Implement Real Logic for `KnowledgeAgentTool` - RAG Response Generation
+
+**Focus:**
+This task focuses on completing the RAG (Retrieval-Augmented Generation) loop within the `KnowledgeAgentTool` (specifically in `python/agents/knowledge_agent/agent.py`). After retrieving relevant document chunks from Supabase (Task 16), this task will implement the "generation" part by sending the query and the retrieved context to an LLM (e.g., OpenAI via Pydantic AI's `Agent` or a direct client call) to generate a final answer.
+
+**File Paths and Code Changes:**
+
+1.  **Ensure `pydantic-ai` is in `requirements.txt` (should be from `foundational-rag-agent` context):**
+    If not already present for other reasons, or if we decide to use Pydantic AI's `Agent` for the generation step within `KnowledgeRAGAgent`.
+    Alternatively, we can use the `openai` client directly, which is already a dependency. For simplicity and to align with the `foundational-rag-agent`'s structure that uses Pydantic AI for its main agent, let's assume `KnowledgeRAGAgent` itself might use an LLM call directly for its generation step, or it could even invoke *another* Pydantic AI `Agent` instance configured for summarization/answering.
+
+    Let's opt for a direct OpenAI client call within `KnowledgeRAGAgent` for the generation step to keep it encapsulated, similar to how `EmbeddingGenerator` uses the OpenAI client.
+
+2.  **Modify `python/agents/knowledge_agent/prompts.py` (Create if it doesn't exist):**
+    This file was mentioned in `foundational-rag-agent`'s structure. We'll define a prompt template for the RAG generation step.
+
+    ```python
+    # python/agents/knowledge_agent/prompts.py
+    RAG_GENERATION_SYSTEM_PROMPT = """You are an AI assistant designed to answer questions based on provided context from a knowledge base.
+    Use the following pieces of retrieved context to answer the user's question.
+    If you don't know the answer from the context or the context isn't relevant, say that you couldn't find the information in the provided documents and try to answer based on your general knowledge if appropriate, clearly stating that this part of the answer is from general knowledge.
+    If the context is sufficient, base your answer primarily on it.
+    Cite the sources if multiple distinct sources are evident in the context. For example, "According to document X..." or "Information from document Y suggests...".
+    Keep your answer concise and directly address the question.
+    """
+
+    def format_rag_prompt(query: str, context_chunks: list[str]) -> str:
+        context_str = "\n\n---\n\n".join(context_chunks)
+        prompt = f"""
+        User Query: {query}
+
+        Retrieved Context from Knowledge Base:
+        ---
+        {context_str}
+        ---
+
+        Based on the retrieved context and your general knowledge, please answer the user's query.
+        """
+        return prompt
+    ```
+
+3.  **Modify `python/agents/knowledge_agent/agent.py`:**
+    *   Update `KnowledgeRAGAgent.__init__` to accept an OpenAI client (or initialize one).
+    *   Implement the LLM call in `KnowledgeRAGAgent.query_knowledge_base` to generate the final answer.
+
+    ```python
+    # python/agents/knowledge_agent/agent.py
+    import os
+    from typing import List, Dict, Any, Optional
+    from openai import OpenAI, APIError, RateLimitError # For direct LLM calls
+    import asyncio
+    from dotenv import load_dotenv
+    from pathlib import Path
+
+    # Assuming these are correctly pathed for your project structure
+    from .database import DatabaseManager
+    from .embeddings import EmbeddingGenerator # We still need this for the retriever
+    from .retrieval import InformationRetriever
+    from .prompts import RAG_GENERATION_SYSTEM_PROMPT, format_rag_prompt
+
+    # Load environment variables
+    project_root = Path(__file__).resolve().parents[2]
+    dotenv_path = project_root / '.env'
+    load_dotenv(dotenv_path, override=True)
+
+    class KnowledgeRAGAgent:
+        """
+        RAG Agent logic, now with LLM-based answer generation.
+        """
+        def __init__(self, 
+                     database_manager: Optional[DatabaseManager] = None, 
+                     information_retriever: Optional[InformationRetriever] = None,
+                     embedding_generator: Optional[EmbeddingGenerator] = None, # Added for retriever
+                     openai_api_key: Optional[str] = None,
+                     llm_model_name: Optional[str] = None):
+            
+            self.db_manager = database_manager or DatabaseManager()
+            self.embed_generator = embedding_generator or EmbeddingGenerator() # Retriever needs this
+            self.retriever = information_retriever or InformationRetriever(self.db_manager, self.embed_generator)
+            
+            self.api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            self.llm_model = llm_model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini") # Use a chat model
+
+            if not self.api_key:
+                raise ValueError("OpenAI API key is required for KnowledgeRAGAgent.")
+            
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"KnowledgeRAGAgent: Initialized with LLM '{self.llm_model}'.")
+
+        async def ingest_document_chunks(self, chunks_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+            # (Implementation from Task 16 - no changes needed here for RAG generation)
+            print(f"KnowledgeRAGAgent (Mock Ingestion): Ingesting {len(chunks_data)} chunks.")
+            stored_ids = await self.db_manager.store_chunks(chunks_data) # Assumes store_chunks takes this format
+            return {"status": "success", "ingested_chunk_ids": stored_ids, "count": len(stored_ids)}
+
+
+        async def _generate_answer_from_context(self, query: str, context_chunks: List[str]) -> str:
+            """Generates an answer using an LLM based on the query and retrieved context."""
+            if not context_chunks:
+                # Fallback if no context, could be a direct LLM call or a canned response
+                print("KnowledgeRAGAgent: No context retrieved, attempting general knowledge answer.")
+                formatted_prompt = query # Or a prompt asking to answer from general knowledge
+                messages = [
+                    {"role": "system", "content": "You are a helpful AI assistant. Answer the user's question based on your general knowledge as no specific documents were found."},
+                    {"role": "user", "content": formatted_prompt}
+                ]
+            else:
+                formatted_prompt = format_rag_prompt(query, context_chunks)
+                messages = [
+                    {"role": "system", "content": RAG_GENERATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": formatted_prompt}
+                ]
+            
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.llm_client.chat.completions.create,
+                        model=self.llm_model,
+                        messages=messages,
+                        temperature=0.3, # Lower temperature for more factual RAG
+                        max_tokens=500  # Adjust as needed
+                    )
+                    answer = response.choices[0].message.content.strip()
+                    print(f"KnowledgeRAGAgent: Generated answer using LLM: '{answer[:100]}...'")
+                    return answer
+                except RateLimitError as rle:
+                    wait_time = (2 ** attempt) + np.random.rand() 
+                    print(f"KnowledgeRAGAgent (LLM): Rate limit (attempt {attempt+1}/{max_retries}). Retrying in {wait_time:.2f}s. Error: {rle}")
+                    await asyncio.sleep(wait_time)
+                except APIError as apie:
+                    print(f"KnowledgeRAGAgent (LLM): APIError (attempt {attempt+1}/{max_retries}): {apie}.")
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + np.random.rand())
+                    else:
+                        return "I apologize, but I encountered an issue while generating an answer."
+                except Exception as e:
+                    print(f"KnowledgeRAGAgent (LLM): Unexpected error (attempt {attempt+1}/{max_retries}): {e}.")
+                    if attempt < max_retries - 1:
+                         await asyncio.sleep((2 ** attempt) + np.random.rand())
+                    else:
+                        return "I am sorry, I couldn't process your request at this time."
+            return "I was unable to generate an answer after multiple attempts."
+
+
+        async def query_knowledge_base(self, query: str, limit: int = 5, filter_metadata: Optional[Dict] = None) -> Dict[str, Any]:
+            """Queries the knowledge base, then uses an LLM to generate an answer from retrieved context."""
+            print(f"KnowledgeRAGAgent: Received query: '{query}', limit: {limit}, filter: {filter_metadata}")
+            
+            retrieved_docs_from_db = await self.retriever.retrieve_documents(query, limit, filter_metadata)
+            
+            context_chunks_for_llm = []
+            sources_for_ui = []
+
+            if retrieved_docs_from_db:
+                print(f"KnowledgeRAGAgent: Retrieved {len(retrieved_docs_from_db)} documents from DB.")
+                for doc in retrieved_docs_from_db:
+                    context_chunks_for_llm.append(doc.get("content", ""))
+                    sources_for_ui.append({
+                        "id": doc.get("id"),
+                        "source": doc.get("metadata", {}).get("source_url", doc.get("metadata", {}).get("url", "Unknown")),
+                        "content_preview": doc.get("content", "")[:150]+"...",
+                        "similarity": doc.get("similarity", 0.0),
+                        "metadata": doc.get("metadata", {})
+                    })
+            else:
+                print("KnowledgeRAGAgent: No documents retrieved from DB for this query.")
+            
+            # Generate the answer using the LLM
+            llm_generated_answer = await self._generate_answer_from_context(query, context_chunks_for_llm)
+            
+            return {
+                "response": llm_generated_answer, 
+                "sources": sources_for_ui, 
+                "retrieved_count": len(retrieved_docs_from_db)
+            }
+
+    ```
+
+4.  **Verify `python/tools/knowledge_agent_tool.py`:**
+    *   Ensure it correctly instantiates `KnowledgeRAGAgent` (passing necessary configs like API key, model name if not handled by env vars within `KnowledgeRAGAgent` itself).
+    *   The `_query_kb` method in the tool should correctly call `self.rag_agent_logic.query_knowledge_base` and return its structured response.
+
+    ```python
+    # python/tools/knowledge_agent_tool.py
+    # ... (imports)
+
+    class KnowledgeAgentTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="knowledge_agent_tool",
+                             description="Manages and queries a knowledge base using RAG principles.",
+                             args_schema=None, 
+                             **kwargs)
+            
+            # These components are now more functional
+            self.db_manager = DatabaseManager() # Uses Supabase
+            self.embed_generator = EmbeddingGenerator() # Uses OpenAI
+            self.retriever = InformationRetriever(self.db_manager, self.embed_generator)
+            
+            # KnowledgeRAGAgent now also needs LLM client for generation
+            self.rag_agent_logic = KnowledgeRAGAgent(
+                database_manager=self.db_manager, 
+                information_retriever=self.retriever,
+                # openai_api_key and llm_model_name will be picked from env by KnowledgeRAGAgent
+            ) 
+            print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} with real RAG components.")
+
+        # ... (_emit_knowledge_event method remains the same)
+        # ... (execute method calls _query_kb, _ingest_chunks, etc. as before)
+
+        async def _query_kb(self, query: str, limit: int, filter_metadata: Optional[Dict] = None) -> ToolResponse: # Added filter_metadata
+            await self._emit_knowledge_event("query_kb", "processing", {"query": query, "filter": filter_metadata})
+            
+            # Pass filter_metadata to the RAG logic
+            rag_response_dict = await self.rag_agent_logic.query_knowledge_base(query, limit, filter_metadata)
+            
+            await self._emit_knowledge_event("query_kb", "completed", rag_response_dict)
+            # The tool returns the structured dictionary from KnowledgeRAGAgent
+            return ToolResponse(message=rag_response_dict["response"], data=rag_response_dict)
+
+
+        # _ingest_chunks, _raw_search, _list_sources largely remain the same as in Task 16,
+        # as they primarily interact with db_manager and embed_generator.
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-16 completed.
+*   `openai` library installed and `OPENAI_API_KEY`, `OPENAI_MODEL` (for chat/generation) configured in `.env`.
+*   `DatabaseManager` (Task 16) successfully connects to Supabase and performs vector searches.
+*   `EmbeddingGenerator` (Task 14) successfully generates embeddings.
+
+**Integration with Agent Zero:**
+*   The `KnowledgeRAGAgent` component within the `KnowledgeAgentTool` now uses an LLM to synthesize answers based on retrieved context.
+*   The tool returns a more comprehensive response dictionary including the LLM-generated answer and the source documents.
+*   Agent Zero's main loop, when calling this tool's `query` action, will receive this structured data. The `TEXT_MESSAGE_CONTENT` event containing the agent's final textual answer should then be based on the `"response"` field of this data.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, the textual output from this RAG tool could be a prime candidate for TTS synthesis via the `ChatterboxTTSTool`.
+
+**Docker Compatibility:**
+*   Ensure `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables are correctly passed to the Docker container at runtime.
+*   No new Python package dependencies beyond `openai` (already added).
+
+**Summary of Task 17:**
+This task completes the core RAG loop for the `KnowledgeAgentTool` by implementing LLM-based answer generation. After retrieving relevant chunks from Supabase, the tool now uses an OpenAI model to synthesize a natural language answer based on the query and context. This makes the `query` action of the `KnowledgeAgentTool` fully functional from a RAG perspective (though the LLM part of RAG in `KnowledgeRAGAgent` is still a mock).
+
+Please confirm to proceed.

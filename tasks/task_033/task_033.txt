@@ -1,0 +1,636 @@
+## Task 33: Finalize Agent State Management and `STATE_DELTA` Event Integration
+
+**Focus:**
+This task finalizes how agent-specific state (beyond conversation history) is managed and synchronized with a client using the `STATE_DELTA` event from the AG-UI protocol.
+1.  Refine `AgentContext.agent_state` and `Agent.update_agent_state`.
+2.  Determine what constitutes "agent state" that should be shared/synced (e.g., current task, objectives, custom data relevant to the UI).
+3.  Implement logic for the agent to emit `STATE_DELTA` events when its relevant internal state changes.
+4.  Ensure `StreamProtocolTool._handle_input` correctly applies incoming `state` from `RunAgentInput` to the agent's state.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`AgentContext` and `Agent` classes):**
+
+    ```python
+# agent.py
+    # ... (imports)
+    from python.tools.stream_protocol_tool import StreamEventType # Ensure this is available
+
+    class AgentContext:
+        # ... (__init__ from Task 2, including self.agent_state: Dict[str, Any] = {})
+        
+        def update_internal_agent_state(self, state_delta: Dict[str, Any], source: str = "agent_logic") -> bool:
+            """
+            Updates the agent_state and returns True if changed, False otherwise.
+            Does NOT emit STATE_DELTA itself; that's the agent's job.
+            """
+            changed = False
+            for key, value in state_delta.items():
+                if key not in self.agent_state or self.agent_state[key] != value:
+                    self.agent_state[key] = value
+                    changed = True
+            if changed:
+                print(f"AgentContext {self.id} (Thread: {self.thread_id}): Internal state updated by {source}. New state snapshot: {self.agent_state}")
+            return changed
+
+        def get_agent_state(self) -> Dict[str, Any]:
+            """Returns a copy of the current agent state."""
+            return self.agent_state.copy()
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event as before)
+
+        async def update_and_broadcast_agent_state(self, state_delta: Dict[str, Any], source_of_change: str = "agent_internal"):
+            """
+            Updates the agent's state and emits a STATE_DELTA event if changes occurred.
+            """
+            if self.context.update_internal_agent_state(state_delta, source=source_of_change):
+                await self._emit_stream_event(
+                    StreamEventType.STATE_DELTA,
+                    {
+                        "delta": state_delta, # The changes that were applied
+                        "full_state": self.context.get_agent_state() # The new complete state
+                    }
+                )
+            # else:
+                # print(f"Agent {self.agent_name}: No actual change in state for delta: {state_delta}, not broadcasting.")
+
+
+        # Example usage within monologue or other methods:
+        async def monologue(self) -> Optional[str]:
+            # ...
+            await self.update_and_broadcast_agent_state({"status": "processing_monologue", "current_iteration": self.iteration_no})
+            # ...
+
+            # If a tool changes some state the agent should be aware of and broadcast
+            if tool_name == "some_state_changing_tool":
+                # tool_response.data might contain state updates
+                if tool_response and tool_response.data and isinstance(tool_response.data, dict) and "agent_state_update" in tool_response.data:
+                    await self.update_and_broadcast_agent_state(tool_response.data["agent_state_update"], source_of_change=tool_name)
+            
+            # When monologue ends
+            # await self.update_and_broadcast_agent_state({"status": "idle", "reason": "Monologue ended."}) 
+            # This specific one was already added to emit STATE_DELTA in Task 32, ensure it uses the new method
+            # ...
+            # Replace the direct _emit_stream_event for STATE_DELTA with:
+            await self.update_and_broadcast_agent_state(
+                {"status": "idle", "reason": "Monologue ended by max_iterations or other condition."},
+                source_of_change="monologue_completion"
+            )
+            return None
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None): # Added incoming_state
+            """
+            Processes a message that might also come with a state update from the client.
+            """
+            print(f"Agent {self.agent_name}: process_streamed_message. Role='{role}', Content='{content[:50]}...'")
+            
+            if incoming_state:
+                print(f"Agent {self.agent_name}: Received incoming state with message: {incoming_state}")
+                await self.update_and_broadcast_agent_state(incoming_state, source_of_change="client_stream_input")
+
+            # ... (rest of process_streamed_message logic from Task 32)
+            # Ensure it calls monologue which will then emit its own state updates.
+            # An initial state update after processing incoming_state is good.
+            await self.update_and_broadcast_agent_state({"last_user_message_received": content[:100]}, source_of_change="user_message_ingestion")
+
+            if role.lower() == "user":
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj)
+                return await self.monologue()
+            return None
+
+
+        # The old `update_agent_state` was for direct setting from StreamProtocolTool.
+        # We now have `update_and_broadcast_agent_state` for internal changes,
+        # and `process_streamed_message` can take an `incoming_state` argument.
+        # Let's deprecate the old `update_agent_state` if `process_streamed_message` covers the client state update path.
+        # Or, keep it for direct state manipulation by the tool if needed, ensuring it also broadcasts.
+        
+        # Revised method from Task 2 for direct state updates (e.g., from StreamProtocolTool if client sends just a state update)
+        async def set_agent_state_from_external(self, new_full_state: Dict[str, Any], source: str = "external_tool"):
+            """
+            Sets the agent's state to a new full state, usually from an external source like client input.
+            This replaces the entire agent_state with new_full_state.
+            Emits a STATE_DELTA event.
+            """
+            # Calculate delta for the event, even though we are setting full state
+            # This is mostly for the client to know what specifically changed if it tracks deltas.
+            # However, AG-UI protocol specifies sending the delta that *was applied*.
+            # If we replace the whole state, the "delta" could be considered the new_full_state itself,
+            # or we can calculate what changed from the old state.
+            # For simplicity in this method, let's assume the `new_full_state` IS the delta if source is external.
+            # Or, more accurately, we find what's different.
+            
+            current_state = self.context.get_agent_state()
+            delta = {}
+            all_keys = set(current_state.keys()) | set(new_full_state.keys())
+            changed = False
+            for k in all_keys:
+                old_v = current_state.get(k)
+                new_v = new_full_state.get(k)
+                if old_v != new_v:
+                    delta[k] = new_v # new_v could be None if key is removed
+                    changed = True
+            
+            if changed:
+                self.context.agent_state = new_full_state.copy() # Replace entirely
+                print(f"Agent {self.agent_name} (Thread: {self.get_thread_id()}): State fully replaced by {source}. New state: {self.context.agent_state}")
+                await self._emit_stream_event(
+                    StreamEventType.STATE_DELTA,
+                    {
+                        "delta": delta, # What actually changed to reach the new state
+                        "full_state": self.context.get_agent_state() 
+                    }
+                )
+            else:
+                print(f"Agent {self.agent_name}: No change in state from external update. New state is same as current.")
+```
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   Update `_handle_input` to pass the `state` from `RunAgentInput` to `agent.process_streamed_message` or `agent.set_agent_state_from_external`.
+    *   The `_update_state` action in `StreamProtocolTool` (if called directly by the agent to update its own state and notify clients) should use `agent.update_and_broadcast_agent_state`. If it's for a client pushing state, it should use `agent.set_agent_state_from_external`.
+
+    ```python
+# python/tools/stream_protocol_tool.py
+    # ... (imports, StreamEventType, RunAgentInput, StreamEvent, StreamTransportGlobal)
+
+    class StreamProtocolTool(Tool):
+        # ... (__init__ and other methods from Task 11)
+
+        async def _handle_input(self, input_data: Dict[str, Any]):
+            """Process incoming frontend input according to RunAgentInput schema"""
+            try:
+                run_input = RunAgentInput(
+                    thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                    messages=input_data.get("messages", []),
+                    state=input_data.get("state"), # Can be None
+                    user_id=input_data.get("userId"),
+                    metadata=input_data.get("metadata", {})
+                )
+                
+                # Ensure agent context is aligned with thread_id and user_id
+                self.agent.set_thread_id(run_input.thread_id)
+                if run_input.user_id: self.agent.set_user_id(run_input.user_id)
+
+                # If the input contains messages, process them. 
+                # The process_streamed_message in Agent can handle the state.
+                if run_input.messages:
+                    for message_data in run_input.messages:
+                        # Pass the state from RunAgentInput to the first message processing,
+                        # subsequent messages in the same batch might not need to re-apply it.
+                        # Or, apply state first, then process all messages.
+                        # Let's apply state first if it exists, then process messages.
+                        if run_input.state is not None: # Apply state only if client provided it
+                             # Use set_agent_state_from_external if client sends the *entire desired state*
+                            await self.agent.set_agent_state_from_external(run_input.state, source="client_run_agent_input")
+                            run_input.state = None # Consume state, so it's not re-applied by process_streamed_message
+
+                        # Agent's process_streamed_message will handle its own state updates internally
+                        await self._process_message(message_data, run_input.thread_id, run_input.user_id) 
+                
+                # If there were no messages but state was provided, update the agent's state.
+                elif run_input.state is not None:
+                    await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push")
+
+                # Manage this tool's local tracking of active_threads (for its own session concept)
+                if run_input.thread_id not in self.active_threads:
+                    await self._emit_event_internal( # Use internal to avoid agent_response wrapper
+                        StreamEventType.SESSION_START,
+                        {"threadId": run_input.thread_id, "userId": run_input.user_id, "initialState": self.agent.context.get_agent_state()},
+                        run_input.thread_id, run_input.user_id
+                    )
+                    self.active_threads[run_input.thread_id] = {
+                        "user_id": run_input.user_id,
+                        "state_from_tool_perspective": self.agent.context.get_agent_state(),
+                        "created_at": datetime.utcnow()
+                    }
+                
+                return self.agent_response({
+                    "success": True, "thread_id": run_input.thread_id, "messages_processed": len(run_input.messages)
+                })
+                
+            except Exception as e:
+                # ... (error handling)
+                return self.agent_response(f"Input processing error: {str(e)}", error=True)
+
+        async def _process_message(self, message_data: Dict[str, Any], thread_id: str, user_id: Optional[str]):
+            """Process individual message. Agent's process_streamed_message handles main logic & state."""
+            role = message_data.get("role", "user").lower()
+            content = message_data.get("content", "")
+            attachments = message_data.get("attachments")
+
+            # Optionally emit a basic "message_received" event, but primary state/thought events come from Agent
+            # await self._emit_event_internal(StreamEventType.TEXT_MESSAGE_CONTENT, ...) 
+            
+            if role == "user":
+                # The agent.process_streamed_message will handle history and monologue
+                await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+            else:
+                print(f"StreamProtocolTool: Forwarding non-user message to agent for processing (role: {role}).")
+                await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+
+
+        async def _update_state(self, thread_id: str, state_delta: Dict[str, Any]):
+            """
+            This action is if the AGENT wants to explicitly update its own state and broadcast.
+            Client-pushed state updates are handled via _handle_input.
+            """
+            if thread_id not in self.active_threads: # Tool's session tracking
+                print(f"StreamProtocolTool: Warning - _update_state called for untracked thread {thread_id}. Will proceed with agent state update.")
+                # Ensure agent context is aligned, this might create/get agent context
+                self.agent.set_thread_id(thread_id)
+                # It's possible user_id is not known here if session wasn't started via tool.
+            
+            # The agent updates its own state and broadcasts
+            await self.agent.update_and_broadcast_agent_state(state_delta, source_of_change="tool_direct_update_state")
+            
+            # Update this tool's local cache of the state if needed (though agent_state is the source of truth)
+            if thread_id in self.active_threads:
+                 self.active_threads[thread_id]["state_from_tool_perspective"].update(state_delta)
+
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "updated_agent_state_snapshot": self.agent.context.get_agent_state()
+            })
+            
+        # ... (other methods like _start_session, _end_session, etc.)
+        # _start_session should perhaps use/return agent.context.agent_state as initial_state if appropriate.
+        async def _start_session(self, thread_id: str, user_id: Optional[str] = None, 
+                               initial_client_state: Optional[Dict[str, Any]] = None): # Renamed param
+            if thread_id in self.active_threads:
+                return self.agent_response(f"Tool: Session {thread_id} already active.", error=True)
+            
+            self.agent.set_thread_id(thread_id)
+            if user_id: self.agent.set_user_id(user_id)
+            if initial_client_state: # If client provides initial state for the session
+                await self.agent.set_agent_state_from_external(initial_client_state, source="session_start_client_state")
+            
+            current_agent_state = self.agent.context.get_agent_state()
+            self.active_threads[thread_id] = {
+                "user_id": user_id,
+                "state_from_tool_perspective": current_agent_state.copy(), # Use agent's current state
+                "created_at": datetime.utcnow()
+            }
+            await self._emit_event_internal(
+                StreamEventType.SESSION_START,
+                {"threadId": thread_id, "userId": user_id, "initialState": current_agent_state}, # Emit agent's state
+                thread_id, user_id
+            )
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "status": "session_started", "current_agent_state": current_agent_state
+            })
+```
+
+**Defining "Agent State":**
+What constitutes `agent_state` is application-specific. Examples:
+*   `current_task_id`: ID of the task the agent is working on.
+*   `current_goal`: A natural language description of the current objective.
+*   `ui_preferences`: User-specific UI settings relevant to the agent's behavior.
+*   `active_plugins` or `enabled_tools`: List of currently active tools/plugins.
+*   `sentiment_level`: If the agent tracks user sentiment.
+*   `browser_session_info`: E.g., current URL, open tabs (if `BrowserAgentTool` populates this).
+*   `last_error`: Information about the last critical error encountered.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-32 completed.
+*   `AgentContext` has `agent_state` dictionary.
+*   `Agent` has `update_and_broadcast_agent_state` and `set_agent_state_from_external` methods.
+*   `StreamProtocolTool` is correctly set up to receive `RunAgentInput` (which includes `state`) and call agent methods.
+
+**Integration with Agent Zero:**
+*   The agent now has a formal mechanism (`agent_state` and `update_and_broadcast_agent_state`) to manage and communicate its internal, non-history state.
+*   Clients can send state updates with their messages (`RunAgentInput.state`), and the `StreamProtocolTool` ensures this state is applied to the agent via `agent.set_agent_state_from_external`.
+*   The agent proactively emits `STATE_DELTA` events when its relevant internal state changes, allowing the UI to stay synchronized.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Indirect. For example, if the agent's state includes "tts_voice_preference", changing this state would emit a `STATE_DELTA`. The `ChatterboxTTSTool` could then read this preference from `agent.context.agent_state` when generating speech.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 33:**
+This task establishes a clear mechanism for managing and synchronizing agent-specific state (beyond chat history) using the `STATE_DELTA` event of the AG-UI protocol. The `Agent` class can now update its internal `agent_state` and broadcast these changes. Similarly, it can receive and apply state updates from the client when new inputs are processed via the `StreamProtocolTool`. This allows for more dynamic and interactive experiences where the UI and agent can share and react to a common, evolving state.
+
+Please confirm to proceed.Okay, let's proceed with Task 33.
+
+## Task 33: Finalize Agent State Management and `STATE_DELTA` Event Integration
+
+**Focus:**
+This task finalizes how agent-specific state (beyond conversation history) is managed and synchronized with a client using the `STATE_DELTA` event from the AG-UI protocol.
+1.  Refine `AgentContext.agent_state` and `Agent.update_agent_state`.
+2.  Determine what constitutes "agent state" that should be shared/synced (e.g., current task, objectives, custom data relevant to the UI).
+3.  Implement logic for the agent to emit `STATE_DELTA` events when its relevant internal state changes.
+4.  Ensure `StreamProtocolTool._handle_input` correctly applies incoming `state` from `RunAgentInput` to the agent's state.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`AgentContext` and `Agent` classes):**
+
+    ```python
+    # agent.py
+    # ... (imports)
+    from python.tools.stream_protocol_tool import StreamEventType # Ensure this is available
+
+    class AgentContext:
+        # ... (__init__ from Task 2, including self.agent_state: Dict[str, Any] = {})
+        
+        def update_internal_agent_state(self, state_delta: Dict[str, Any], source: str = "agent_logic") -> bool:
+            """
+            Updates the agent_state and returns True if changed, False otherwise.
+            Does NOT emit STATE_DELTA itself; that's the agent's job.
+            """
+            changed = False
+            for key, value in state_delta.items():
+                if key not in self.agent_state or self.agent_state[key] != value:
+                    self.agent_state[key] = value
+                    changed = True
+            if changed:
+                print(f"AgentContext {self.id} (Thread: {self.thread_id}): Internal state updated by {source}. New state snapshot: {self.agent_state}")
+            return changed
+
+        def get_agent_state(self) -> Dict[str, Any]:
+            """Returns a copy of the current agent state."""
+            return self.agent_state.copy()
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event as before)
+
+        async def update_and_broadcast_agent_state(self, state_delta: Dict[str, Any], source_of_change: str = "agent_internal"):
+            """
+            Updates the agent's state and emits a STATE_DELTA event if changes occurred.
+            """
+            if self.context.update_internal_agent_state(state_delta, source=source_of_change):
+                await self._emit_stream_event(
+                    StreamEventType.STATE_DELTA,
+                    {
+                        "delta": state_delta, # The changes that were applied
+                        "full_state": self.context.get_agent_state() # The new complete state
+                    }
+                )
+            # else:
+                # print(f"Agent {self.agent_name}: No actual change in state for delta: {state_delta}, not broadcasting.")
+
+
+        # Example usage within monologue or other methods:
+        async def monologue(self) -> Optional[str]:
+            # ...
+            await self.update_and_broadcast_agent_state({"status": "processing_monologue", "current_iteration": self.iteration_no})
+            # ...
+
+            # If a tool changes some state the agent should be aware of and broadcast
+            if tool_name == "some_state_changing_tool":
+                # tool_response.data might contain state updates
+                if tool_response and tool_response.data and isinstance(tool_response.data, dict) and "agent_state_update" in tool_response.data:
+                    await self.update_and_broadcast_agent_state(tool_response.data["agent_state_update"], source_of_change=tool_name)
+            
+            # When monologue ends
+            # await self.update_and_broadcast_agent_state({"status": "idle", "reason": "Monologue ended."}) 
+            # This specific one was already added to emit STATE_DELTA in Task 32, ensure it uses the new method
+            # ...
+            # Replace the direct _emit_stream_event for STATE_DELTA with:
+            await self.update_and_broadcast_agent_state(
+                {"status": "idle", "reason": "Monologue ended by max_iterations or other condition."},
+                source_of_change="monologue_completion"
+            )
+            return None
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None): # Added incoming_state
+            """
+            Processes a message that might also come with a state update from the client.
+            """
+            print(f"Agent {self.agent_name}: process_streamed_message. Role='{role}', Content='{content[:50]}...'")
+            
+            if incoming_state:
+                print(f"Agent {self.agent_name}: Received incoming state with message: {incoming_state}")
+                await self.update_and_broadcast_agent_state(incoming_state, source_of_change="client_stream_input")
+
+            # ... (rest of process_streamed_message logic from Task 32)
+            # Ensure it calls monologue which will then emit its own state updates.
+            # An initial state update after processing incoming_state is good.
+            await self.update_and_broadcast_agent_state({"last_user_message_received": content[:100]}, source_of_change="user_message_ingestion")
+
+            if role.lower() == "user":
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj)
+                return await self.monologue()
+            return None
+
+
+        # The old `update_agent_state` was for direct setting from StreamProtocolTool.
+        # We now have `update_and_broadcast_agent_state` for internal changes,
+        # and `process_streamed_message` can take an `incoming_state` argument.
+        # Let's deprecate the old `update_agent_state` if `process_streamed_message` covers the client state update path.
+        # Or, keep it for direct state manipulation by the tool if needed, ensuring it also broadcasts.
+        
+        # Revised method from Task 2 for direct state updates (e.g., from StreamProtocolTool if client sends just a state update)
+        async def set_agent_state_from_external(self, new_full_state: Dict[str, Any], source: str = "external_tool"):
+            """
+            Sets the agent's state to a new full state, usually from an external source like client input.
+            This replaces the entire agent_state with new_full_state.
+            Emits a STATE_DELTA event.
+            """
+            # Calculate delta for the event, even though we are setting full state
+            # This is mostly for the client to know what specifically changed if it tracks deltas.
+            # However, AG-UI protocol specifies sending the delta that *was applied*.
+            # If we replace the whole state, the "delta" could be considered the new_full_state itself,
+            # or we can calculate what changed from the old state.
+            # For simplicity in this method, let's assume the `new_full_state` IS the delta if source is external.
+            # Or, more accurately, we find what's different.
+            
+            current_state = self.context.get_agent_state()
+            delta = {}
+            all_keys = set(current_state.keys()) | set(new_full_state.keys())
+            changed = False
+            for k in all_keys:
+                old_v = current_state.get(k)
+                new_v = new_full_state.get(k)
+                if old_v != new_v:
+                    delta[k] = new_v # new_v could be None if key is removed
+                    changed = True
+            
+            if changed:
+                self.context.agent_state = new_full_state.copy() # Replace entirely
+                print(f"Agent {self.agent_name} (Thread: {self.get_thread_id()}): State fully replaced by {source}. New state: {self.context.agent_state}")
+                await self._emit_stream_event(
+                    StreamEventType.STATE_DELTA,
+                    {
+                        "delta": delta, # What actually changed to reach the new state
+                        "full_state": self.context.get_agent_state() 
+                    }
+                )
+            else:
+                print(f"Agent {self.agent_name}: No change in state from external update. New state is same as current.")
+
+    ```
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   Update `_handle_input` to pass the `state` from `RunAgentInput` to `agent.process_streamed_message` or `agent.set_agent_state_from_external`.
+    *   The `_update_state` action in `StreamProtocolTool` (if called directly by the agent to update its own state and notify clients) should use `agent.update_and_broadcast_agent_state`. If it's for a client pushing state, it should use `agent.set_agent_state_from_external`.
+
+    ```python
+    # python/tools/stream_protocol_tool.py
+    # ... (imports, StreamEventType, RunAgentInput, StreamEvent, StreamTransportGlobal)
+
+    class StreamProtocolTool(Tool):
+        # ... (__init__ and other methods from Task 11)
+
+        async def _handle_input(self, input_data: Dict[str, Any]):
+            """Process incoming frontend input according to RunAgentInput schema"""
+            try:
+                run_input = RunAgentInput(
+                    thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                    messages=input_data.get("messages", []),
+                    state=input_data.get("state"), # Can be None
+                    user_id=input_data.get("userId"),
+                    metadata=input_data.get("metadata", {})
+                )
+                
+                # Ensure agent context is aligned with thread_id and user_id
+                self.agent.set_thread_id(run_input.thread_id)
+                if run_input.user_id: self.agent.set_user_id(run_input.user_id)
+
+                # If the input contains messages, process them. 
+                # The process_streamed_message in Agent can handle the state.
+                if run_input.messages:
+                    for message_data in run_input.messages:
+                        # Pass the state from RunAgentInput to the first message processing,
+                        # subsequent messages in the same batch might not need to re-apply it.
+                        # Or, apply state first, then process all messages.
+                        # Let's apply state first if it exists, then process messages.
+                        if run_input.state is not None: # Apply state only if client provided it
+                             # Use set_agent_state_from_external if client sends the *entire desired state*
+                            await self.agent.set_agent_state_from_external(run_input.state, source="client_run_agent_input")
+                            run_input.state = None # Consume state, so it's not re-applied by process_streamed_message
+
+                        # Agent's process_streamed_message will handle its own state updates internally
+                        await self._process_message(message_data, run_input.thread_id, run_input.user_id) 
+                
+                # If there were no messages but state was provided, update the agent's state.
+                elif run_input.state is not None:
+                    await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push")
+
+                # Manage this tool's local tracking of active_threads (for its own session concept)
+                if run_input.thread_id not in self.active_threads:
+                    await self._emit_event_internal( # Use internal to avoid agent_response wrapper
+                        StreamEventType.SESSION_START,
+                        {"threadId": run_input.thread_id, "userId": run_input.user_id, "initialState": self.agent.context.get_agent_state()},
+                        run_input.thread_id, run_input.user_id
+                    )
+                    self.active_threads[run_input.thread_id] = {
+                        "user_id": run_input.user_id,
+                        "state_from_tool_perspective": self.agent.context.get_agent_state(),
+                        "created_at": datetime.utcnow()
+                    }
+                
+                return self.agent_response({
+                    "success": True, "thread_id": run_input.thread_id, "messages_processed": len(run_input.messages)
+                })
+                
+            except Exception as e:
+                # ... (error handling)
+                return self.agent_response(f"Input processing error: {str(e)}", error=True)
+
+        async def _process_message(self, message_data: Dict[str, Any], thread_id: str, user_id: Optional[str]):
+            """Process individual message. Agent's process_streamed_message handles main logic & state."""
+            role = message_data.get("role", "user").lower()
+            content = message_data.get("content", "")
+            attachments = message_data.get("attachments")
+
+            # Optionally emit a basic "message_received" event, but primary state/thought events come from Agent
+            # await self._emit_event_internal(StreamEventType.TEXT_MESSAGE_CONTENT, ...) 
+            
+            if role == "user":
+                # The agent.process_streamed_message will handle history and monologue
+                await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+            else:
+                print(f"StreamProtocolTool: Forwarding non-user message to agent for processing (role: {role}).")
+                await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+
+
+        async def _update_state(self, thread_id: str, state_delta: Dict[str, Any]):
+            """
+            This action is if the AGENT wants to explicitly update its own state and broadcast.
+            Client-pushed state updates are handled via _handle_input.
+            """
+            if thread_id not in self.active_threads: # Tool's session tracking
+                print(f"StreamProtocolTool: Warning - _update_state called for untracked thread {thread_id}. Will proceed with agent state update.")
+                # Ensure agent context is aligned, this might create/get agent context
+                self.agent.set_thread_id(thread_id)
+                # It's possible user_id is not known here if session wasn't started via tool.
+            
+            # The agent updates its own state and broadcasts
+            await self.agent.update_and_broadcast_agent_state(state_delta, source_of_change="tool_direct_update_state")
+            
+            # Update this tool's local cache of the state if needed (though agent_state is the source of truth)
+            if thread_id in self.active_threads:
+                 self.active_threads[thread_id]["state_from_tool_perspective"].update(state_delta)
+
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "updated_agent_state_snapshot": self.agent.context.get_agent_state()
+            })
+            
+        # ... (other methods like _start_session, _end_session, etc.)
+        # _start_session should perhaps use/return agent.context.agent_state as initial_state if appropriate.
+        async def _start_session(self, thread_id: str, user_id: Optional[str] = None, 
+                               initial_client_state: Optional[Dict[str, Any]] = None): # Renamed param
+            if thread_id in self.active_threads:
+                return self.agent_response(f"Tool: Session {thread_id} already active.", error=True)
+            
+            self.agent.set_thread_id(thread_id)
+            if user_id: self.agent.set_user_id(user_id)
+            if initial_client_state: # If client provides initial state for the session
+                await self.agent.set_agent_state_from_external(initial_client_state, source="session_start_client_state")
+            
+            current_agent_state = self.agent.context.get_agent_state()
+            self.active_threads[thread_id] = {
+                "user_id": user_id,
+                "state_from_tool_perspective": current_agent_state.copy(), # Use agent's current state
+                "created_at": datetime.utcnow()
+            }
+            await self._emit_event_internal(
+                StreamEventType.SESSION_START,
+                {"threadId": thread_id, "userId": user_id, "initialState": current_agent_state}, # Emit agent's state
+                thread_id, user_id
+            )
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "status": "session_started", "current_agent_state": current_agent_state
+            })
+    ```
+
+**Defining "Agent State":**
+What constitutes `agent_state` is application-specific. Examples:
+*   `current_task_id`: ID of the task the agent is working on.
+*   `current_goal`: A natural language description of the current objective.
+*   `ui_preferences`: User-specific UI settings relevant to the agent's behavior.
+*   `active_plugins` or `enabled_tools`: List of currently active tools/plugins.
+*   `sentiment_level`: If the agent tracks user sentiment.
+*   `browser_session_info`: E.g., current URL, open tabs (if `BrowserAgentTool` populates this).
+*   `last_error`: Information about the last critical error encountered.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-32 completed.
+*   `AgentContext` has `agent_state` dictionary.
+*   `Agent` has `update_and_broadcast_agent_state` and `set_agent_state_from_external` methods.
+*   `StreamProtocolTool` is correctly set up to receive `RunAgentInput` (which includes `state`) and call agent methods.
+
+**Integration with Agent Zero:**
+*   The agent now has a formal mechanism (`agent_state` and `update_and_broadcast_agent_state`) to manage and communicate its internal, non-history state.
+*   Clients can send state updates with their messages (`RunAgentInput.state`), and the `StreamProtocolTool` ensures this state is applied to the agent via `agent.set_agent_state_from_external`.
+*   The agent proactively emits `STATE_DELTA` events when its relevant internal state changes, allowing the UI to stay synchronized.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Indirect. For example, if the agent's state includes "tts_voice_preference", changing this state would emit a `STATE_DELTA`. The `ChatterboxTTSTool` could then read this preference from `agent.context.agent_state` when generating speech.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 33:**
+This task establishes a clear mechanism for managing and synchronizing agent-specific state (beyond chat history) using the `STATE_DELTA` event of the AG-UI protocol. The `Agent` class can now update its internal `agent_state` and broadcast these changes. Similarly, it can receive and apply state updates from the client when new inputs are processed via the `StreamProtocolTool`. This allows for more dynamic and interactive experiences where the UI and agent can share and react to a common, evolving state.
+
+Please confirm to proceed.

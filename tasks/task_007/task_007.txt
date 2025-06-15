@@ -1,0 +1,397 @@
+## Task 7: Implement Core KnowledgeAgent (Foundational RAG) Tool Structure and Placeholder Actions
+
+Focus:
+This task establishes the basic structure for the KnowledgeAgentTool within Agent Zero, based on the foundational-rag-agent repository. It will include placeholder implementations for core RAG actions like ingest_documents, ingest_chunks, query, and search. The actual database interactions (Supabase/pgvector) and embedding generation will be deferred. The goal is to create the tool's interface, make it callable, and have it emit relevant KNOWLEDGE_RESULT or PROGRESS_UPDATE events.
+
+File Paths and Code Changes:
+
+Create new directories (if they don't exist):
+
+python/agents/ (should exist)
+
+python/agents/knowledge_agent/
+
+Create python/agents/knowledge_agent/database.py (Placeholder):
+This will eventually hold the DatabaseManager (SupabaseClient in foundational-rag-agent).
+
+# python/agents/knowledge_agent/database.py
+from typing import List, Dict, Any, Optional
+
+class DatabaseManager:
+    """
+    Manages interaction with the vector database (mocked).
+    In a real implementation, this would interact with Supabase/pgvector.
+    """
+    def __init__(self):
+        self.documents: List[Dict[str, Any]] = [] # In-memory store for mock
+        print("DatabaseManager (Mock) initialized.")
+
+    async def store_chunks(self, chunks_data: List[Dict[str, Any]]) -> List[str]:
+        """Simulates storing chunks with their embeddings and metadata."""
+        stored_ids = []
+        for i, chunk_info in enumerate(chunks_data):
+            # chunk_info expected to be like: {"text": str, "embedding": List[float], "metadata": Dict, "id": str}
+            doc_id = chunk_info.get("id", f"mock_doc_{len(self.documents) + i}")
+            self.documents.append({
+                "id": doc_id,
+                "content": chunk_info.get("text"),
+                "embedding_vector": chunk_info.get("embedding"), # Store mock embedding
+                "metadata": chunk_info.get("metadata", {})
+            })
+            stored_ids.append(doc_id)
+            print(f"DatabaseManager (Mock): Stored chunk '{doc_id}': {chunk_info.get('text', '')[:50]}...")
+        return stored_ids
+
+    async def semantic_search(self, query_embedding: List[float], limit: int, filter_metadata: Optional[Dict] = None) -> List[Dict[str, Any]]:
+        """Simulates semantic search."""
+        print(f"DatabaseManager (Mock): Performing semantic search with limit {limit}, filter {filter_metadata}")
+        # Mock search: return first few stored documents, ignoring embedding similarity for now
+        results = []
+        for doc in self.documents:
+            if len(results) >= limit:
+                break
+            
+            # Mock filtering
+            passes_filter = True
+            if filter_metadata:
+                for key, value in filter_metadata.items():
+                    if doc["metadata"].get(key) != value:
+                        passes_filter = False
+                        break
+            
+            if passes_filter:
+                results.append({
+                    "content": doc["content"],
+                    "metadata": doc["metadata"],
+                    "similarity_score": 0.85 + (0.1 * (len(results) % 2)) # Mock score
+                })
+        return results
+
+    async def get_all_sources(self) -> List[str]:
+        """Simulates fetching all unique source identifiers."""
+        sources = set()
+        for doc in self.documents:
+            if doc["metadata"] and "source" in doc["metadata"]:
+                sources.add(doc["metadata"]["source"])
+        return list(sources)
+
+
+Create python/agents/knowledge_agent/embeddings.py (Placeholder):
+This will hold the EmbeddingGenerator (from foundational-rag-agent).
+
+# python/agents/knowledge_agent/embeddings.py
+from typing import List, Any
+
+class EmbeddingGenerator:
+    """
+    Generates embeddings for text (mocked).
+    In a real implementation, this would use OpenAI or other embedding models.
+    """
+    def __init__(self, model_name: str = "text-embedding-3-small"):
+        self.model_name = model_name
+        self.embedding_dim = 1536 # Default for text-embedding-3-small
+        print(f"EmbeddingGenerator (Mock) initialized with model: {model_name}")
+
+    async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Simulates generating embeddings for a batch of texts."""
+        print(f"EmbeddingGenerator (Mock): Generating embeddings for {len(texts)} texts.")
+        # Return mock embeddings (list of lists of floats)
+        return [[0.01 * i + 0.001 * j for j in range(self.embedding_dim)] for i in range(len(texts))]
+
+    async def generate_single_embedding(self, text: str) -> List[float]:
+        """Simulates generating an embedding for a single text."""
+        print(f"EmbeddingGenerator (Mock): Generating embedding for text: {text[:50]}...")
+        return [0.01 * (len(text) % 100) + 0.001 * j for j in range(self.embedding_dim)]
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Create python/agents/knowledge_agent/retrieval.py (Placeholder):
+
+# python/agents/knowledge_agent/retrieval.py
+from typing import List, Dict, Any, Optional
+# from .database import DatabaseManager # If DatabaseManager is in the same package
+# from .embeddings import EmbeddingGenerator
+
+class InformationRetriever:
+    """
+    Retrieves information from the knowledge base (mocked).
+    """
+    def __init__(self, database_manager, embedding_generator): # Pass instances
+        self.db_manager = database_manager
+        self.embed_generator = embedding_generator
+        print("InformationRetriever (Mock) initialized.")
+
+    async def retrieve_documents(self, query: str, limit: int = 5, filter_metadata: Optional[Dict] = None) -> List[Dict[str, Any]]:
+        """Simulates retrieving documents based on a query."""
+        print(f"InformationRetriever (Mock): Retrieving documents for query: '{query}', limit: {limit}")
+        query_embedding = await self.embed_generator.generate_single_embedding(query)
+        # Search results from db_manager will already have similarity score
+        search_results = await self.db_manager.semantic_search(query_embedding, limit, filter_metadata)
+        return search_results
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Create python/agents/knowledge_agent/agent.py (Placeholder):
+This will hold the main KnowledgeRAGAgent logic.
+
+# python/agents/knowledge_agent/agent.py
+from typing import List, Dict, Any, Optional
+# from .database import DatabaseManager
+# from .embeddings import EmbeddingGenerator
+# from .retrieval import InformationRetriever
+# from .prompts import RAG_SYSTEM_PROMPT # Will be created later
+
+class KnowledgeRAGAgent:
+    """
+    RAG Agent logic (mocked).
+    """
+    def __init__(self, database_manager, information_retriever, llm_client=None): # llm_client for actual RAG
+        self.db_manager = database_manager
+        self.retriever = information_retriever
+        self.llm_client = llm_client # Placeholder for OpenAI/Pydantic AI client
+        # self.system_prompt = RAG_SYSTEM_PROMPT
+        print("KnowledgeRAGAgent (Mock) initialized.")
+
+    async def ingest_document_chunks(self, chunks_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Simulates ingesting pre-processed and pre-embedded chunks.
+        chunks_data: list of dicts, each like {"text": str, "embedding": List[float], "metadata": Dict, "id": str}
+        """
+        print(f"KnowledgeRAGAgent (Mock): Ingesting {len(chunks_data)} chunks.")
+        stored_ids = await self.db_manager.store_chunks(chunks_data)
+        return {"status": "success", "ingested_chunk_ids": stored_ids, "count": len(stored_ids)}
+
+    async def query_knowledge_base(self, query: str, limit: int = 5, context_window: int = 4000) -> Dict[str, Any]:
+        """Simulates querying the knowledge base and generating a RAG response."""
+        print(f"KnowledgeRAGAgent (Mock): Querying with: '{query}'")
+        retrieved_docs = await self.retriever.retrieve_documents(query, limit)
+        
+        if not retrieved_docs:
+            return {"response": "I could not find relevant information in the knowledge base.", "sources": []}
+
+        # Mock RAG response generation
+        context_str = "\n".join([doc["content"] for doc in retrieved_docs])
+        mock_response = f"Based on the retrieved documents about '{query}', here is a summary: {context_str[:200]}..."
+        
+        sources = [{"source": doc["metadata"].get("source_url", "unknown"), 
+                    "content_preview": doc["content"][:100]+"...", 
+                    "similarity": doc.get("similarity_score", 0.0)} 
+                   for doc in retrieved_docs]
+        
+        return {"response": mock_response, "sources": sources, "retrieved_count": len(retrieved_docs)}
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Create python/tools/knowledge_agent_tool.py:
+
+# python/tools/knowledge_agent_tool.py
+from python.helpers.tool import Tool, Response as ToolResponse
+from python.tools.stream_protocol_tool import StreamEventType
+from agents.knowledge_agent.agent import KnowledgeRAGAgent
+from agents.knowledge_agent.database import DatabaseManager
+from agents.knowledge_agent.embeddings import EmbeddingGenerator
+from agents.knowledge_agent.retrieval import InformationRetriever
+import asyncio
+from typing import Dict, Any, List, Optional
+
+class KnowledgeAgentTool(Tool):
+    """
+    KnowledgeAgent (Foundational RAG inspired) integration for Agent Zero.
+    Manages knowledge base ingestion and retrieval.
+    """
+    
+    def __init__(self, agent, **kwargs):
+        super().__init__(agent, name="knowledge_agent_tool",
+                         description="Manages and queries a knowledge base using RAG principles.",
+                         args_schema=None, # Define proper schema later
+                         **kwargs)
+        # Initialize components (these would be singletons or configured externally in a full app)
+        self.db_manager = DatabaseManager()
+        self.embed_generator = EmbeddingGenerator()
+        self.retriever = InformationRetriever(self.db_manager, self.embed_generator)
+        self.rag_agent_logic = KnowledgeRAGAgent(self.db_manager, self.retriever) # The core logic
+        print(f"KnowledgeAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+    async def _emit_knowledge_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+        """Helper to emit KNOWLEDGE_RESULT or PROGRESS_UPDATE events."""
+        event_type = StreamEventType.KNOWLEDGE_RESULT if status == "completed" else StreamEventType.PROGRESS_UPDATE
+        payload = {"action": action_name, "status": status}
+        if details:
+            payload.update(details)
+        
+        if hasattr(self.agent, '_emit_stream_event'):
+             await self.agent._emit_stream_event(event_type, payload)
+        else:
+            print(f"KnowledgeAgentTool: Agent does not have _emit_stream_event. Cannot emit {event_type.value}.")
+
+    async def execute(self, action: str, **kwargs) -> ToolResponse:
+        """
+        Execute KnowledgeAgent operations.
+        """
+        try:
+            if action == "ingest_chunks":
+                # chunks_data: List of dicts, each with "text", "embedding", "metadata", "id"
+                chunks_data = kwargs.get("chunks_data") 
+                if not chunks_data: return ToolResponse("Error: 'chunks_data' is required for ingest_chunks.", error=True)
+                return await self._ingest_chunks(chunks_data)
+            
+            elif action == "query":
+                query_text = kwargs.get("query")
+                limit = kwargs.get("limit", 5)
+                if not query_text: return ToolResponse("Error: 'query' is required.", error=True)
+                return await self._query_kb(query_text, limit)
+            
+            elif action == "raw_search": # Direct vector search without RAG response generation
+                query_text = kwargs.get("query")
+                limit = kwargs.get("limit", 5)
+                filter_md = kwargs.get("filter_metadata")
+                if not query_text: return ToolResponse("Error: 'query' is required.", error=True)
+                return await self._raw_search(query_text, limit, filter_md)
+            
+            elif action == "list_sources":
+                return await self._list_sources()
+            else:
+                return ToolResponse(f"Unknown KnowledgeAgent action: {action}", error=True)
+
+        except Exception as e:
+            import traceback
+            error_message = f"KnowledgeAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+            print(error_message)
+            await self._emit_knowledge_event(action, "error", {"error": str(e)})
+            return ToolResponse(message=error_message, error=True)
+
+    async def _ingest_chunks(self, chunks_data: List[Dict[str, Any]]) -> ToolResponse:
+        """Ingests pre-processed and pre-embedded chunks."""
+        await self._emit_knowledge_event("ingest_chunks", "starting", {"chunk_count": len(chunks_data)})
+        
+        # Embed if embeddings are not provided (or re-embed based on policy)
+        for i, chunk_d in enumerate(chunks_data):
+            if "embedding" not in chunk_d or not chunk_d["embedding"]:
+                text_to_embed = chunk_d.get("text")
+                if not text_to_embed:
+                     await self._emit_knowledge_event("ingest_chunks", "error", {"message": f"Chunk {i} has no text to embed."})
+                     return ToolResponse(f"Error: Chunk {i} has no text for embedding.", error=True)
+                chunks_data[i]["embedding"] = await self.embed_generator.generate_single_embedding(text_to_embed)
+
+        result = await self.rag_agent_logic.ingest_document_chunks(chunks_data)
+        
+        await self._emit_knowledge_event("ingest_chunks", "completed", result)
+        return ToolResponse(message=f"Ingested {result.get('count', 0)} chunks.")
+
+    async def _query_kb(self, query: str, limit: int) -> ToolResponse:
+        """Queries the KB and uses RAG to generate an answer."""
+        await self._emit_knowledge_event("query_kb", "processing", {"query": query})
+        
+        rag_response = await self.rag_agent_logic.query_knowledge_base(query, limit)
+        
+        await self._emit_knowledge_event("query_kb", "completed", rag_response)
+        # The main response text will be sent as TEXT_MESSAGE_CONTENT by the agent after this tool call.
+        # This tool provides the structured RAG output.
+        return ToolResponse(message=json.dumps(rag_response))
+
+    async def _raw_search(self, query: str, limit: int, filter_metadata: Optional[Dict]) -> ToolResponse:
+        """Performs a raw semantic search and returns document chunks."""
+        await self._emit_knowledge_event("raw_search", "processing", {"query": query, "filter": filter_metadata})
+        
+        # In a real RAG system, InformationRetriever would be used
+        # For this mock, we call db_manager directly after getting embedding
+        query_embedding = await self.embed_generator.generate_single_embedding(query)
+        search_results = await self.db_manager.semantic_search(query_embedding, limit, filter_metadata)
+        
+        await self._emit_knowledge_event("raw_search", "completed", {"results_count": len(search_results)})
+        return ToolResponse(message=json.dumps(search_results))
+
+    async def _list_sources(self) -> ToolResponse:
+        """Lists all unique sources in the knowledge base."""
+        await self._emit_knowledge_event("list_sources", "processing", {})
+        sources = await self.db_manager.get_all_sources()
+        await self._emit_knowledge_event("list_sources", "completed", {"sources": sources})
+        return ToolResponse(message=json.dumps({"sources": sources}))
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Update prompts/default/agent.system.tools.md:
+Add knowledge_agent_tool.
+
+# prompts/default/agent.system.tools.md
+# ... (existing tools including web_crawler_tool)
+
+### knowledge_agent_tool:
+# Manages and queries a knowledge base.
+# Arguments:
+#   action: string - "ingest_chunks", "query", "raw_search", "list_sources".
+#   chunks_data: list[dict] - (For ingest_chunks) List of chunks to ingest. Each dict needs "text", "metadata", "id". "embedding" is optional (will be generated if missing).
+#       Example: [{"text": "Content of chunk 1", "embedding": [0.1, ...], "metadata": {"source": "doc1.pdf"}, "id": "doc1_chunk0"}]
+#   query: string - (For query, raw_search) The search query or question.
+#   limit: int - (Optional for query, raw_search, default 5) Max results.
+#   filter_metadata: dict - (Optional for raw_search) Metadata to filter results by (e.g., {"source": "doc1.pdf"}).
+# Example for ingesting chunks:
+# {
+#   "tool_name": "knowledge_agent_tool",
+#   "tool_args": { 
+#     "action": "ingest_chunks", 
+#     "chunks_data": [ { "text": "...", "metadata": {"source_url": "url1"}, "id": "chunk1_id" } ] 
+#   }
+# }
+# Example for querying:
+# {
+#   "tool_name": "knowledge_agent_tool",
+#   "tool_args": { "action": "query", "query": "What is Pydantic AI?" }
+# }
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Markdown
+IGNORE_WHEN_COPYING_END
+
+Dependencies/Prerequisites:
+
+Tasks 1-5 completed.
+
+StreamProtocolTool and agent's _emit_stream_event helper.
+
+Standard Python libraries. No new external packages required by these placeholders. Actual supabase-py, openai (for embeddings), pydantic-ai will be added when implementing real logic.
+
+Integration with Agent Zero:
+
+KnowledgeAgentTool is added to python/tools/.
+
+It uses the standard Tool interface.
+
+It emits KNOWLEDGE_RESULT or PROGRESS_UPDATE events.
+
+The tool's description and usage are added to system prompts.
+
+It provides placeholder actions for ingestion and querying, which will be filled with actual RAG logic later.
+
+Chatterbox TTS Integration Requirements for this Task:
+
+None directly.
+
+Docker Compatibility:
+
+No new Python package dependencies for these placeholders.
+
+Ensure the new directory structure python/agents/knowledge_agent/ and files within, plus python/tools/knowledge_agent_tool.py, are included in the Docker image.
+
+Summary of Task 7:
+This task sets up the structure for the KnowledgeAgentTool and its dependent (mocked) components for database interaction, embedding, and retrieval. It defines the tool's actions for ingestion and querying within Agent Zero and prepares for event emission related to knowledge base operations. The actual RAG logic and database/embedding service integrations are deferred.
+
+Please confirm to proceed.

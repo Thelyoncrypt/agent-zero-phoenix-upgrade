@@ -1,0 +1,785 @@
+## Task 2: Enhance AgentContext and Agent for StreamProtocol Integration
+
+**Focus:**
+This task involves modifying the core `Agent` and `AgentContext` classes in `agent.py` to support `thread_id` and `user_id` management, and to lay the groundwork for state updates and processing streamed messages. We will also update the `StreamProtocolTool` to utilize these enhancements and refine its `StreamTransport` to be a placeholder for now, as actual WebSocket management will be handled at the server level later.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py`:**
+
+    *   **Enhance `AgentContext`:**
+        *   Add `thread_id`, `user_id` attributes.
+        *   Update initialization/creation to handle these.
+    *   **Enhance `Agent`:**
+        *   Add methods: `get_thread_id`, `set_thread_id`, `get_user_id`, `set_user_id`, `update_agent_state` (as a placeholder).
+        *   Add a new method `process_streamed_message` to handle messages that will come from the `StreamProtocolTool`.
+
+    ```python
+# agent.py (Illustrative Changes - apply to existing Agent Zero code)
+    # ... (other imports)
+    import uuid
+    from typing import Optional, Dict, Any, List # Ensure these are present
+
+    # ... (Existing AgentConfig, UserMessage, AIMessage, etc.)
+
+    class AgentContext:
+        # ... (Existing attributes like id, name, log, config, history, etc.)
+        _instances: Dict[str, 'AgentContext'] = {}
+
+        def __init__(self, id: Optional[str] = None, name: Optional[str] = None, 
+                     thread_id: Optional[str] = None, user_id: Optional[str] = None): # Added thread_id, user_id
+            self.id: str = id or str(uuid.uuid4())
+            self.name: str = name or "New Chat"
+            self.log: Log = Log(self.id)
+            self.config: AgentConfig = settings.get_agent_config() # Assuming settings helper
+            self.history: History = History(self)
+            self.agent0: Optional['Agent'] = None
+            self.streaming_agent: Optional['Agent'] = None
+            self.custom_data: Dict[str, Any] = {} 
+            self.halt_event: asyncio.Event = asyncio.Event()
+            self.intervention_needed: bool = False
+            self.intervention_message: Optional[UserMessage] = None
+            self.paused: bool = False
+            self.current_tool_log_id: Optional[str] = None
+
+            # New attributes for StreamProtocol
+            self.thread_id: Optional[str] = thread_id or self.id # Default thread_id to context_id if not provided
+            self.user_id: Optional[str] = user_id
+            self.agent_state: Dict[str, Any] = {} # For AG-UI state persistence
+
+            # StreamTransport will be managed globally or per application, 
+            # not directly instantiated here for every context.
+            # self.stream_transport: Optional[StreamTransport] = None 
+            # This will be handled by run_ui.py and accessed by tools as needed.
+
+            AgentContext._instances[self.id] = self
+            print(f"AgentContext created: id={self.id}, name='{self.name}', thread_id='{self.thread_id}', user_id='{self.user_id}'")
+
+
+        @classmethod
+        def get(cls, id: Optional[str] = None, name: Optional[str] = None,
+                thread_id: Optional[str] = None, user_id: Optional[str] = None) -> 'AgentContext': # Added thread_id, user_id
+            if id and id in cls._instances:
+                ctx = cls._instances[id]
+                # Update thread_id and user_id if provided and different
+                if thread_id and ctx.thread_id != thread_id:
+                    ctx.thread_id = thread_id
+                    print(f"AgentContext {id} updated thread_id to {thread_id}")
+                if user_id and ctx.user_id != user_id:
+                    ctx.user_id = user_id
+                    print(f"AgentContext {id} updated user_id to {user_id}")
+                return ctx
+            
+            new_id = id or str(uuid.uuid4())
+            # Pass through thread_id and user_id to constructor
+            return cls(id=new_id, name=name, thread_id=thread_id or new_id, user_id=user_id)
+
+        # ... (Other AgentContext methods like reset, remove, etc.)
+
+    class Agent:
+        # ... (Existing attributes and __init__)
+
+        def get_thread_id(self) -> Optional[str]:
+            """Returns the current thread ID from the context."""
+            return self.context.thread_id
+
+        def set_thread_id(self, thread_id: str):
+            """Sets the thread ID in the context."""
+            self.context.thread_id = thread_id
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}) set thread_id to: {thread_id}")
+
+        def get_user_id(self) -> Optional[str]:
+            """Returns the current user ID from the context."""
+            return self.context.user_id
+
+        def set_user_id(self, user_id: Optional[str]):
+            """Sets the user ID in the context."""
+            self.context.user_id = user_id
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}) set user_id to: {user_id}")
+
+        def update_agent_state(self, state_delta: Dict[str, Any]):
+            """
+            Updates the agent's persistent state associated with the AG-UI protocol.
+            This state is managed per thread_id.
+            """
+            self.context.agent_state.update(state_delta)
+            # TODO: Persist this state if necessary (e.g., if it needs to survive server restarts)
+            # For now, it's in-memory per context.
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) updated state with delta: {state_delta}")
+            print(f"Agent {self.agent_name} new state: {self.context.agent_state}")
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", attachments: Optional[List[Dict[str, Any]]] = None):
+            """
+            Processes a message received via the StreamProtocol, adds it to history,
+            and triggers the agent's monologue if it's a user message.
+            """
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) processing streamed message: Role='{role}', Content='{content[:100]}...'")
+            if role.lower() == "user":
+                user_message = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message) # Existing method to add to history
+                
+                # Trigger monologue for the agent to respond
+                # The monologue will eventually use StreamProtocolTool to emit its thoughts/responses
+                return await self.monologue()
+            else:
+                # Handle other roles if necessary (e.g., system messages via stream)
+                # For now, we primarily expect 'user' role to trigger agent action.
+                print(f"Agent {self.agent_name} received non-user streamed message (role: {role}), not triggering monologue.")
+                return None # Or some other indication that no agent action was taken
+
+        # ... (Rest of the Agent class, including monologue, _get_response, _extract_and_call_tool, etc.)
+        # Note: The monologue and tool calling logic will eventually need to emit events via StreamProtocolTool.
+        # This will be handled in a later task when we integrate event emission.
+```
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+
+    *   Update `StreamTransport` to be a simple placeholder. Actual WebSocket connection management and event dispatching will be handled at the server level (e.g., in `run_ui.py`) in a later task.
+    *   `StreamTransport.emit_event` will now just print the event, simulating sending it.
+    *   Update `StreamProtocolTool` methods to correctly use `self.agent.get_thread_id()`, `self.agent.set_thread_id()`, etc.
+
+    ```python
+# python/tools/stream_protocol_tool.py (Illustrative Changes)
+
+    # ... (Enum, Dataclasses StreamEventType, RunAgentInput, StreamEvent remain the same)
+
+    class StreamTransport: # Simplified Placeholder
+        """
+        Placeholder for AG-UI event transport.
+        Actual WebSocket management will be handled at the server/application level.
+        """
+        _instance = None
+
+        def __new__(cls): # Singleton pattern
+            if cls._instance is None:
+                cls._instance = super(StreamTransport, cls).__new__(cls)
+                print("StreamTransport: Global instance created.")
+            return cls._instance
+
+        async def emit_event(self, event: StreamEvent):
+            """Placeholder for emitting an event. In a real setup, this would send to WebSockets."""
+            event_data = {
+                "id": event.event_id,
+                "type": event.type.value,
+                "payload": event.payload,
+                "timestamp": event.timestamp,
+                "threadId": event.thread_id,
+                "userId": event.user_id
+            }
+            # For now, just print the event that would be sent.
+            # Later, this will interface with the actual WebSocket sending mechanism.
+            print(f"StreamTransport (Placeholder): Emitting Event: {json.dumps(event_data, indent=2)}")
+            # In a real scenario:
+            # relevant_websockets = self.get_connections_for_thread(event.thread_id)
+            # for ws in relevant_websockets:
+            #     await ws.send_text(json.dumps(event_data))
+
+        # Connection registration/unregistration will be handled by the WebSocket server component
+        # async def register_connection(self, websocket, thread_id: str, user_id: str = None): pass
+        # def unregister_connection(self, connection_id: str): pass
+
+
+    class StreamProtocolTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+            self.transport = StreamTransport() # Access the global/singleton instance
+            self.active_threads: Dict[str, Dict[str, Any]] = {} # Manages session state per thread_id for this tool instance
+            self.middleware_stack: List[callable] = []
+            print(f"StreamProtocolTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+        
+        # ... (execute method remains similar but calls to _emit_event, _handle_input, etc. will now use updated agent context)
+
+        async def _emit_event(self, event_type: str, payload: Dict[str, Any], 
+                             thread_id: Optional[str] = None, user_id: Optional[str] = None):
+            """Emit standardized event to frontend"""
+            try:
+                event_enum = StreamEventType(event_type)
+            except ValueError:
+                return self.agent_response(f"Invalid event type: {event_type}", error=True)
+            
+            # Prioritize explicitly passed IDs, then fallback to agent's context
+            effective_thread_id = thread_id if thread_id is not None else self.agent.get_thread_id()
+            effective_user_id = user_id if user_id is not None else self.agent.get_user_id()
+
+            if not effective_thread_id:
+                print(f"StreamProtocolTool: Warning - Emitting event '{event_type}' without a thread_id.")
+                # Potentially default to agent's context ID if no thread_id is available
+                # effective_thread_id = self.agent.context.id 
+
+            event = StreamEvent(
+                type=event_enum,
+                payload=payload,
+                thread_id=effective_thread_id,
+                user_id=effective_user_id
+            )
+            
+            for middleware in self.middleware_stack:
+                event = await middleware(event)
+                if event is None:
+                    return self.agent_response("Event filtered by middleware")
+            
+            await self.transport.emit_event(event) # Uses the global transport
+            
+            return self.agent_response({
+                "success": True, "event_id": event.event_id, "type": event_type, "timestamp": event.timestamp
+            })
+
+        async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                                 thread_id: Optional[str], user_id: Optional[str]):
+            """Internal helper to create and emit event, using the tool's transport."""
+            event = StreamEvent(
+                type=event_type,
+                payload=payload,
+                thread_id=thread_id,
+                user_id=user_id
+            )
+            await self.transport.emit_event(event) # Uses the global transport
+
+
+        async def _handle_input(self, input_data: Dict[str, Any]):
+            """Process incoming frontend input according to RunAgentInput schema"""
+            try:
+                run_input = RunAgentInput(
+                    thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                    messages=input_data.get("messages", []),
+                    state=input_data.get("state", {}), # This is the state from the client
+                    user_id=input_data.get("userId"),
+                    metadata=input_data.get("metadata", {})
+                )
+                
+                # Update agent's context with thread_id and user_id from the input
+                self.agent.set_thread_id(run_input.thread_id)
+                if run_input.user_id: # user_id is optional
+                    self.agent.set_user_id(run_input.user_id)
+                
+                # Update agent's persistent state for this thread
+                if run_input.state:
+                    self.agent.update_agent_state(run_input.state) # Agent manages its own state
+
+                if run_input.thread_id not in self.active_threads:
+                    # This tool's tracking of active_threads is for *its own* session concept, distinct from agent's state.
+                    await self._emit_event_internal( 
+                        StreamEventType.SESSION_START,
+                        {"threadId": run_input.thread_id, "userId": run_input.user_id, "initialState": run_input.state},
+                        run_input.thread_id, run_input.user_id
+                    )
+                    self.active_threads[run_input.thread_id] = {
+                        "user_id": run_input.user_id,
+                        "state_from_tool_perspective": run_input.state or {}, # Tool's view of state
+                        "created_at": datetime.utcnow()
+                    }
+                
+                for message_data in run_input.messages:
+                    await self._process_message(message_data, run_input.thread_id, run_input.user_id)
+                
+                return self.agent_response({
+                    "success": True, "thread_id": run_input.thread_id, "messages_processed": len(run_input.messages)
+                })
+                
+            except Exception as e:
+                import traceback
+                print(f"StreamProtocolTool._handle_input error: {e}\n{traceback.format_exc()}")
+                return self.agent_response(f"Input processing error: {str(e)}", error=True)
+
+        async def _process_message(self, message_data: Dict[str, Any], thread_id: str, user_id: Optional[str]):
+            """Process individual message from frontend and trigger agent if user message."""
+            role = message_data.get("role", "user").lower()
+            content = message_data.get("content", "")
+            attachments = message_data.get("attachments") # AG-UI might support attachments
+
+            # Emit received message (e.g., for UI to confirm receipt or for logging)
+            # This is distinct from the agent's final response.
+            await self._emit_event_internal(
+                StreamEventType.TEXT_MESSAGE_CONTENT, # Or a more specific "USER_INPUT_RECEIVED"
+                {
+                    "role": role,
+                    "content": content, # Echoing back received content
+                    "messageId": message_data.get("id", str(uuid.uuid4())),
+                    "status": "received" 
+                },
+                thread_id, user_id
+            )
+            
+            if role == "user":
+                # Call the agent's new method to process this message
+                await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+            else:
+                print(f"StreamProtocolTool: Received non-user message (role: {role}). Not triggering full agent processing.")
+
+        # _start_session, _end_session, _update_state would now primarily update self.active_threads
+        # and emit events. Agent's own state is managed by self.agent.update_agent_state.
+
+        async def _start_session(self, thread_id: str, user_id: Optional[str] = None, 
+                               initial_state: Optional[Dict[str, Any]] = None):
+            if thread_id in self.active_threads:
+                return self.agent_response(f"Tool: Session {thread_id} already active for this tool instance.", error=True)
+            
+            self.active_threads[thread_id] = {
+                "user_id": user_id,
+                "state_from_tool_perspective": initial_state or {},
+                "created_at": datetime.utcnow()
+            }
+            # Also ensure agent context is updated if this is a new session initiation point
+            self.agent.set_thread_id(thread_id)
+            if user_id: self.agent.set_user_id(user_id)
+            if initial_state: self.agent.update_agent_state(initial_state)
+
+            await self._emit_event_internal(
+                StreamEventType.SESSION_START,
+                {"threadId": thread_id, "userId": user_id, "initialState": initial_state},
+                thread_id, user_id
+            )
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "status": "session_started"
+            })
+
+        async def _update_state(self, thread_id: str, state_delta: Dict[str, Any]):
+            """Updates state from the perspective of this tool's session tracking AND the agent's context."""
+            if thread_id not in self.active_threads:
+                # If session not active for tool, perhaps it's a direct state update for agent
+                # Or we can choose to error out if the tool expects an active session.
+                # For now, let's assume it's an update to an existing or new session context.
+                print(f"StreamProtocolTool: Updating state for potentially new/untracked session {thread_id}")
+                self.active_threads[thread_id] = { # Initialize if not present
+                     "user_id": self.agent.get_user_id(), 
+                     "state_from_tool_perspective": {},
+                     "created_at": datetime.utcnow()
+                }
+
+            # Update tool's view of state
+            tool_session_state = self.active_threads[thread_id]["state_from_tool_perspective"]
+            tool_session_state.update(state_delta)
+            
+            # Update agent's actual state
+            self.agent.update_agent_state(state_delta)
+
+            await self._emit_event_internal(
+                StreamEventType.STATE_DELTA,
+                {"delta": state_delta, "fullState": self.agent.context.agent_state}, # Emit agent's full state
+                thread_id, self.agent.get_user_id()
+            )
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "updated_agent_state": self.agent.context.agent_state
+            })
+            
+        # ... (agent_response, _emit_error_event, _register_middleware remain largely the same,
+        # ensuring they use the global StreamTransport instance accessed via self.transport)
+```
+
+**Dependencies/Prerequisites:**
+*   Task 1 completed (`StreamProtocolTool` initial structure, `StreamEventType`, `RunAgentInput`, `StreamEvent` dataclasses).
+*   Existing `agent.py` with `Agent` and `AgentContext` classes.
+*   Standard Python libraries.
+
+**Integration with Agent Zero:**
+*   `AgentContext` now directly holds `thread_id` and `user_id`, and a placeholder `agent_state` dictionary.
+*   `Agent` class has new methods for getting/setting these IDs and updating its state.
+*   `Agent` has a new `process_streamed_message` method to integrate with the `StreamProtocolTool`'s message handling.
+*   `StreamProtocolTool` is updated to use these new agent capabilities and a conceptual global `StreamTransport`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Still indirect. These changes make the agent more aware of session/user context, which could be used by a future TTS tool or by the agent itself to select voices or TTS parameters based on user or thread.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. The changes are within existing Python files. Ensure these modified files are correctly copied/updated in the Docker image during the build process.
+
+**Summary of Task 2:**
+This task significantly refactors `Agent` and `AgentContext` to be aware of streaming-related identifiers (`thread_id`, `user_id`) and agent-specific state. It also prepares the `Agent` class to process messages coming from the StreamProtocol. The `StreamProtocolTool` is updated to leverage these changes and to use a conceptual global `StreamTransport` (whose actual WebSocket server-side implementation is deferred). This brings us closer to a fully integrated streaming architecture.
+
+Please confirm if this task breakdown is clear and if I should proceed.This task breakdown is clear and well-structured. You've correctly identified the necessary modifications to `Agent` and `AgentContext` and how `StreamProtocolTool` should interact with them. The placeholder for the global `StreamTransport` and the deferral of actual WebSocket management to a later task is a good approach.
+
+Proceed with the next task when you're ready.Okay, let's proceed with Task 2.
+
+## Task 2: Enhance AgentContext and Agent for StreamProtocol Integration
+
+**Focus:**
+This task involves modifying the core `Agent` and `AgentContext` classes in `agent.py` to support `thread_id` and `user_id` management, and to lay the groundwork for state updates and processing streamed messages. We will also update the `StreamProtocolTool` to utilize these enhancements and refine its `StreamTransport` to be a placeholder for now, as actual WebSocket management will be handled at the server level later.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py`:**
+
+    *   **Enhance `AgentContext`:**
+        *   Add `thread_id`, `user_id` attributes.
+        *   Update initialization/creation to handle these.
+    *   **Enhance `Agent`:**
+        *   Add methods: `get_thread_id`, `set_thread_id`, `get_user_id`, `set_user_id`, `update_agent_state` (as a placeholder).
+        *   Add a new method `process_streamed_message` to handle messages that will come from the `StreamProtocolTool`.
+
+    ```python
+    # agent.py (Illustrative Changes - apply to existing Agent Zero code)
+    # ... (other imports)
+    import uuid
+    from typing import Optional, Dict, Any, List # Ensure these are present
+
+    # ... (Existing AgentConfig, UserMessage, AIMessage, etc.)
+
+    class AgentContext:
+        # ... (Existing attributes like id, name, log, config, history, etc.)
+        _instances: Dict[str, 'AgentContext'] = {}
+
+        def __init__(self, id: Optional[str] = None, name: Optional[str] = None, 
+                     thread_id: Optional[str] = None, user_id: Optional[str] = None): # Added thread_id, user_id
+            self.id: str = id or str(uuid.uuid4())
+            self.name: str = name or "New Chat"
+            self.log: Log = Log(self.id)
+            self.config: AgentConfig = settings.get_agent_config() # Assuming settings helper
+            self.history: History = History(self)
+            self.agent0: Optional['Agent'] = None
+            self.streaming_agent: Optional['Agent'] = None
+            self.custom_data: Dict[str, Any] = {} 
+            self.halt_event: asyncio.Event = asyncio.Event()
+            self.intervention_needed: bool = False
+            self.intervention_message: Optional[UserMessage] = None
+            self.paused: bool = False
+            self.current_tool_log_id: Optional[str] = None
+
+            # New attributes for StreamProtocol
+            self.thread_id: Optional[str] = thread_id or self.id # Default thread_id to context_id if not provided
+            self.user_id: Optional[str] = user_id
+            self.agent_state: Dict[str, Any] = {} # For AG-UI state persistence
+
+            # StreamTransport will be managed globally or per application, 
+            # not directly instantiated here for every context.
+            # self.stream_transport: Optional[StreamTransport] = None 
+            # This will be handled by run_ui.py and accessed by tools as needed.
+
+            AgentContext._instances[self.id] = self
+            print(f"AgentContext created: id={self.id}, name='{self.name}', thread_id='{self.thread_id}', user_id='{self.user_id}'")
+
+
+        @classmethod
+        def get(cls, id: Optional[str] = None, name: Optional[str] = None,
+                thread_id: Optional[str] = None, user_id: Optional[str] = None) -> 'AgentContext': # Added thread_id, user_id
+            if id and id in cls._instances:
+                ctx = cls._instances[id]
+                # Update thread_id and user_id if provided and different
+                if thread_id and ctx.thread_id != thread_id:
+                    ctx.thread_id = thread_id
+                    print(f"AgentContext {id} updated thread_id to {thread_id}")
+                if user_id and ctx.user_id != user_id:
+                    ctx.user_id = user_id
+                    print(f"AgentContext {id} updated user_id to {user_id}")
+                return ctx
+            
+            new_id = id or str(uuid.uuid4())
+            # Pass through thread_id and user_id to constructor
+            return cls(id=new_id, name=name, thread_id=thread_id or new_id, user_id=user_id)
+
+        # ... (Other AgentContext methods like reset, remove, etc.)
+
+    class Agent:
+        # ... (Existing attributes and __init__)
+
+        def get_thread_id(self) -> Optional[str]:
+            """Returns the current thread ID from the context."""
+            return self.context.thread_id
+
+        def set_thread_id(self, thread_id: str):
+            """Sets the thread ID in the context."""
+            self.context.thread_id = thread_id
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}) set thread_id to: {thread_id}")
+
+        def get_user_id(self) -> Optional[str]:
+            """Returns the current user ID from the context."""
+            return self.context.user_id
+
+        def set_user_id(self, user_id: Optional[str]):
+            """Sets the user ID in the context."""
+            self.context.user_id = user_id
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}) set user_id to: {user_id}")
+
+        def update_agent_state(self, state_delta: Dict[str, Any]):
+            """
+            Updates the agent's persistent state associated with the AG-UI protocol.
+            This state is managed per thread_id.
+            """
+            self.context.agent_state.update(state_delta)
+            # TODO: Persist this state if necessary (e.g., if it needs to survive server restarts)
+            # For now, it's in-memory per context.
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) updated state with delta: {state_delta}")
+            print(f"Agent {self.agent_name} new state: {self.context.agent_state}")
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", attachments: Optional[List[Dict[str, Any]]] = None):
+            """
+            Processes a message received via the StreamProtocol, adds it to history,
+            and triggers the agent's monologue if it's a user message.
+            """
+            print(f"Agent {self.agent_name} (ctx: {self.context.id}, thread: {self.get_thread_id()}) processing streamed message: Role='{role}', Content='{content[:100]}...'")
+            if role.lower() == "user":
+                user_message = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message) # Existing method to add to history
+                
+                # Trigger monologue for the agent to respond
+                # The monologue will eventually use StreamProtocolTool to emit its thoughts/responses
+                return await self.monologue()
+            else:
+                # Handle other roles if necessary (e.g., system messages via stream)
+                # For now, we primarily expect 'user' role to trigger agent action.
+                print(f"Agent {self.agent_name} received non-user streamed message (role: {role}), not triggering monologue.")
+                return None # Or some other indication that no agent action was taken
+
+        # ... (Rest of the Agent class, including monologue, _get_response, _extract_and_call_tool, etc.)
+        # Note: The monologue and tool calling logic will eventually need to emit events via StreamProtocolTool.
+        # This will be handled in a later task when we integrate event emission.
+    ```
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+
+    *   Update `StreamTransport` to be a simple placeholder. Actual WebSocket connection management and event dispatching will be handled at the server level (e.g., in `run_ui.py`) in a later task.
+    *   `StreamTransport.emit_event` will now just print the event, simulating sending it.
+    *   Update `StreamProtocolTool` methods to correctly use `self.agent.get_thread_id()`, `self.agent.set_thread_id()`, etc.
+
+    ```python
+    # python/tools/stream_protocol_tool.py (Illustrative Changes)
+
+    # ... (Enum, Dataclasses StreamEventType, RunAgentInput, StreamEvent remain the same)
+
+    class StreamTransport: # Simplified Placeholder
+        """
+        Placeholder for AG-UI event transport.
+        Actual WebSocket management will be handled at the server/application level.
+        """
+        _instance = None
+
+        def __new__(cls): # Singleton pattern
+            if cls._instance is None:
+                cls._instance = super(StreamTransport, cls).__new__(cls)
+                print("StreamTransport: Global instance created.")
+            return cls._instance
+
+        async def emit_event(self, event: StreamEvent):
+            """Placeholder for emitting an event. In a real setup, this would send to WebSockets."""
+            event_data = {
+                "id": event.event_id,
+                "type": event.type.value,
+                "payload": event.payload,
+                "timestamp": event.timestamp,
+                "threadId": event.thread_id,
+                "userId": event.user_id
+            }
+            # For now, just print the event that would be sent.
+            # Later, this will interface with the actual WebSocket sending mechanism.
+            print(f"StreamTransport (Placeholder): Emitting Event: {json.dumps(event_data, indent=2)}")
+            # In a real scenario:
+            # relevant_websockets = self.get_connections_for_thread(event.thread_id)
+            # for ws in relevant_websockets:
+            #     await ws.send_text(json.dumps(event_data))
+
+        # Connection registration/unregistration will be handled by the WebSocket server component
+        # async def register_connection(self, websocket, thread_id: str, user_id: str = None): pass
+        # def unregister_connection(self, connection_id: str): pass
+
+
+    class StreamProtocolTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+            self.transport = StreamTransport() # Access the global/singleton instance
+            self.active_threads: Dict[str, Dict[str, Any]] = {} # Manages session state per thread_id for this tool instance
+            self.middleware_stack: List[callable] = []
+            print(f"StreamProtocolTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+        
+        # ... (execute method remains similar but calls to _emit_event, _handle_input, etc. will now use updated agent context)
+
+        async def _emit_event(self, event_type: str, payload: Dict[str, Any], 
+                             thread_id: Optional[str] = None, user_id: Optional[str] = None):
+            """Emit standardized event to frontend"""
+            try:
+                event_enum = StreamEventType(event_type)
+            except ValueError:
+                return self.agent_response(f"Invalid event type: {event_type}", error=True)
+            
+            # Prioritize explicitly passed IDs, then fallback to agent's context
+            effective_thread_id = thread_id if thread_id is not None else self.agent.get_thread_id()
+            effective_user_id = user_id if user_id is not None else self.agent.get_user_id()
+
+            if not effective_thread_id:
+                print(f"StreamProtocolTool: Warning - Emitting event '{event_type}' without a thread_id.")
+                # Potentially default to agent's context ID if no thread_id is available
+                # effective_thread_id = self.agent.context.id 
+
+            event = StreamEvent(
+                type=event_enum,
+                payload=payload,
+                thread_id=effective_thread_id,
+                user_id=effective_user_id
+            )
+            
+            for middleware in self.middleware_stack:
+                event = await middleware(event)
+                if event is None:
+                    return self.agent_response("Event filtered by middleware")
+            
+            await self.transport.emit_event(event) # Uses the global transport
+            
+            return self.agent_response({
+                "success": True, "event_id": event.event_id, "type": event_type, "timestamp": event.timestamp
+            })
+
+        async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                                 thread_id: Optional[str], user_id: Optional[str]):
+            """Internal helper to create and emit event, using the tool's transport."""
+            event = StreamEvent(
+                type=event_type,
+                payload=payload,
+                thread_id=thread_id,
+                user_id=user_id
+            )
+            await self.transport.emit_event(event) # Uses the global transport
+
+
+        async def _handle_input(self, input_data: Dict[str, Any]):
+            """Process incoming frontend input according to RunAgentInput schema"""
+            try:
+                run_input = RunAgentInput(
+                    thread_id=input_data.get("threadId", str(uuid.uuid4())),
+                    messages=input_data.get("messages", []),
+                    state=input_data.get("state", {}), # This is the state from the client
+                    user_id=input_data.get("userId"),
+                    metadata=input_data.get("metadata", {})
+                )
+                
+                # Update agent's context with thread_id and user_id from the input
+                self.agent.set_thread_id(run_input.thread_id)
+                if run_input.user_id: # user_id is optional
+                    self.agent.set_user_id(run_input.user_id)
+                
+                # Update agent's persistent state for this thread
+                if run_input.state:
+                    self.agent.update_agent_state(run_input.state) # Agent manages its own state
+
+                if run_input.thread_id not in self.active_threads:
+                    # This tool's tracking of active_threads is for *its own* session concept, distinct from agent's state.
+                    await self._emit_event_internal( 
+                        StreamEventType.SESSION_START,
+                        {"threadId": run_input.thread_id, "userId": run_input.user_id, "initialState": run_input.state},
+                        run_input.thread_id, run_input.user_id
+                    )
+                    self.active_threads[run_input.thread_id] = {
+                        "user_id": run_input.user_id,
+                        "state_from_tool_perspective": run_input.state or {}, # Tool's view of state
+                        "created_at": datetime.utcnow()
+                    }
+                
+                for message_data in run_input.messages:
+                    await self._process_message(message_data, run_input.thread_id, run_input.user_id)
+                
+                return self.agent_response({
+                    "success": True, "thread_id": run_input.thread_id, "messages_processed": len(run_input.messages)
+                })
+                
+            except Exception as e:
+                import traceback
+                print(f"StreamProtocolTool._handle_input error: {e}\n{traceback.format_exc()}")
+                return self.agent_response(f"Input processing error: {str(e)}", error=True)
+
+        async def _process_message(self, message_data: Dict[str, Any], thread_id: str, user_id: Optional[str]):
+            """Process individual message from frontend and trigger agent if user message."""
+            role = message_data.get("role", "user").lower()
+            content = message_data.get("content", "")
+            attachments = message_data.get("attachments") # AG-UI might support attachments
+
+            # Emit received message (e.g., for UI to confirm receipt or for logging)
+            # This is distinct from the agent's final response.
+            await self._emit_event_internal(
+                StreamEventType.TEXT_MESSAGE_CONTENT, # Or a more specific "USER_INPUT_RECEIVED"
+                {
+                    "role": role,
+                    "content": content, # Echoing back received content
+                    "messageId": message_data.get("id", str(uuid.uuid4())),
+                    "status": "received" 
+                },
+                thread_id, user_id
+            )
+            
+            if role == "user":
+                # Call the agent's new method to process this message
+                await self.agent.process_streamed_message(content, role=role, attachments=attachments)
+            else:
+                print(f"StreamProtocolTool: Received non-user message (role: {role}). Not triggering full agent processing.")
+
+        # _start_session, _end_session, _update_state would now primarily update self.active_threads
+        # and emit events. Agent's own state is managed by self.agent.update_agent_state.
+
+        async def _start_session(self, thread_id: str, user_id: Optional[str] = None, 
+                               initial_state: Optional[Dict[str, Any]] = None):
+            if thread_id in self.active_threads:
+                return self.agent_response(f"Tool: Session {thread_id} already active for this tool instance.", error=True)
+            
+            self.active_threads[thread_id] = {
+                "user_id": user_id,
+                "state_from_tool_perspective": initial_state or {},
+                "created_at": datetime.utcnow()
+            }
+            # Also ensure agent context is updated if this is a new session initiation point
+            self.agent.set_thread_id(thread_id)
+            if user_id: self.agent.set_user_id(user_id)
+            if initial_state: self.agent.update_agent_state(initial_state)
+
+            await self._emit_event_internal(
+                StreamEventType.SESSION_START,
+                {"threadId": thread_id, "userId": user_id, "initialState": initial_state},
+                thread_id, user_id
+            )
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "status": "session_started"
+            })
+
+        async def _update_state(self, thread_id: str, state_delta: Dict[str, Any]):
+            """Updates state from the perspective of this tool's session tracking AND the agent's context."""
+            if thread_id not in self.active_threads:
+                # If session not active for tool, perhaps it's a direct state update for agent
+                # Or we can choose to error out if the tool expects an active session.
+                # For now, let's assume it's an update to an existing or new session context.
+                print(f"StreamProtocolTool: Updating state for potentially new/untracked session {thread_id}")
+                self.active_threads[thread_id] = { # Initialize if not present
+                     "user_id": self.agent.get_user_id(), 
+                     "state_from_tool_perspective": {},
+                     "created_at": datetime.utcnow()
+                }
+
+            # Update tool's view of state
+            tool_session_state = self.active_threads[thread_id]["state_from_tool_perspective"]
+            tool_session_state.update(state_delta)
+            
+            # Update agent's actual state
+            self.agent.update_agent_state(state_delta)
+
+            await self._emit_event_internal(
+                StreamEventType.STATE_DELTA,
+                {"delta": state_delta, "fullState": self.agent.context.agent_state}, # Emit agent's full state
+                thread_id, self.agent.get_user_id()
+            )
+            return self.agent_response({
+                "success": True, "thread_id": thread_id, "updated_agent_state": self.agent.context.agent_state
+            })
+            
+        # ... (agent_response, _emit_error_event, _register_middleware remain largely the same,
+        # ensuring they use the global StreamTransport instance accessed via self.transport)
+    ```
+
+**Dependencies/Prerequisites:**
+*   Task 1 completed (`StreamProtocolTool` initial structure, `StreamEventType`, `RunAgentInput`, `StreamEvent` dataclasses).
+*   Existing `agent.py` with `Agent` and `AgentContext` classes.
+*   Standard Python libraries.
+
+**Integration with Agent Zero:**
+*   `AgentContext` now directly holds `thread_id` and `user_id`, and a placeholder `agent_state` dictionary.
+*   `Agent` class has new methods for getting/setting these IDs and updating its state.
+*   `Agent` has a new `process_streamed_message` method to integrate with the `StreamProtocolTool`'s message handling.
+*   `StreamProtocolTool` is updated to use these new agent capabilities and a conceptual global `StreamTransport`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   Still indirect. These changes make the agent more aware of session/user context, which could be used by a future TTS tool or by the agent itself to select voices or TTS parameters based on user or thread.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. The changes are within existing Python files. Ensure these modified files are correctly copied/updated in the Docker image during the build process.
+
+**Summary of Task 2:**
+This task significantly refactors `Agent` and `AgentContext` to be aware of streaming-related identifiers (`thread_id`, `user_id`) and agent-specific state. It also prepares the `Agent` class to process messages coming from the StreamProtocol. The `StreamProtocolTool` is updated to leverage these changes and to use a conceptual global `StreamTransport` (whose actual WebSocket server-side implementation is deferred). This brings us closer to a fully integrated streaming architecture.
+
+Please confirm if this task breakdown is clear and if I should proceed.This task breakdown is clear and well-structured. You've correctly identified the necessary modifications to `Agent` and `AgentContext` and how `StreamProtocolTool` should interact with them. The placeholder for the global `StreamTransport` and the deferral of actual WebSocket management to a later task is a good approach.
+
+Proceed with the next task when you're ready.

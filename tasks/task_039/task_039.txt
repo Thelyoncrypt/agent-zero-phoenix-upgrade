@@ -1,0 +1,251 @@
+## Task 39: Implement `HybridMemoryTool` Real Combination and Ranking Logic
+
+**Focus:**
+This task significantly enhances the `HybridMemoryTool._retrieve_context` method by implementing a more sophisticated approach to combining and ranking search results from Agent Zero's native memory and the `MemoryAgentTool` (Mem0). Instead of simple concatenation:
+1.  Fetch results from both sources with their original scores.
+2.  Normalize or calibrate scores if they are on different scales (conceptual for now, as exact scoring mechanisms of both systems are not fully detailed).
+3.  Implement a re-ranking strategy. This could be based on weighted scores, recency, source reliability (if known), or even a small LLM call to rank based on relevance to the query. For this task, we'll implement a weighted score and recency boost.
+4.  Implement more robust deduplication, potentially looking at higher content overlap.
+5.  Select the top N overall results based on the re-ranking, up to a `total_limit`.
+6.  Format the final combined context string, clearly attributing sources.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/tools/hybrid_memory_tool.py`:**
+    *   Update the `_retrieve_context` method with the new logic.
+    *   May need to add helper methods for scoring, ranking, and deduplication.
+
+    ```python
+# python/tools/hybrid_memory_tool.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional, Tuple
+    from datetime import datetime, timezone # For recency calculation
+    import hashlib
+
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    # from difflib import SequenceMatcher # For more advanced deduplication (optional)
+
+    # Define default weights for memory sources
+    # These could be made configurable later
+    SOURCE_WEIGHTS = {
+        "agent_zero_structured": 1.0, # Native memory
+        "mem0_intelligent": 1.2       # Mem0 (potentially more processed)
+    }
+    RECENCY_WEIGHT_FACTOR = 0.1 # How much recency boosts the score
+
+    class HybridMemoryTool(Tool):
+        # ... (__init__, _emit_hybrid_memory_event, execute, _store_interaction as in Task 9/29)
+
+        def _normalize_score(self, score: Any, source_type: str) -> float:
+            """
+            Placeholder for normalizing scores if they come from different scales.
+            For now, assumes scores are roughly comparable (e.g., cosine similarities).
+            """
+            try:
+                s = float(score)
+                # Example: if mem0 scores are on 0-100 and AZ on 0-1, normalize mem0
+                # if source_type == "mem0_intelligent" and s > 1.5: # Assuming mem0 might give higher raw scores
+                #     return s / 100.0 
+                return max(0.0, min(s, 1.0)) # Clamp to 0-1
+            except (ValueError, TypeError):
+                return 0.5 # Default for unparsable scores
+
+        def _calculate_recency_boost(self, item_metadata: Dict[str, Any]) -> float:
+            """Calculates a boost based on how recent the memory item is."""
+            # Assumes metadata might have 'timestamp' (ISO format string) or 'created_at'
+            timestamp_str = item_metadata.get("timestamp", item_metadata.get("created_at"))
+            if not timestamp_str:
+                return 0.0
+
+            try:
+                # Handle various possible timestamp formats cautiously
+                if isinstance(timestamp_str, (int, float)): # Unix timestamp
+                    item_dt = datetime.fromtimestamp(timestamp_str, tz=timezone.utc)
+                elif isinstance(timestamp_str, str):
+                    # Try ISO format, then fallback or more specific parsing if needed
+                    try:
+                        item_dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                        if item_dt.tzinfo is None: # Naive datetime, assume UTC
+                           item_dt = item_dt.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        # Add more parsers if common formats are known
+                        print(f"HybridMemoryTool: Could not parse timestamp string: {timestamp_str}")
+                        return 0.0
+                else:
+                    return 0.0
+
+                now_dt = datetime.now(timezone.utc)
+                age_delta = now_dt - item_dt
+                days_old = age_delta.total_seconds() / (60 * 60 * 24)
+
+                # Simple recency: newer items get a higher boost, decaying over, e.g., 30 days
+                if days_old < 0: days_old = 0 # Future timestamp?
+                recency_score = max(0, 1 - (days_old / 30.0)) # Linear decay over 30 days
+                return recency_score * RECENCY_WEIGHT_FACTOR
+            except Exception as e:
+                print(f"HybridMemoryTool: Error calculating recency for timestamp '{timestamp_str}': {e}")
+                return 0.0
+        
+        def _is_duplicate(self, item: Dict[str, Any], selected_items: List[Dict[str, Any]], threshold=0.85) -> bool:
+            """
+            Checks for content similarity to avoid near-duplicates.
+            Uses a simple hash of a significant prefix for basic check, could use SequenceMatcher for more robust.
+            """
+            item_content = item.get("content", "")
+            if not item_content: return False # Cannot compare empty content
+
+            # Simple hash check of first N chars
+            item_content_prefix = item_content[:256] # Use a decent prefix
+            item_hash = hashlib.md5(item_content_prefix.encode()).hexdigest()
+
+            for selected_item in selected_items:
+                selected_content = selected_item.get("content", "")
+                if not selected_content: continue
+                
+                selected_content_prefix = selected_content[:256]
+                selected_hash = hashlib.md5(selected_content_prefix.encode()).hexdigest()
+                if item_hash == selected_hash:
+                    # If hashes match, do a more expensive check (optional, for future)
+                    # ratio = SequenceMatcher(None, item_content, selected_content).ratio()
+                    # if ratio > threshold:
+                    #    print(f"HybridMemoryTool: Found near-duplicate content (hash match, ratio {ratio:.2f}). Skipping.")
+                    #    return True
+                    print(f"HybridMemoryTool: Found duplicate content based on prefix hash. Skipping.")
+                    return True
+            return False
+
+
+        async def _retrieve_context(self, query: str, user_id: Optional[str], 
+                                    limit_per_source: int = 5, total_limit: int = 5,
+                                    az_mem_threshold: float = 0.65, # Threshold for AZ memory_load
+                                    mem0_search_limit_factor: int = 2 # Fetch more from Mem0 for better ranking pool
+                                    ) -> ToolResponse:
+            effective_user_id = user_id or self.agent_id_for_memory
+            await self._emit_hybrid_memory_event("retrieve_context", "processing", {"query": query, "user_id": effective_user_id})
+            
+            all_retrieved_items: List[Dict[str, Any]] = []
+
+            # 1. Retrieve from Agent Zero's structured memory
+            try:
+                print(f"HybridMemoryTool: Querying Agent Zero native memory for: '{query}' with threshold {az_mem_threshold}")
+                az_mem_response_obj = await self.agent.call_tool(
+                    "memory_load",
+                    {"query": query, "limit": limit_per_source, "threshold": az_mem_threshold} # Pass threshold
+                )
+                if az_mem_response_obj and not az_mem_response_obj.error and az_mem_response_obj.message:
+                    az_results_raw = []
+                    try: # Parse response
+                        data = az_mem_response_obj.data if hasattr(az_mem_response_obj, 'data') and az_mem_response_obj.data else az_mem_response_obj.message
+                        if isinstance(data, str): az_results_raw = json.loads(data)
+                        elif isinstance(data, list): az_results_raw = data
+                        elif isinstance(data, dict): az_results_raw = [data]
+                    except (json.JSONDecodeError, TypeError) as e:
+                        print(f"HybridMemoryTool: Error parsing AZ memory response: {e}")
+                    
+                    for res_item in az_results_raw:
+                        if isinstance(res_item, dict):
+                            content = res_item.get("page_content", res_item.get("text", res_item.get("content")))
+                            if content:
+                                score = self._normalize_score(res_item.get("score", res_item.get("similarity", 0.0)), "agent_zero_structured")
+                                metadata = res_item.get("metadata", {"id": res_item.get("id", f"az_unk_{uuid.uuid4()}")})
+                                recency_boost = self._calculate_recency_boost(metadata)
+                                weighted_score = (score * SOURCE_WEIGHTS["agent_zero_structured"]) + recency_boost
+                                all_retrieved_items.append({
+                                    "content": str(content), "original_score": score, "weighted_score": weighted_score,
+                                    "source_type": "agent_zero_structured", "metadata": metadata
+                                })
+            except Exception as e:
+                print(f"HybridMemoryTool: Exception retrieving/processing AZ structured memory: {e}")
+
+            # 2. Retrieve from MemoryAgent's intelligent memory (Mem0)
+            try:
+                print(f"HybridMemoryTool: Querying MemoryAgentTool (Mem0) for: '{query}'")
+                mem0_response_obj = await self.agent.call_tool(
+                    "memory_agent_tool",
+                    {"action": "search", "query": query, "user_id": effective_user_id, "limit": limit_per_source * mem0_search_limit_factor}
+                )
+                if mem0_response_obj and not mem0_response_obj.error and mem0_response_obj.data:
+                    for res_item in mem0_response_obj.data:
+                        if isinstance(res_item, dict) and res_item.get("text"): # Mem0 results usually have 'text' and 'score'
+                            score = self._normalize_score(res_item.get("score", 0.0), "mem0_intelligent")
+                            metadata = res_item.get("metadata", {"id": res_item.get("id", f"mem0_unk_{uuid.uuid4()}")})
+                            recency_boost = self._calculate_recency_boost(metadata) # Mem0 items might also have timestamps
+                            weighted_score = (score * SOURCE_WEIGHTS["mem0_intelligent"]) + recency_boost
+                            all_retrieved_items.append({
+                                "content": str(res_item["text"]), "original_score": score, "weighted_score": weighted_score,
+                                "source_type": "mem0_intelligent", "metadata": metadata
+                            })
+            except Exception as e:
+                print(f"HybridMemoryTool: Exception retrieving/processing MemoryAgentTool (Mem0) results: {e}")
+
+            # 3. Re-ranking and Deduplication
+            all_retrieved_items.sort(key=lambda x: x.get("weighted_score", 0.0), reverse=True)
+
+            final_selected_items: List[Dict[str, Any]] = []
+            for item in all_retrieved_items:
+                if len(final_selected_items) >= total_limit:
+                    break
+                if not self._is_duplicate(item, final_selected_items): # Pass selected items for comparison
+                    final_selected_items.append(item)
+            
+            print(f"HybridMemoryTool: Retrieved {len(all_retrieved_items)} total items, selected {len(final_selected_items)} after re-ranking/deduplication.")
+
+            # 4. Format combined context for LLM
+            if not final_selected_items:
+                ranked_combined_context_str = "No relevant information found in hybrid memory for your query."
+            else:
+                context_parts = []
+                for i, item in enumerate(final_selected_items):
+                    source_id = item.get('metadata', {}).get('source_url', item.get('metadata', {}).get('id', 'Unknown ID'))
+                    context_parts.append(
+                        f"Source: {item['source_type']} (ID: {source_id}, Score: {item.get('weighted_score', 0.0):.2f})\n"
+                        f"Content: {item['content']}"
+                    )
+                ranked_combined_context_str = "\n\n---\n[END OF SOURCE]\n---\n\n".join(context_parts)
+            
+            max_context_len_chars = 8000 # Characters, adjust based on LLM context window for RAG
+            if len(ranked_combined_context_str) > max_context_len_chars:
+                # More intelligent truncation might be needed (e.g., summarize, or truncate less important items)
+                ranked_combined_context_str = ranked_combined_context_str[:max_context_len_chars] + "\n... (context truncated due to length)"
+                print(f"HybridMemoryTool: Final combined context truncated to {max_context_len_chars} characters.")
+
+
+            response_data = {
+                "query": query, "user_id": effective_user_id,
+                "combined_context_text": ranked_combined_context_str,
+                "retrieved_item_details": final_selected_items # For UI/debugging
+            }
+
+            await self._emit_hybrid_memory_event("retrieve_context", "completed", 
+                                                 {"query": query, "final_selected_count": len(final_selected_items), "user_id": effective_user_id})
+            return ToolResponse(message="Context retrieved and combined from hybrid memory.", data=response_data)
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-28 completed.
+*   `MemoryAgentTool` and Agent Zero's native `memory_load` tool are functional and return scored results (or results where scores can be defaulted).
+*   Standard Python libraries: `hashlib`, `datetime`. Optional: `difflib` for more advanced deduplication if implemented.
+
+**Integration with Agent Zero:**
+*   The `HybridMemoryTool`'s `_retrieve_context` method now implements a more intelligent process:
+    *   Fetches from both memory sources.
+    *   Normalizes scores (placeholder, can be expanded).
+    *   Applies a recency boost and source-specific weights to create a `weighted_score`.
+    *   Sorts all items by this `weighted_score`.
+    *   Performs a basic form of content deduplication.
+    *   Selects the top N unique items up to `total_limit`.
+    *   Formats the selected items into a cohesive text block for the LLM.
+*   This provides a significantly better context to the agent than simple concatenation.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   If `difflib` or other new non-standard libraries were used for advanced deduplication, they'd need to be in `requirements.txt`. `hashlib`, `datetime` are standard.
+
+**Summary of Task 39:**
+This task enhances the `HybridMemoryTool` by implementing a more sophisticated retrieval process. It now fetches data from both Agent Zero's native memory and the Mem0-backed `MemoryAgentTool`, applies a basic scoring mechanism that includes source weighting and recency, performs simple deduplication, and then formats the top results into a consolidated context string. This makes the context provided to the agent more relevant and less redundant.
+
+Please confirm to proceed.

@@ -1,0 +1,524 @@
+## Task 11: Implement Actual StreamTransport in `run_ui.py` and Connect `StreamProtocolTool`
+
+**Focus:**
+This task replaces the placeholder `StreamTransport` logic with a more concrete implementation within `run_ui.py`. It will manage actual WebSocket connections and ensure that the `StreamProtocolTool` (and by extension, the `Agent`'s `_emit_stream_event` method) can use this central transport mechanism to send events to the correct clients based on `thread_id`.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   The `StreamTransport` class will be simplified here as its primary instance and connection management will now live in `run_ui.py`. This file will retain the `StreamEvent` and other dataclasses. The `StreamProtocolTool` will expect the `StreamTransport` instance to be injected or globally accessible.
+
+    ```python
+# python/tools/stream_protocol_tool.py
+    # ... (StreamEventType, RunAgentInput, StreamEvent dataclasses remain)
+
+    # StreamTransport class is now primarily managed in run_ui.py
+    # We might keep a reference or an interface definition here if needed,
+    # but the instance that holds connections will be in run_ui.py.
+    # For simplicity, let's assume StreamProtocolTool will get the transport instance from the agent's context
+    # which is populated by run_ui.py.
+
+    class StreamProtocolTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+            
+            # Attempt to get the transport from agent context (set by run_ui.py)
+            self.transport = self.agent.context.get_custom_data('stream_transport_instance')
+            if not self.transport:
+                # Fallback or error if not found - this indicates an initialization issue in run_ui.py
+                print("StreamProtocolTool: CRITICAL - StreamTransport instance not found in agent context.")
+                # As a last resort, could use a global singleton, but injection is cleaner.
+                # from run_ui import get_global_stream_transport # Hypothetical global getter
+                # self.transport = get_global_stream_transport() 
+                # For now, we'll assume it will be there. If not, emit_event will fail.
+                # A more robust solution would be to pass it during agent/tool initialization.
+                raise RuntimeError("StreamTransport not properly initialized and passed to StreamProtocolTool.")
+
+            self.active_threads: Dict[str, Dict[str, Any]] = {} 
+            self.middleware_stack: List[callable] = []
+            print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using injected StreamTransport.")
+
+        async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                                 thread_id: Optional[str], user_id: Optional[str]):
+            """Internal helper to create and emit event using the injected transport."""
+            if not self.transport:
+                print(f"StreamProtocolTool: Cannot emit event, StreamTransport is not available.")
+                return
+
+            event = StreamEvent(
+                type=event_type,
+                payload=payload,
+                thread_id=thread_id,
+                user_id=user_id
+            )
+            await self.transport.emit_event_to_thread(event) # Changed to emit_event_to_thread
+
+        # _emit_event, _handle_input, _process_message, _start_session, _end_session, _update_state,
+        # _register_middleware, _emit_error_event, agent_response methods
+        # will use self._emit_event_internal or self.transport directly.
+        # Their logic remains largely the same as in Task 2/4, but now relying on a properly injected transport.
+        
+        # Example modification in _emit_event:
+        async def _emit_event(self, event_type: str, payload: Dict[str, Any], 
+                             thread_id: Optional[str] = None, user_id: Optional[str] = None):
+            if not self.transport:
+                return self.agent_response("StreamTransport not available.", error=True)
+            # ... (rest of the _emit_event logic from Task 4, calling self.transport.emit_event_to_thread) ...
+            try:
+                event_enum = StreamEventType(event_type)
+            except ValueError:
+                return self.agent_response(f"Invalid event type: {event_type}", error=True)
+            
+            effective_thread_id = thread_id if thread_id is not None else self.agent.get_thread_id()
+            effective_user_id = user_id if user_id is not None else self.agent.get_user_id()
+
+            event = StreamEvent(
+                type=event_enum,
+                payload=payload,
+                thread_id=effective_thread_id,
+                user_id=effective_user_id
+            )
+            
+            for middleware in self.middleware_stack:
+                event = await middleware(event)
+                if event is None:
+                    return self.agent_response("Event filtered by middleware")
+            
+            await self.transport.emit_event_to_thread(event) # Key change: use specific method
+            
+            return self.agent_response({
+                "success": True, "event_id": event.event_id, "type": event_type, "timestamp": event.timestamp
+            })
+        
+        # ... (other methods from Task 4, ensuring self.transport.emit_event_to_thread is used)
+```
+
+2.  **Modify `run_ui.py` (or main server script):**
+    *   Define the `StreamTransport` class directly in `run_ui.py` or import it if it's made a generic helper.
+    *   Create a single instance of `StreamTransport`.
+    *   In the WebSocket route (`/ws/agui/<string:thread_id>`), use this instance to `register_connection` and `unregister_connection`.
+    *   Modify `ApiHandler.get_context` (or wherever `AgentContext` is instantiated for API requests) to inject this global `stream_transport_instance` into the `AgentContext.custom_data`.
+
+    ```python
+    # run_ui.py
+    # ... (Flask, Sock, asyncio, json, uuid, datetime, Enum, dataclass, field imports)
+    from python.helpers.tool import Tool # For type hinting if needed
+    from agent import AgentContext, Agent # Agent Zero's core classes
+    from python.helpers.api import ApiHandler # To modify context injection
+    # Define StreamEvent, StreamEventType, RunAgentInput locally or import if they are in a shared protocol definition file
+    # For this task, let's assume they are defined in stream_protocol_tool.py still, so we import them
+    from python.tools.stream_protocol_tool import StreamEvent, StreamEventType, RunAgentInput
+
+    app = Flask("app")
+    sock = Sock(app)
+    app.config["JSON_SORT_KEYS"] = False
+
+    class StreamTransportGlobal: # Renamed to avoid conflict if imported from tool
+        """
+        Manages WebSocket connections and dispatches events to relevant clients.
+        This instance is global to the server application.
+        """
+        def __init__(self):
+            self.connections: Dict[str, List[Any]] = {}  # thread_id -> list of websocket objects
+            self.connection_details: Dict[str, Dict[str, Any]] = {} # ws_connection_id -> details
+            self.lock = asyncio.Lock()
+            print("StreamTransportGlobal: Instance created.")
+
+        async def register_connection(self, ws, thread_id: str, user_id: Optional[str] = None) -> str:
+            connection_id = str(uuid.uuid4())
+            async with self.lock:
+                if thread_id not in self.connections:
+                    self.connections[thread_id] = []
+                self.connections[thread_id].append(ws)
+                self.connection_details[connection_id] = {
+                    "websocket": ws, "thread_id": thread_id, "user_id": user_id, "connected_at": datetime.utcnow()
+                }
+            print(f"StreamTransportGlobal: Registered WS connection {connection_id} for thread '{thread_id}'. Total for thread: {len(self.connections[thread_id])}")
+            return connection_id
+
+        async def unregister_connection(self, ws_to_remove, thread_id: str, connection_id_to_remove: Optional[str] = None):
+            async with self.lock:
+                if thread_id in self.connections:
+                    try:
+                        self.connections[thread_id].remove(ws_to_remove)
+                        if not self.connections[thread_id]: # Is list empty?
+                            del self.connections[thread_id]
+                        print(f"StreamTransportGlobal: Unregistered WS from thread '{thread_id}'. Remaining: {len(self.connections.get(thread_id, []))}")
+                    except ValueError:
+                        print(f"StreamTransportGlobal: WS to remove not found in thread '{thread_id}' list.")
+                
+                if connection_id_to_remove and connection_id_to_remove in self.connection_details:
+                    del self.connection_details[connection_id_to_remove]
+
+        async def emit_event_to_thread(self, event: StreamEvent):
+            """Emit event to all clients connected to the specified event.thread_id."""
+            if not event.thread_id or event.thread_id not in self.connections:
+                # print(f"StreamTransportGlobal: No active connections for thread_id {event.thread_id} to emit event {event.type.value}")
+                return
+
+            event_data_str = json.dumps({
+                "id": event.event_id, "type": event.type.value, "payload": event.payload,
+                "timestamp": event.timestamp, "threadId": event.thread_id, "userId": event.user_id
+            })
+            
+            disconnected_ws = []
+            async with self.lock: # Protect access to self.connections list for the thread
+                # Iterate over a copy of the list if modifications are made during iteration
+                for ws in list(self.connections.get(event.thread_id, [])): 
+                    try:
+                        if not ws.closed: # Check if websocket is still open
+                            await ws.send(event_data_str)
+                        else:
+                            print(f"StreamTransportGlobal: WebSocket for thread {event.thread_id} was closed. Marking for removal.")
+                            disconnected_ws.append(ws)
+                    except Exception as e:
+                        print(f"StreamTransportGlobal: Error sending to WebSocket for thread {event.thread_id}: {e}. Marking for removal.")
+                        disconnected_ws.append(ws)
+            
+            # Clean up disconnected WebSockets outside the iteration lock if possible,
+            # or handle removal carefully within the lock.
+            if disconnected_ws:
+                async with self.lock:
+                    for ws in disconnected_ws:
+                        try:
+                            self.connections[event.thread_id].remove(ws)
+                            # Also remove from connection_details if we used connection_id for that
+                        except ValueError:
+                            pass # Already removed
+                    if not self.connections.get(event.thread_id):
+                        del self.connections[event.thread_id]
+
+
+    # Instantiate the global transport manager
+    app.stream_transport_global = StreamTransportGlobal()
+
+    # Modify ApiHandler to inject the transport instance into AgentContext
+    # This is a simplified example; Agent Zero's actual ApiHandler might be structured differently.
+    original_api_handler_get_context = ApiHandler.get_context
+    def patched_get_context(api_handler_self, ctxid: Optional[str] = None, name: Optional[str] = None, 
+                            thread_id: Optional[str] = None, user_id: Optional[str] = None) -> AgentContext:
+        # Call original method to get/create context
+        context = original_api_handler_get_context(api_handler_self, ctxid, name, thread_id, user_id)
+        
+        # Inject the global stream transport instance
+        if 'stream_transport_instance' not in context.custom_data:
+            context.set_custom_data('stream_transport_instance', app.stream_transport_global)
+            # print(f"Patched_get_context: Injected stream_transport_global into context {context.id}")
+        return context
+    
+    ApiHandler.get_context = patched_get_context # Monkey-patch the method
+
+    @sock.route('/ws/agui/<string:thread_id>')
+    async def agui_websocket(ws, thread_id: str):
+        user_id = request.args.get('userId')
+        context_id_for_agent = request.args.get('contextId', thread_id) 
+        
+        transport_manager = app.stream_transport_global # Use the global instance
+        
+        connection_id = await transport_manager.register_connection(ws, thread_id, user_id)
+        print(f"WebSocket connection established: id={connection_id}, thread_id={thread_id}, user_id='{user_id}'")
+
+        # Ensure AgentContext is created/retrieved and has the stream_transport_instance
+        # This context might be used if client sends commands over WS that trigger agent actions
+        context = AgentContext.get(id=context_id_for_agent, name=f"WS Session {thread_id}", thread_id=thread_id, user_id=user_id)
+        if 'stream_transport_instance' not in context.custom_data:
+             context.set_custom_data('stream_transport_instance', app.stream_transport_global)
+
+
+        # Optional: Send a session_start event if this is the primary way sessions are initiated
+        # Or if the client expects it upon WebSocket connection.
+        initial_state_payload = {"threadId": thread_id, "userId": user_id, "status": "connected"}
+        init_event = StreamEvent(StreamEventType.SESSION_START, initial_state_payload, thread_id=thread_id, user_id=user_id)
+        await transport_manager.emit_event_to_thread(init_event)
+
+
+        try:
+            while True:
+                message_str = await ws.receive(timeout=60) # Add timeout
+                if message_str is None:
+                    print(f"WebSocket ({connection_id}, thread {thread_id}) received None, client disconnected.")
+                    break
+                
+                print(f"WebSocket ({connection_id}, thread {thread_id}) received: {message_str[:200]}")
+                # Handle client-to-server messages (e.g., pings, specific AG-UI client commands if any)
+                # Example:
+                try:
+                    data = json.loads(message_str)
+                    if data.get("type") == "client_ping":
+                        await ws.send(json.dumps({"type": "server_pong", "thread_id": thread_id}))
+                    # If client sends RunAgentInput type messages for processing via WebSocket:
+                    # elif data.get("type") == "run_agent_input" and "payload" in data:
+                    #    agent_instance = context.agent0 or Agent(context=context) 
+                    #    tool = StreamProtocolTool(agent_instance) # Tool needs the context's transport
+                    #    await tool.execute(action="handle_input", input_data=data["payload"])
+                except json.JSONDecodeErrorOkay, proceeding with Task 11.
+
+Based on the detailed plan and the components we need to integrate and flesh out, I estimate **approximately 10-15 more tasks** of similar granularity to fully implement the "Phoenix" upgrade as outlined.
+
+This includes:
+*   **Fleshing out each placeholder tool:** Implementing the actual logic for `BrowserAgentTool`, `WebCrawlerTool`, `KnowledgeAgentTool`, `MemoryAgentTool`, and `ChatterboxTTSTool` by integrating the code from their respective repositories. This is the largest part.
+*   **Full StreamProtocol implementation:** Server-side WebSocket management in `run_ui.py`, handling client-initiated streams, and ensuring robust event flow.
+*   **Agent Core Enhancements:** Finalizing agent state management, context propagation (`thread_id`, `user_id`), and ensuring the `monologue` and tool calling mechanisms correctly use the new streaming and memory tools.
+*   **Hybrid Memory Logic:** Implementing the actual combination and ranking logic in `HybridMemoryTool`.
+*   **Configuration:** Updating settings/config files to manage new tool parameters, model paths, API keys for new services, etc.
+*   **UI Integration (Conceptual):** While we're not building a new UI, ensuring the backend emits events in a way a hypothetical AG-UI frontend could consume them.
+*   **Docker Updates:** Adding all new dependencies to `requirements.txt` and potentially updating Dockerfiles for system libraries if needed by new packages (e.g., for `torch` with CUDA, Playwright browser dependencies).
+*   **Testing:** Writing unit and integration tests for the new tools and core changes.
+*   **Documentation:** Updating Agent Zero's README and any relevant documentation for the new features.
+
+Let's continue with the next task.
+
+## Task 11: Implement Actual StreamTransport in `run_ui.py` and Connect `StreamProtocolTool`
+
+**Focus:**
+This task replaces the placeholder `StreamTransport` logic with a more concrete implementation within `run_ui.py`. It will manage actual WebSocket connections and ensure that the `StreamProtocolTool` (and by extension, the `Agent`'s `_emit_stream_event` method) can use this central transport mechanism to send events to the correct clients based on `thread_id`.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   The `StreamTransport` class will be simplified here as its primary instance and connection management will now live in `run_ui.py`. This file will retain the `StreamEvent` and other dataclasses. The `StreamProtocolTool` will expect the `StreamTransport` instance to be injected or globally accessible.
+
+    ```python
+    # python/tools/stream_protocol_tool.py
+    # ... (StreamEventType, RunAgentInput, StreamEvent dataclasses remain)
+
+    # StreamTransport class is now primarily managed in run_ui.py
+    # We might keep a reference or an interface definition here if needed,
+    # but the instance that holds connections will be in run_ui.py.
+    # For simplicity, let's assume StreamProtocolTool will get the transport instance from the agent's context
+    # which is populated by run_ui.py.
+
+    class StreamProtocolTool(Tool):
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="stream_protocol_tool", description="Manages AG-UI streaming communication.", args_schema=None, **kwargs)
+            
+            # Attempt to get the transport from agent context (set by run_ui.py)
+            self.transport = self.agent.context.get_custom_data('stream_transport_instance')
+            if not self.transport:
+                # Fallback or error if not found - this indicates an initialization issue in run_ui.py
+                print("StreamProtocolTool: CRITICAL - StreamTransport instance not found in agent context.")
+                # As a last resort, could use a global singleton, but injection is cleaner.
+                # from run_ui import get_global_stream_transport # Hypothetical global getter
+                # self.transport = get_global_stream_transport() 
+                # For now, we'll assume it will be there. If not, emit_event will fail.
+                # A more robust solution would be to pass it during agent/tool initialization.
+                raise RuntimeError("StreamTransport not properly initialized and passed to StreamProtocolTool.")
+
+            self.active_threads: Dict[str, Dict[str, Any]] = {} 
+            self.middleware_stack: List[callable] = []
+            print(f"StreamProtocolTool initialized for agent {agent.agent_name}, using injected StreamTransport.")
+
+        async def _emit_event_internal(self, event_type: StreamEventType, payload: Dict[str, Any], 
+                                 thread_id: Optional[str], user_id: Optional[str]):
+            """Internal helper to create and emit event using the injected transport."""
+            if not self.transport:
+                print(f"StreamProtocolTool: Cannot emit event, StreamTransport is not available.")
+                return
+
+            event = StreamEvent(
+                type=event_type,
+                payload=payload,
+                thread_id=thread_id,
+                user_id=user_id
+            )
+            await self.transport.emit_event_to_thread(event) # Changed to emit_event_to_thread
+
+        # _emit_event, _handle_input, _process_message, _start_session, _end_session, _update_state,
+        # _register_middleware, _emit_error_event, agent_response methods
+        # will use self._emit_event_internal or self.transport directly.
+        # Their logic remains largely the same as in Task 2/4, but now relying on a properly injected transport.
+        
+        # Example modification in _emit_event:
+        async def _emit_event(self, event_type: str, payload: Dict[str, Any], 
+                             thread_id: Optional[str] = None, user_id: Optional[str] = None):
+            if not self.transport:
+                return self.agent_response("StreamTransport not available.", error=True)
+            # ... (rest of the _emit_event logic from Task 4, calling self.transport.emit_event_to_thread) ...
+            try:
+                event_enum = StreamEventType(event_type)
+            except ValueError:
+                return self.agent_response(f"Invalid event type: {event_type}", error=True)
+            
+            effective_thread_id = thread_id if thread_id is not None else self.agent.get_thread_id()
+            effective_user_id = user_id if user_id is not None else self.agent.get_user_id()
+
+            event = StreamEvent(
+                type=event_enum,
+                payload=payload,
+                thread_id=effective_thread_id,
+                user_id=effective_user_id
+            )
+            
+            for middleware in self.middleware_stack:
+                event = await middleware(event)
+                if event is None:
+                    return self.agent_response("Event filtered by middleware")
+            
+            await self.transport.emit_event_to_thread(event) # Key change: use specific method
+            
+            return self.agent_response({
+                "success": True, "event_id": event.event_id, "type": event_type, "timestamp": event.timestamp
+            })
+        
+        # ... (other methods from Task 4, ensuring self.transport.emit_event_to_thread is used)
+    ```
+
+2.  **Modify `run_ui.py` (or main server script):**
+    *   Define the `StreamTransport` class directly in `run_ui.py` or import it if it's made a generic helper.
+    *   Create a single instance of `StreamTransport`.
+    *   In the WebSocket route (`/ws/agui/<string:thread_id>`), use this instance to `register_connection` and `unregister_connection`.
+    *   Modify `ApiHandler.get_context` (or wherever `AgentContext` is instantiated for API requests) to inject this global `stream_transport_instance` into the `AgentContext.custom_data`.
+
+    ```python
+    # run_ui.py
+    # ... (Flask, Sock, asyncio, json, uuid, datetime, Enum, dataclass, field imports)
+    from python.helpers.tool import Tool # For type hinting if needed
+    from agent import AgentContext, Agent # Agent Zero's core classes
+    from python.helpers.api import ApiHandler # To modify context injection
+    # Define StreamEvent, StreamEventType, RunAgentInput locally or import if they are in a shared protocol definition file
+    # For this task, let's assume they are defined in stream_protocol_tool.py still, so we import them
+    from python.tools.stream_protocol_tool import StreamEvent, StreamEventType, RunAgentInput
+
+    app = Flask("app")
+    sock = Sock(app)
+    app.config["JSON_SORT_KEYS"] = False
+
+    class StreamTransportGlobal: # Renamed to avoid conflict if imported from tool
+        """
+        Manages WebSocket connections and dispatches events to relevant clients.
+        This instance is global to the server application.
+        """
+        def __init__(self):
+            self.connections: Dict[str, List[Any]] = {}  # thread_id -> list of websocket objects
+            self.connection_details: Dict[str, Dict[str, Any]] = {} # ws_connection_id -> details
+            self.lock = asyncio.Lock()
+            print("StreamTransportGlobal: Instance created.")
+
+        async def register_connection(self, ws, thread_id: str, user_id: Optional[str] = None) -> str:
+            connection_id = str(uuid.uuid4())
+            async with self.lock:
+                if thread_id not in self.connections:
+                    self.connections[thread_id] = []
+                self.connections[thread_id].append(ws)
+                self.connection_details[connection_id] = {
+                    "websocket": ws, "thread_id": thread_id, "user_id": user_id, "connected_at": datetime.utcnow()
+                }
+            print(f"StreamTransportGlobal: Registered WS connection {connection_id} for thread '{thread_id}'. Total for thread: {len(self.connections[thread_id])}")
+            return connection_id
+
+        async def unregister_connection(self, ws_to_remove, thread_id: str, connection_id_to_remove: Optional[str] = None):
+            async with self.lock:
+                if thread_id in self.connections:
+                    try:
+                        self.connections[thread_id].remove(ws_to_remove)
+                        if not self.connections[thread_id]: # Is list empty?
+                            del self.connections[thread_id]
+                        print(f"StreamTransportGlobal: Unregistered WS from thread '{thread_id}'. Remaining: {len(self.connections.get(thread_id, []))}")
+                    except ValueError:
+                        print(f"StreamTransportGlobal: WS to remove not found in thread '{thread_id}' list.")
+                
+                if connection_id_to_remove and connection_id_to_remove in self.connection_details:
+                    del self.connection_details[connection_id_to_remove]
+
+        async def emit_event_to_thread(self, event: StreamEvent):
+            """Emit event to all clients connected to the specified event.thread_id."""
+            if not event.thread_id or event.thread_id not in self.connections:
+                # print(f"StreamTransportGlobal: No active connections for thread_id {event.thread_id} to emit event {event.type.value}")
+                return
+
+            event_data_str = json.dumps({
+                "id": event.event_id, "type": event.type.value, "payload": event.payload,
+                "timestamp": event.timestamp, "threadId": event.thread_id, "userId": event.user_id
+            })
+            
+            disconnected_ws = []
+            async with self.lock: # Protect access to self.connections list for the thread
+                # Iterate over a copy of the list if modifications are made during iteration
+                for ws in list(self.connections.get(event.thread_id, [])): 
+                    try:
+                        if not ws.closed: # Check if websocket is still open
+                            await ws.send(event_data_str)
+                        else:
+                            print(f"StreamTransportGlobal: WebSocket for thread {event.thread_id} was closed. Marking for removal.")
+                            disconnected_ws.append(ws)
+                    except Exception as e:
+                        print(f"StreamTransportGlobal: Error sending to WebSocket for thread {event.thread_id}: {e}. Marking for removal.")
+                        disconnected_ws.append(ws)
+            
+            # Clean up disconnected WebSockets outside the iteration lock if possible,
+            # or handle removal carefully within the lock.
+            if disconnected_ws:
+                async with self.lock:
+                    for ws in disconnected_ws:
+                        try:
+                            self.connections[event.thread_id].remove(ws)
+                            # Also remove from connection_details if we used connection_id for that
+                        except ValueError:
+                            pass # Already removed
+                    if not self.connections.get(event.thread_id):
+                        del self.connections[event.thread_id]
+
+
+    # Instantiate the global transport manager
+    app.stream_transport_global = StreamTransportGlobal()
+
+    # Modify ApiHandler to inject the transport instance into AgentContext
+    # This is a simplified example; Agent Zero's actual ApiHandler might be structured differently.
+    original_api_handler_get_context = ApiHandler.get_context
+    def patched_get_context(api_handler_self, ctxid: Optional[str] = None, name: Optional[str] = None, 
+                            thread_id: Optional[str] = None, user_id: Optional[str] = None) -> AgentContext:
+        # Call original method to get/create context
+        context = original_api_handler_get_context(api_handler_self, ctxid, name, thread_id, user_id)
+        
+        # Inject the global stream transport instance
+        if 'stream_transport_instance' not in context.custom_data:
+            context.set_custom_data('stream_transport_instance', app.stream_transport_global)
+            # print(f"Patched_get_context: Injected stream_transport_global into context {context.id}")
+        return context
+    
+    ApiHandler.get_context = patched_get_context # Monkey-patch the method
+
+    @sock.route('/ws/agui/<string:thread_id>')
+    async def agui_websocket(ws, thread_id: str):
+        user_id = request.args.get('userId')
+        context_id_for_agent = request.args.get('contextId', thread_id) 
+        
+        transport_manager = app.stream_transport_global # Use the global instance
+        
+        connection_id = await transport_manager.register_connection(ws, thread_id, user_id)
+        print(f"WebSocket connection established: id={connection_id}, thread_id={thread_id}, user_id='{user_id}'")
+
+        # Ensure AgentContext is created/retrieved and has the stream_transport_instance
+        # This context might be used if client sends commands over WS that trigger agent actions
+        context = AgentContext.get(id=context_id_for_agent, name=f"WS Session {thread_id}", thread_id=thread_id, user_id=user_id)
+        if 'stream_transport_instance' not in context.custom_data:
+             context.set_custom_data('stream_transport_instance', app.stream_transport_global)
+
+
+        # Optional: Send a session_start event if this is the primary way sessions are initiated
+        # Or if the client expects it upon WebSocket connection.
+        initial_state_payload = {"threadId": thread_id, "userId": user_id, "status": "connected"}
+        init_event = StreamEvent(StreamEventType.SESSION_START, initial_state_payload, thread_id=thread_id, user_id=user_id)
+        await transport_manager.emit_event_to_thread(init_event)
+
+
+        try:
+            while True:
+                message_str = await ws.receive(timeout=60) # Add timeout
+                if message_str is None:
+                    print(f"WebSocket ({connection_id}, thread {thread_id}) received None, client disconnected.")
+                    break
+                
+                print(f"WebSocket ({connection_id}, thread {thread_id}) received: {message_str[:200]}")
+                # Handle client-to-server messages (e.g., pings, specific AG-UI client commands if any)
+                # Example:
+                try:
+                    data = json.loads(message_str)
+                    if data.get("type") == "client_ping":
+                        await ws.send(json.dumps({"type": "server_pong", "thread_id": thread_id}))
+                    # If client sends RunAgentInput type messages for processing via WebSocket:
+                    # elif data.get("type") == "run_agent_input" and "payload" in data:
+                    #    agent_instance = context.agent0 or Agent(context=context) 
+                    #    tool = StreamProtocolTool(agent_instance) # Tool needs the context's transport
+                    #    await tool.execute(action="handle_input", input_data=data["payload"])
+                except json.JSONDecodeError

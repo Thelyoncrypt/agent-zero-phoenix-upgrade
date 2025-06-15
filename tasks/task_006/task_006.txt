@@ -1,0 +1,727 @@
+## Task 6: Implement Core WebCrawler (Crawl4AI) Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `WebCrawlerTool` within Agent Zero, based on the `crawl4AI-agent-v2` repository. It will include placeholder implementations for the core crawling actions (`crawl_site`, `crawl_sitemap`, `crawl_markdown`). The actual crawling logic and integration with the `KnowledgeAgentTool` for storing chunks will be implemented in later tasks. The goal here is to create the tool's interface and make it callable by the Agent Zero agent, emitting appropriate `CRAWL_PROGRESS` events.
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories (if they don't exist from previous tasks):**
+    *   `python/agents/` (should exist)
+    *   `python/agents/web_crawler/`
+
+2.  **Create `python/agents/web_crawler/crawler.py` (Placeholder):**
+    This file will eventually contain the `DocumentCrawler` logic from `crawl4AI-agent-v2`.
+
+    ```python
+# python/agents/web_crawler/crawler.py
+    import asyncio
+    from typing import List, Dict, Any, AsyncGenerator
+
+    class DocumentCrawler:
+        """
+        Manages document crawling (mocked for now).
+        In a real implementation, this would use Crawl4AI or similar.
+        """
+        def __init__(self):
+            print("DocumentCrawler (Mock) initialized.")
+
+        async def crawl_recursive(self, url: str, max_depth: int, max_pages: int) -> AsyncGenerator[Dict[str, Any], None]:
+            """Simulates recursive crawling."""
+            print(f"DocumentCrawler (Mock): Starting recursive crawl for URL: {url}, depth: {max_depth}, max_pages: {max_pages}")
+            for i in range(min(5, max_pages)): # Simulate finding a few pages
+                await asyncio.sleep(0.1)
+                page_url = f"{url}/page{i+1}"
+                yield {
+                    "url": page_url,
+                    "raw_content": f"Mock content for {page_url}. Depth {min(i//2 + 1, max_depth)}", # Simulate some content
+                    "title": f"Mock Title for Page {i+1}",
+                    "depth": min(i//2 + 1, max_depth),
+                    "links": {"internal": [f"{url}/page{i+2}"], "external": []} if i < 4 else {"internal": [], "external": []}
+                }
+            print(f"DocumentCrawler (Mock): Finished recursive crawl for URL: {url}")
+
+        async def crawl_sitemap_urls(self, urls: List[str]) -> AsyncGenerator[Dict[str, Any], None]:
+            """Simulates crawling a list of URLs from a sitemap."""
+            print(f"DocumentCrawler (Mock): Starting sitemap crawl for {len(urls)} URLs.")
+            for i, url in enumerate(urls):
+                if i >= 10: # Limit mock processing
+                    print("DocumentCrawler (Mock): Sitemap crawl limit reached.")
+                    break
+                await asyncio.sleep(0.1)
+                yield {
+                    "url": url,
+                    "raw_content": f"Mock sitemap content for {url}.",
+                    "title": f"Mock Sitemap Title for {url.split('/')[-1] or url}",
+                }
+            print(f"DocumentCrawler (Mock): Finished sitemap crawl.")
+
+        async def crawl_markdown_file_url(self, url: str) -> AsyncGenerator[Dict[str, Any], None]:
+            """Simulates crawling a single markdown/txt file URL."""
+            print(f"DocumentCrawler (Mock): Starting markdown file crawl for URL: {url}")
+            await asyncio.sleep(0.1)
+            yield {
+                "url": url,
+                "raw_content": f"# Mock Markdown Content for {url}\n\nThis is some mock markdown text.",
+                "title": f"Mock Markdown Document: {url.split('/')[-1]}",
+            }
+            print(f"DocumentCrawler (Mock): Finished markdown file crawl for URL: {url}")
+```
+
+3.  **Create `python/agents/web_crawler/processors.py` (Placeholder):**
+
+    ```python
+# python/agents/web_crawler/processors.py
+    from typing import Dict, Any
+
+    class DocumentProcessor:
+        """
+        Processes raw crawled content into structured data (mocked).
+        """
+        def __init__(self):
+            print("DocumentProcessor (Mock) initialized.")
+
+        async def process_document(self, raw_doc_data: Dict[str, Any]) -> Dict[str, Any]:
+            """Simulates processing raw document data into markdown or structured text."""
+            print(f"DocumentProcessor (Mock): Processing document: {raw_doc_data.get('url')}")
+            # In a real scenario, this would convert HTML to Markdown using Crawl4AI's capabilities
+            markdown_content = raw_doc_data.get("raw_content", "")
+            if "Mock Markdown Content" not in markdown_content and "Mock sitemap content" not in markdown_content:
+                 markdown_content = f"# {raw_doc_data.get('title', 'Untitled')}\n\nConverted content: {raw_doc_data.get('raw_content', '')[:200]}..."
+            
+            return {
+                "url": raw_doc_data.get("url"),
+                "title": raw_doc_data.get("title", "Mock Title"),
+                "markdown": markdown_content, # Simulate markdown conversion
+                "metadata": {"original_url": raw_doc_data.get("url"), "crawl_depth": raw_doc_data.get("depth", 0)}
+            }
+```
+
+4.  **Create `python/agents/web_crawler/chunker.py` (Placeholder):**
+
+    ```python
+# python/agents/web_crawler/chunker.py
+    from typing import List, Dict, Any
+
+    class HierarchicalChunker:
+        """
+        Chunks markdown content (mocked).
+        """
+        def __init__(self, chunk_size: int = 1000):
+            self.chunk_size = chunk_size
+            print(f"HierarchicalChunker (Mock) initialized with chunk_size: {chunk_size}")
+
+        async def chunk_document(self, processed_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+            """Simulates chunking a processed document."""
+            markdown_content = processed_doc.get("markdown", "")
+            url = processed_doc.get("url", "unknown_url")
+            print(f"HierarchicalChunker (Mock): Chunking document: {url}")
+            
+            if not markdown_content:
+                return []
+
+            # Simple mock chunking: split by self.chunk_size
+            num_chunks = (len(markdown_content) + self.chunk_size - 1) // self.chunk_size
+            chunks = []
+            for i in range(num_chunks):
+                chunk_text = markdown_content[i*self.chunk_size : (i+1)*self.chunk_size]
+                chunks.append({
+                    "text": chunk_text,
+                    "metadata": {
+                        "source_url": url,
+                        "chunk_index": i,
+                        "original_title": processed_doc.get("title"),
+                        # In real Crawl4AI, headers would be extracted here
+                        "headers": f"Mock Header for Chunk {i}" if i==0 else "" 
+                    }
+                })
+            return chunks
+```
+
+5.  **Create `python/tools/web_crawler_tool.py`:**
+
+    ```python
+# python/tools/web_crawler_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType # For emitting CRAWL_PROGRESS events
+    from agents.web_crawler.crawler import DocumentCrawler
+    from agents.web_crawler.processors import DocumentProcessor
+    from agents.web_crawler.chunker import HierarchicalChunker
+    import asyncio
+    from typing import Dict, Any, List, Optional
+
+    class WebCrawlerTool(Tool):
+        """
+        WebCrawler (Crawl4AI-inspired) integration for Agent Zero.
+        Provides intelligent web crawling and documentation processing.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="web_crawler_tool", 
+                             description="Crawls websites, sitemaps, or markdown files, processes content, and prepares it for knowledge base ingestion.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            self.crawler = DocumentCrawler()
+            self.processor = DocumentProcessor()
+            self.chunker = HierarchicalChunker() # Default chunk size from HierarchicalChunker
+            print(f"WebCrawlerTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        async def _emit_crawl_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit CRAWL_PROGRESS events."""
+            payload = {"action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.CRAWL_PROGRESS, payload)
+            else:
+                print(f"WebCrawlerTool: Agent does not have _emit_stream_event method. Cannot emit CRAWL_PROGRESS.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute WebCrawler operations.
+            
+            Args:
+                action (str): Crawling action (e.g., "crawl_site", "crawl_sitemap", "crawl_markdown").
+                **kwargs: Arguments for the action.
+            """
+            chunk_size = kwargs.get("chunk_size", 1000) # Allow overriding default chunk size
+            self.chunker = HierarchicalChunker(chunk_size=chunk_size) # Re-init with potentially new chunk_size
+
+            try:
+                if action == "crawl_site":
+                    url = kwargs.get("url")
+                    max_depth = kwargs.get("max_depth", 3)
+                    max_pages = kwargs.get("max_pages", 100)
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    return await self._crawl_site(url, max_depth, max_pages)
+                elif action == "crawl_sitemap":
+                    sitemap_url = kwargs.get("sitemap_url")
+                    # Actual sitemap parsing will be in a later task. For now, assume URLs are passed.
+                    urls_from_sitemap = kwargs.get("urls", []) 
+                    if not sitemap_url and not urls_from_sitemap:
+                        return ToolResponse("Error: 'sitemap_url' or 'urls' list is required.", error=True)
+                    if sitemap_url and not urls_from_sitemap: # Mock parsing if only URL given
+                        print(f"WebCrawlerTool: Mock parsing sitemap URL {sitemap_url}")
+                        urls_from_sitemap = [f"{sitemap_url.rsplit('/',1)[0]}/mock_page_{i}" for i in range(3)]
+                    return await self._crawl_sitemap_urls(urls_from_sitemap)
+                elif action == "crawl_markdown_file_url": # Renamed to be more specific than "crawl_markdown"
+                    url = kwargs.get("url")
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    return await self._crawl_markdown_file_url(url)
+                # The "process_documents" action from original Crawl4AI is now integrated into each crawl method.
+                else:
+                    return ToolResponse(f"Unknown WebCrawler action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"WebCrawlerTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_crawl_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _process_and_ingest_crawled_doc(self, raw_doc_data: Dict[str, Any]) -> int:
+            """Helper to process a single raw doc, chunk it, and "ingest" (log for now)."""
+            processed_doc = await self.processor.process_document(raw_doc_data)
+            if not processed_doc.get("markdown"):
+                print(f"WebCrawlerTool: No markdown content after processing {raw_doc_data.get('url')}")
+                return 0
+                
+            chunks_with_metadata = await self.chunker.chunk_document(processed_doc)
+            
+            if not chunks_with_metadata:
+                print(f"WebCrawlerTool: No chunks generated for {processed_doc.get('url')}")
+                return 0
+
+            # Placeholder for actual ingestion via KnowledgeAgentTool
+            # In a later task, this will call:
+            # await self.agent.call_tool("knowledge_agent_tool", {
+            #     "action": "ingest_chunks",
+            #     "chunks": chunks_with_metadata, # This needs to be list of texts
+            #     "metadatas": [chunk['metadata'] for chunk in chunks_with_metadata],
+            #     "ids": [f"{processed_doc.get('url')}_chunk_{i}" for i in range(len(chunks_with_metadata))]
+            # })
+            print(f"WebCrawlerTool (Mock Ingestion): Would ingest {len(chunks_with_metadata)} chunks for {processed_doc.get('url')}.")
+            for i, chunk_data in enumerate(chunks_with_metadata):
+                 print(f"  Chunk {i}: {chunk_data['text'][:80]}... Metadata: {chunk_data['metadata']}")
+            
+            return len(chunks_with_metadata)
+
+        async def _crawl_site(self, url: str, max_depth: int, max_pages: int) -> ToolResponse:
+            await self._emit_crawl_event("crawl_site", "starting", {"url": url, "max_depth": max_depth, "max_pages": max_pages})
+            
+            total_chunks_ingested = 0
+            pages_processed_count = 0
+            
+            async for raw_doc_data in self.crawler.crawl_recursive(url, max_depth, max_pages):
+                chunks_ingested = await self._process_and_ingest_crawled_doc(raw_doc_data)
+                total_chunks_ingested += chunks_ingested
+                pages_processed_count += 1
+                if pages_processed_count % 5 == 0: # Emit progress periodically
+                    await self._emit_crawl_event("crawl_site", "progress", {
+                        "url": url, "pages_processed": pages_processed_count, 
+                        "chunks_ingested_so_far": total_chunks_ingested
+                    })
+            
+            summary = f"Site crawl completed for {url}. Processed {pages_processed_count} pages, ingested {total_chunks_ingested} chunks."
+            await self._emit_crawl_event("crawl_site", "completed", {
+                "url": url, "pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested
+            })
+            return ToolResponse(message=summary)
+
+        async def _crawl_sitemap_urls(self, urls: List[str]) -> ToolResponse:
+            await self._emit_crawl_event("crawl_sitemap", "starting", {"url_count": len(urls)})
+            total_chunks_ingested = 0
+            pages_processed_count = 0
+            async for raw_doc_data in self.crawler.crawl_sitemap_urls(urls):
+                chunks_ingested = await self._process_and_ingest_crawled_doc(raw_doc_data)
+                total_chunks_ingested += chunks_ingested
+                pages_processed_count +=1
+                if pages_processed_count % 5 == 0:
+                     await self._emit_crawl_event("crawl_sitemap", "progress", {
+                        "processed_urls": pages_processed_count, "total_urls": len(urls),
+                        "chunks_ingested_so_far": total_chunks_ingested
+                    })
+
+            summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, ingested {total_chunks_ingested} chunks."
+            await self._emit_crawl_event("crawl_sitemap", "completed", {
+                "processed_urls": pages_processed_count, "total_chunks_ingested": total_chunks_ingested
+            })
+            return ToolResponse(message=summary)
+
+        async def _crawl_markdown_file_url(self, url: str) -> ToolResponse:
+            await self._emit_crawl_event("crawl_markdown_file_url", "starting", {"url": url})
+            total_chunks_ingested = 0
+            async for raw_doc_data in self.crawler.crawl_markdown_file_url(url): # Expects an async generator
+                chunks_ingested = await self._process_and_ingest_crawled_doc(raw_doc_data)
+                total_chunks_ingested += chunks_ingested
+            
+            summary = f"Markdown file crawl completed for {url}. Ingested {total_chunks_ingested} chunks."
+            await self._emit_crawl_event("crawl_markdown_file_url", "completed", {
+                "url": url, "total_chunks_ingested": total_chunks_ingested
+            })
+            return ToolResponse(message=summary)
+```
+
+6.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `web_crawler_tool` to the list.
+
+    ```markdown
+# prompts/default/agent.system.tools.md
+    # ... (existing tools)
+    {{ include './agent.system.tool.browser.md' }} 
+
+    ### web_crawler_tool:
+    # Crawls websites, sitemaps, or markdown files for knowledge base ingestion.
+    # Arguments:
+    #   action: string - Type of crawl: "crawl_site", "crawl_sitemap", "crawl_markdown_file_url".
+    #   url: string - (Required for crawl_site, crawl_markdown_file_url) The root URL or direct file URL.
+    #   sitemap_url: string - (Optional for crawl_sitemap if 'urls' is provided) URL of the sitemap.xml.
+    #   urls: list[string] - (Optional for crawl_sitemap if 'sitemap_url' is provided) A list of URLs to crawl.
+    #   max_depth: int - (Optional for crawl_site, default 3) Max recursion depth.
+    #   max_pages: int - (Optional for crawl_site, default 100) Max pages to crawl.
+    #   chunk_size: int - (Optional, default 1000) Max characters per chunk for ingestion.
+    # Example for site crawl:
+    # {
+    #   "tool_name": "web_crawler_tool",
+    #   "tool_args": { "action": "crawl_site", "url": "https://example.com/docs", "max_depth": 2 }
+    # }
+    # Example for sitemap crawl (providing URL list):
+    # {
+    #   "tool_name": "web_crawler_tool",
+    #   "tool_args": { "action": "crawl_sitemap", "urls": ["https://example.com/page1", "https://example.com/page2"] }
+    # }
+    # Example for markdown file URL:
+    # {
+    #   "tool_name": "web_crawler_tool",
+    #   "tool_args": { "action": "crawl_markdown_file_url", "url": "https://example.com/document.md" }
+    # }
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-4 completed.
+*   `StreamProtocolTool` and agent's `_emit_stream_event` helper.
+*   The standard Python libraries used (asyncio, typing). No new external packages are strictly required by these *placeholder* files. The actual `crawl4ai` package will be added when implementing the real logic.
+
+**Integration with Agent Zero:**
+*   `WebCrawlerTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `CRAWL_PROGRESS` events via the agent's `_emit_stream_event` method.
+*   The tool's description and usage are added to system prompts.
+*   The placeholder ingestion step logs what *would* be sent to `KnowledgeAgentTool`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for these placeholders.
+*   Ensure the new directory structure `python/agents/web_crawler/` and files within, plus `python/tools/web_crawler_tool.py`, are included in the Docker image.
+
+**Summary of Task 6:**
+This task establishes the foundational structure for the `WebCrawlerTool` and its associated (mocked) components. It defines the tool's actions and integrates placeholder logic for crawling, processing, and chunking. Crucially, it sets up the emission of `CRAWL_PROGRESS` events, enabling frontends to monitor crawling activities. The actual integration with `crawl4ai` and the `KnowledgeAgentTool` for data storage will follow in subsequent tasks.
+
+Please confirm to proceed.Okay, let's proceed with Task 6.
+
+## Task 6: Implement Core WebCrawler (Crawl4AI) Tool Structure and Placeholder Actions
+
+**Focus:**
+This task establishes the basic structure for the `WebCrawlerTool` within Agent Zero, based on the `crawl4AI-agent-v2` repository. It will include placeholder implementations for the core crawling actions (`crawl_site`, `crawl_sitemap`, `crawl_markdown`). The actual crawling logic and integration with the `KnowledgeAgentTool` for storing chunks will be implemented in later tasks. The goal here is to create the tool's interface and make it callable by the Agent Zero agent, emitting appropriate `CRAWL_PROGRESS` events.
+
+**File Paths and Code Changes:**
+
+1.  **Create new directories (if they don't exist from previous tasks):**
+    *   `python/agents/` (should exist)
+    *   `python/agents/web_crawler/`
+
+2.  **Create `python/agents/web_crawler/crawler.py` (Placeholder):**
+    This file will eventually contain the `DocumentCrawler` logic from `crawl4AI-agent-v2`.
+
+    ```python
+    # python/agents/web_crawler/crawler.py
+    import asyncio
+    from typing import List, Dict, Any, AsyncGenerator
+
+    class DocumentCrawler:
+        """
+        Manages document crawling (mocked for now).
+        In a real implementation, this would use Crawl4AI or similar.
+        """
+        def __init__(self):
+            print("DocumentCrawler (Mock) initialized.")
+
+        async def crawl_recursive(self, url: str, max_depth: int, max_pages: int) -> AsyncGenerator[Dict[str, Any], None]:
+            """Simulates recursive crawling."""
+            print(f"DocumentCrawler (Mock): Starting recursive crawl for URL: {url}, depth: {max_depth}, max_pages: {max_pages}")
+            for i in range(min(5, max_pages)): # Simulate finding a few pages
+                await asyncio.sleep(0.1)
+                page_url = f"{url}/page{i+1}"
+                yield {
+                    "url": page_url,
+                    "raw_content": f"Mock content for {page_url}. Depth {min(i//2 + 1, max_depth)}", # Simulate some content
+                    "title": f"Mock Title for Page {i+1}",
+                    "depth": min(i//2 + 1, max_depth),
+                    "links": {"internal": [f"{url}/page{i+2}"], "external": []} if i < 4 else {"internal": [], "external": []}
+                }
+            print(f"DocumentCrawler (Mock): Finished recursive crawl for URL: {url}")
+
+        async def crawl_sitemap_urls(self, urls: List[str]) -> AsyncGenerator[Dict[str, Any], None]:
+            """Simulates crawling a list of URLs from a sitemap."""
+            print(f"DocumentCrawler (Mock): Starting sitemap crawl for {len(urls)} URLs.")
+            for i, url in enumerate(urls):
+                if i >= 10: # Limit mock processing
+                    print("DocumentCrawler (Mock): Sitemap crawl limit reached.")
+                    break
+                await asyncio.sleep(0.1)
+                yield {
+                    "url": url,
+                    "raw_content": f"Mock sitemap content for {url}.",
+                    "title": f"Mock Sitemap Title for {url.split('/')[-1] or url}",
+                }
+            print(f"DocumentCrawler (Mock): Finished sitemap crawl.")
+
+        async def crawl_markdown_file_url(self, url: str) -> AsyncGenerator[Dict[str, Any], None]:
+            """Simulates crawling a single markdown/txt file URL."""
+            print(f"DocumentCrawler (Mock): Starting markdown file crawl for URL: {url}")
+            await asyncio.sleep(0.1)
+            yield {
+                "url": url,
+                "raw_content": f"# Mock Markdown Content for {url}\n\nThis is some mock markdown text.",
+                "title": f"Mock Markdown Document: {url.split('/')[-1]}",
+            }
+            print(f"DocumentCrawler (Mock): Finished markdown file crawl for URL: {url}")
+
+    ```
+
+3.  **Create `python/agents/web_crawler/processors.py` (Placeholder):**
+
+    ```python
+    # python/agents/web_crawler/processors.py
+    from typing import Dict, Any
+
+    class DocumentProcessor:
+        """
+        Processes raw crawled content into structured data (mocked).
+        """
+        def __init__(self):
+            print("DocumentProcessor (Mock) initialized.")
+
+        async def process_document(self, raw_doc_data: Dict[str, Any]) -> Dict[str, Any]:
+            """Simulates processing raw document data into markdown or structured text."""
+            print(f"DocumentProcessor (Mock): Processing document: {raw_doc_data.get('url')}")
+            # In a real scenario, this would convert HTML to Markdown using Crawl4AI's capabilities
+            markdown_content = raw_doc_data.get("raw_content", "")
+            if "Mock Markdown Content" not in markdown_content and "Mock sitemap content" not in markdown_content:
+                 markdown_content = f"# {raw_doc_data.get('title', 'Untitled')}\n\nConverted content: {raw_doc_data.get('raw_content', '')[:200]}..."
+            
+            return {
+                "url": raw_doc_data.get("url"),
+                "title": raw_doc_data.get("title", "Mock Title"),
+                "markdown": markdown_content, # Simulate markdown conversion
+                "metadata": {"original_url": raw_doc_data.get("url"), "crawl_depth": raw_doc_data.get("depth", 0)}
+            }
+    ```
+
+4.  **Create `python/agents/web_crawler/chunker.py` (Placeholder):**
+
+    ```python
+    # python/agents/web_crawler/chunker.py
+    from typing import List, Dict, Any
+
+    class HierarchicalChunker:
+        """
+        Chunks markdown content (mocked).
+        """
+        def __init__(self, chunk_size: int = 1000):
+            self.chunk_size = chunk_size
+            print(f"HierarchicalChunker (Mock) initialized with chunk_size: {chunk_size}")
+
+        async def chunk_document(self, processed_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+            """Simulates chunking a processed document."""
+            markdown_content = processed_doc.get("markdown", "")
+            url = processed_doc.get("url", "unknown_url")
+            print(f"HierarchicalChunker (Mock): Chunking document: {url}")
+            
+            if not markdown_content:
+                return []
+
+            # Simple mock chunking: split by self.chunk_size
+            num_chunks = (len(markdown_content) + self.chunk_size - 1) // self.chunk_size
+            chunks = []
+            for i in range(num_chunks):
+                chunk_text = markdown_content[i*self.chunk_size : (i+1)*self.chunk_size]
+                chunks.append({
+                    "text": chunk_text,
+                    "metadata": {
+                        "source_url": url,
+                        "chunk_index": i,
+                        "original_title": processed_doc.get("title"),
+                        # In real Crawl4AI, headers would be extracted here
+                        "headers": f"Mock Header for Chunk {i}" if i==0 else "" 
+                    }
+                })
+            return chunks
+    ```
+
+5.  **Create `python/tools/web_crawler_tool.py`:**
+
+    ```python
+    # python/tools/web_crawler_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType # For emitting CRAWL_PROGRESS events
+    from agents.web_crawler.crawler import DocumentCrawler
+    from agents.web_crawler.processors import DocumentProcessor
+    from agents.web_crawler.chunker import HierarchicalChunker
+    import asyncio
+    from typing import Dict, Any, List, Optional
+
+    class WebCrawlerTool(Tool):
+        """
+        WebCrawler (Crawl4AI-inspired) integration for Agent Zero.
+        Provides intelligent web crawling and documentation processing.
+        """
+        
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="web_crawler_tool", 
+                             description="Crawls websites, sitemaps, or markdown files, processes content, and prepares it for knowledge base ingestion.",
+                             args_schema=None, # Define proper schema later
+                             **kwargs)
+            self.crawler = DocumentCrawler()
+            self.processor = DocumentProcessor()
+            self.chunker = HierarchicalChunker() # Default chunk size from HierarchicalChunker
+            print(f"WebCrawlerTool initialized for agent {agent.agent_name} (context: {agent.context.id})")
+
+        async def _emit_crawl_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            """Helper to emit CRAWL_PROGRESS events."""
+            payload = {"action": action_name, "status": status}
+            if details:
+                payload.update(details)
+            
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.CRAWL_PROGRESS, payload)
+            else:
+                print(f"WebCrawlerTool: Agent does not have _emit_stream_event method. Cannot emit CRAWL_PROGRESS.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            """
+            Execute WebCrawler operations.
+            
+            Args:
+                action (str): Crawling action (e.g., "crawl_site", "crawl_sitemap", "crawl_markdown").
+                **kwargs: Arguments for the action.
+            """
+            chunk_size = kwargs.get("chunk_size", 1000) # Allow overriding default chunk size
+            self.chunker = HierarchicalChunker(chunk_size=chunk_size) # Re-init with potentially new chunk_size
+
+            try:
+                if action == "crawl_site":
+                    url = kwargs.get("url")
+                    max_depth = kwargs.get("max_depth", 3)
+                    max_pages = kwargs.get("max_pages", 100)
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    return await self._crawl_site(url, max_depth, max_pages)
+                elif action == "crawl_sitemap":
+                    sitemap_url = kwargs.get("sitemap_url")
+                    # Actual sitemap parsing will be in a later task. For now, assume URLs are passed.
+                    urls_from_sitemap = kwargs.get("urls", []) 
+                    if not sitemap_url and not urls_from_sitemap:
+                        return ToolResponse("Error: 'sitemap_url' or 'urls' list is required.", error=True)
+                    if sitemap_url and not urls_from_sitemap: # Mock parsing if only URL given
+                        print(f"WebCrawlerTool: Mock parsing sitemap URL {sitemap_url}")
+                        urls_from_sitemap = [f"{sitemap_url.rsplit('/',1)[0]}/mock_page_{i}" for i in range(3)]
+                    return await self._crawl_sitemap_urls(urls_from_sitemap)
+                elif action == "crawl_markdown_file_url": # Renamed to be more specific than "crawl_markdown"
+                    url = kwargs.get("url")
+                    if not url: return ToolResponse("Error: 'url' is required.", error=True)
+                    return await self._crawl_markdown_file_url(url)
+                # The "process_documents" action from original Crawl4AI is now integrated into each crawl method.
+                else:
+                    return ToolResponse(f"Unknown WebCrawler action: {action}", error=True)
+                    
+            except Exception as e:
+                import traceback
+                error_message = f"WebCrawlerTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_crawl_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _process_and_ingest_crawled_doc(self, raw_doc_data: Dict[str, Any]) -> int:
+            """Helper to process a single raw doc, chunk it, and "ingest" (log for now)."""
+            processed_doc = await self.processor.process_document(raw_doc_data)
+            if not processed_doc.get("markdown"):
+                print(f"WebCrawlerTool: No markdown content after processing {raw_doc_data.get('url')}")
+                return 0
+                
+            chunks_with_metadata = await self.chunker.chunk_document(processed_doc)
+            
+            if not chunks_with_metadata:
+                print(f"WebCrawlerTool: No chunks generated for {processed_doc.get('url')}")
+                return 0
+
+            # Placeholder for actual ingestion via KnowledgeAgentTool
+            # In a later task, this will call:
+            # await self.agent.call_tool("knowledge_agent_tool", {
+            #     "action": "ingest_chunks",
+            #     "chunks": chunks_with_metadata, # This needs to be list of texts
+            #     "metadatas": [chunk['metadata'] for chunk in chunks_with_metadata],
+            #     "ids": [f"{processed_doc.get('url')}_chunk_{i}" for i in range(len(chunks_with_metadata))]
+            # })
+            print(f"WebCrawlerTool (Mock Ingestion): Would ingest {len(chunks_with_metadata)} chunks for {processed_doc.get('url')}.")
+            for i, chunk_data in enumerate(chunks_with_metadata):
+                 print(f"  Chunk {i}: {chunk_data['text'][:80]}... Metadata: {chunk_data['metadata']}")
+            
+            return len(chunks_with_metadata)
+
+        async def _crawl_site(self, url: str, max_depth: int, max_pages: int) -> ToolResponse:
+            await self._emit_crawl_event("crawl_site", "starting", {"url": url, "max_depth": max_depth, "max_pages": max_pages})
+            
+            total_chunks_ingested = 0
+            pages_processed_count = 0
+            
+            async for raw_doc_data in self.crawler.crawl_recursive(url, max_depth, max_pages):
+                chunks_ingested = await self._process_and_ingest_crawled_doc(raw_doc_data)
+                total_chunks_ingested += chunks_ingested
+                pages_processed_count += 1
+                if pages_processed_count % 5 == 0: # Emit progress periodically
+                    await self._emit_crawl_event("crawl_site", "progress", {
+                        "url": url, "pages_processed": pages_processed_count, 
+                        "chunks_ingested_so_far": total_chunks_ingested
+                    })
+            
+            summary = f"Site crawl completed for {url}. Processed {pages_processed_count} pages, ingested {total_chunks_ingested} chunks."
+            await self._emit_crawl_event("crawl_site", "completed", {
+                "url": url, "pages_processed": pages_processed_count, "total_chunks_ingested": total_chunks_ingested
+            })
+            return ToolResponse(message=summary)
+
+        async def _crawl_sitemap_urls(self, urls: List[str]) -> ToolResponse:
+            await self._emit_crawl_event("crawl_sitemap", "starting", {"url_count": len(urls)})
+            total_chunks_ingested = 0
+            pages_processed_count = 0
+            async for raw_doc_data in self.crawler.crawl_sitemap_urls(urls):
+                chunks_ingested = await self._process_and_ingest_crawled_doc(raw_doc_data)
+                total_chunks_ingested += chunks_ingested
+                pages_processed_count +=1
+                if pages_processed_count % 5 == 0:
+                     await self._emit_crawl_event("crawl_sitemap", "progress", {
+                        "processed_urls": pages_processed_count, "total_urls": len(urls),
+                        "chunks_ingested_so_far": total_chunks_ingested
+                    })
+
+            summary = f"Sitemap crawl completed. Processed {pages_processed_count} URLs, ingested {total_chunks_ingested} chunks."
+            await self._emit_crawl_event("crawl_sitemap", "completed", {
+                "processed_urls": pages_processed_count, "total_chunks_ingested": total_chunks_ingested
+            })
+            return ToolResponse(message=summary)
+
+        async def _crawl_markdown_file_url(self, url: str) -> ToolResponse:
+            await self._emit_crawl_event("crawl_markdown_file_url", "starting", {"url": url})
+            total_chunks_ingested = 0
+            async for raw_doc_data in self.crawler.crawl_markdown_file_url(url): # Expects an async generator
+                chunks_ingested = await self._process_and_ingest_crawled_doc(raw_doc_data)
+                total_chunks_ingested += chunks_ingested
+            
+            summary = f"Markdown file crawl completed for {url}. Ingested {total_chunks_ingested} chunks."
+            await self._emit_crawl_event("crawl_markdown_file_url", "completed", {
+                "url": url, "total_chunks_ingested": total_chunks_ingested
+            })
+            return ToolResponse(message=summary)
+
+    ```
+
+6.  **Update `prompts/default/agent.system.tools.md`:**
+    Add `web_crawler_tool` to the list.
+
+    ```markdown
+    # prompts/default/agent.system.tools.md
+    # ... (existing tools)
+    {{ include './agent.system.tool.browser.md' }} 
+
+    ### web_crawler_tool:
+    # Crawls websites, sitemaps, or markdown files for knowledge base ingestion.
+    # Arguments:
+    #   action: string - Type of crawl: "crawl_site", "crawl_sitemap", "crawl_markdown_file_url".
+    #   url: string - (Required for crawl_site, crawl_markdown_file_url) The root URL or direct file URL.
+    #   sitemap_url: string - (Optional for crawl_sitemap if 'urls' is provided) URL of the sitemap.xml.
+    #   urls: list[string] - (Optional for crawl_sitemap if 'sitemap_url' is provided) A list of URLs to crawl.
+    #   max_depth: int - (Optional for crawl_site, default 3) Max recursion depth.
+    #   max_pages: int - (Optional for crawl_site, default 100) Max pages to crawl.
+    #   chunk_size: int - (Optional, default 1000) Max characters per chunk for ingestion.
+    # Example for site crawl:
+    # {
+    #   "tool_name": "web_crawler_tool",
+    #   "tool_args": { "action": "crawl_site", "url": "https://example.com/docs", "max_depth": 2 }
+    # }
+    # Example for sitemap crawl (providing URL list):
+    # {
+    #   "tool_name": "web_crawler_tool",
+    #   "tool_args": { "action": "crawl_sitemap", "urls": ["https://example.com/page1", "https://example.com/page2"] }
+    # }
+    # Example for markdown file URL:
+    # {
+    #   "tool_name": "web_crawler_tool",
+    #   "tool_args": { "action": "crawl_markdown_file_url", "url": "https://example.com/document.md" }
+    # }
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-4 completed.
+*   `StreamProtocolTool` and agent's `_emit_stream_event` helper.
+*   The standard Python libraries used (asyncio, typing). No new external packages are strictly required by these *placeholder* files. The actual `crawl4ai` package will be added when implementing the real logic.
+
+**Integration with Agent Zero:**
+*   `WebCrawlerTool` is added to `python/tools/`.
+*   It uses the standard `Tool` interface.
+*   It emits `CRAWL_PROGRESS` events via the agent's `_emit_stream_event` method.
+*   The tool's description and usage are added to system prompts.
+*   The placeholder ingestion step logs what *would* be sent to `KnowledgeAgentTool`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   No new Python package dependencies for these placeholders.
+*   Ensure the new directory structure `python/agents/web_crawler/` and files within, plus `python/tools/web_crawler_tool.py`, are included in the Docker image.
+
+**Summary of Task 6:**
+This task establishes the foundational structure for the `WebCrawlerTool` and its associated (mocked) components. It defines the tool's actions and integrates placeholder logic for crawling, processing, and chunking. Crucially, it sets up the emission of `CRAWL_PROGRESS` events, enabling frontends to monitor crawling activities. The actual integration with `crawl4ai` and the `KnowledgeAgentTool` for data storage will follow in subsequent tasks.
+
+Please confirm to proceed.

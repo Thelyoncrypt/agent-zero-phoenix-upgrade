@@ -1,0 +1,477 @@
+## Task 38: Implement Robust Error Handling and Event Emission in Tools
+
+**Focus:**
+This task focuses on systematically reviewing and enhancing error handling within all the newly integrated and modified tools (`BrowserAgentTool`, `WebCrawlerTool`, `KnowledgeAgentTool`, `MemoryAgentTool`, `ChatterboxTTSTool`). The goal is to:
+1.  Ensure that common and foreseeable errors within each tool's operations are caught gracefully.
+2.  When errors occur, the tool should emit a standardized `ERROR_EVENT` via the `StreamProtocolTool` (using `agent._emit_stream_event`).
+3.  The `ToolResponse` object returned by the tool should clearly indicate an error state and provide a user-friendly error message.
+4.  This makes the agent more resilient and provides better feedback to the user/frontend when issues arise.
+
+**File Paths and Code Changes:**
+
+This task involves revisiting the `execute` methods and internal helper methods of each tool created/modified in Tasks 12-31. We'll highlight the pattern with one or two tools and assume similar enhancements for others.
+
+**General Pattern for Error Handling in Tools:**
+
+```python
+# General pattern in a tool's execute or sub-method
+# async def some_tool_operation(self, ...) -> ToolResponse:
+#     action_name = "specific_operation_name" # For event details
+#     try:
+#         await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, 
+#                                            {"source_tool": self.name, "action": action_name, "status": "starting", ...})
+#         
+#         # ... Perform actual logic ...
+#         # result = await self.real_logic_for_operation(...)
+#
+#         await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, # Or a specific success event
+#                                            {"source_tool": self.name, "action": action_name, "status": "completed", "data": result_summary})
+#         return ToolResponse(message="Operation successful.", data=result)
+#
+#     except PlaywrightError as pe: # Example for BrowserAgentTool
+#         error_message = f"Playwright error during {action_name}: {str(pe)}"
+#         logger.error(error_message, exc_info=True) # Use actual logger
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(pe), "type": "PlaywrightError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except APIError as oai_error: # Example for tools using OpenAI
+#         error_message = f"OpenAI API error during {action_name}: {str(oai_error)}"
+#         logger.error(error_message, exc_info=True)
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(oai_error), "type": "OpenAI_APIError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except FileNotFoundError as fnf_error:
+#         error_message = f"File not found during {action_name}: {str(fnf_error)}"
+#         logger.error(error_message, exc_info=True)
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(fnf_error), "type": "FileNotFoundError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except ValueError as ve_error: # For bad arguments or unexpected data
+#         error_message = f"Invalid value or argument during {action_name}: {str(ve_error)}"
+#         logger.error(error_message, exc_info=True)
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(ve_error), "type": "ValueError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except Exception as e: # Catch-all for unexpected errors
+#         import traceback
+#         error_message = f"Unexpected error in {self.name} during {action_name}: {str(e)}"
+#         detailed_error = f"{error_message}\n{traceback.format_exc()}"
+#         logger.error(detailed_error, exc_info=True) # Log detailed traceback
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException"})
+#         return ToolResponse(message=error_message, error=True) # Return user-friendly message
+```
+
+1.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   The `execute` method already has a top-level try-except. Ensure sub-methods like `_navigate`, `_ai_act`, `_extract` also have more specific error handling for Playwright errors or LLM call failures, and emit appropriate `ERROR_EVENT`s before returning an error `ToolResponse`.
+
+    ```python
+# python/tools/browser_agent_tool.py
+    # ... (imports, add logging if not already)
+    import logging
+    logger = logging.getLogger(__name__)
+
+    class BrowserAgentTool(Tool):
+        # ... (__init__, get_browser_manager, _emit_browser_event)
+
+        async def _navigate(self, url: str, session_id: str, page_index: int) -> ToolResponse:
+            action_name = "navigate"
+            await self._emit_browser_event(action_name, "starting", {"url": url, "session_id": session_id, "page_index": page_index})
+            page = await self._get_page_robustly(session_id, page_index, action_name) # _get_page_robustly should also emit error if page is None
+            if not page: 
+                return ToolResponse(f"Navigation failed: could not obtain page.", error=True) # Error already emitted by _get_page_robustly
+
+            try:
+                logger.info(f"Navigating page (session: {session_id}, index: {page_index}) to URL: {url}")
+                # Using page.goto with specific error handling
+                response = await page.goto(url, timeout=self.browser_manager.playwright_timeout, wait_until="domcontentloaded")
+                # ... (success path as before)
+                result_payload = { "url": page.url, "title": await page.title(), "status_code": response.status if response else None, ...}
+                await self._emit_browser_event(action_name, "completed", result_payload)
+                return ToolResponse(message=json.dumps(result_payload))
+            except PlaywrightTimeoutError as pte:
+                error_msg = f"Navigation to {url} timed out after {self.browser_manager.playwright_timeout/1000}s."
+                logger.warning(f"{error_msg} - Session: {session_id}, Page Index: {page_index}")
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": error_msg, "type": "PlaywrightTimeoutError", "url": url})
+                return ToolResponse(message=error_msg, error=True)
+            except PlaywrightError as pe:
+                error_msg = f"Playwright error during navigation to {url}: {str(pe)}"
+                logger.error(f"{error_msg} - Session: {session_id}, Page Index: {page_index}", exc_info=True)
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(pe), "type": "PlaywrightError", "url": url})
+                return ToolResponse(message=error_msg, error=True)
+            except Exception as e: # Catch any other unexpected error during navigation
+                error_msg = f"Unexpected error during navigation to {url}: {str(e)}"
+                logger.error(f"{error_msg} - Session: {session_id}, Page Index: {page_index}", exc_info=True)
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException", "url": url})
+                return ToolResponse(message=error_msg, error=True)
+
+        # Apply similar try-except blocks with specific error types and ERROR_EVENT emission
+        # to _ai_act (for LLM errors from ActionExecutor), _extract (for LLM errors),
+        # _get_page_content, etc.
+        
+        # Example for _ai_act calling ActionExecutor
+        async def _ai_act(self, page: PWPage, instructions: str, session_id: str, page_index: int) -> ToolResponse:
+            action_name = "ai_act"
+            await self._emit_browser_event(action_name, "processing", {"instructions": instructions, "session_id": session_id, "page_index": page_index})
+            try:
+                act_result = await self.action_executor.execute_ai_action(page, instructions)
+                
+                if act_result.get("status") == "error":
+                    error_msg = act_result.get("message", "AI action execution failed.")
+                    logger.warning(f"BrowserAgentTool ({action_name}): {error_msg} for instructions '{instructions}'")
+                    await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": error_msg, "details": act_result})
+                    return ToolResponse(message=error_msg, error=True, data=act_result)
+
+                await self._emit_browser_event(action_name, "completed", {"result": act_result, "session_id": session_id, "page_index": page_index})
+                return ToolResponse(message=json.dumps(act_result.get("action_taken", "Action completed.")), data=act_result)
+            except Exception as e: # Catch errors from action_executor or Playwright if not caught inside
+                error_msg = f"Unexpected error during {action_name}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException"})
+                return ToolResponse(message=error_msg, error=True)
+
+
+    # In python/agents/browser_agent/actions.py
+    # ActionExecutor methods like _translate_instruction_to_action and extract_data
+    # should also have their internal LLM calls wrapped in try-except blocks for APIError, RateLimitError, JSONDecodeError.
+    # They currently return dicts with "status": "error", which _ai_act and _extract in the tool then check.
+    # This is okay, but the ERROR_EVENT emission should happen in the tool after receiving that error status.
+```
+
+2.  **Modify `python/tools/web_crawler_tool.py`:**
+    *   Wrap calls to `self.crawler` methods and `self.processor.process_document` in try-except blocks.
+    *   Emit `CRAWL_PROGRESS` with status "error" or a general `ERROR_EVENT` on failure.
+
+    ```python
+# python/tools/web_crawler_tool.py
+    # ... (imports, add logging)
+    import logging
+    logger = logging.getLogger(__name__)
+
+    class WebCrawlerTool(Tool):
+        # ... (__init__, _emit_crawl_event)
+
+        async def _process_and_ingest_crawled_doc(self, crawl_result: Any, chunker_instance: HierarchicalChunker) -> int:
+            action_name = "process_and_ingest"
+            url = getattr(crawl_result, 'url', 'unknown_url')
+            try:
+                if not crawl_result.success:
+                    # ... (existing error emission)
+                    return 0
+
+                processed_doc_dict = await self.processor.process_document(crawl_result)
+                # ... (check for markdown, chunk, and call KnowledgeAgentTool)
+                # ...
+                # The call to self.agent.call_tool for KnowledgeAgentTool should itself return a ToolResponse.
+                # We need to check if that call was an error.
+                ingestion_response = await self.agent.call_tool("knowledge_agent_tool", {...})
+                if ingestion_response and ingestion_response.error:
+                    error_msg = f"KnowledgeAgentTool ingestion failed for {url}: {ingestion_response.message}"
+                    logger.error(error_msg)
+                    await self._emit_crawl_event(action_name, "ingestion_error", {"url": url, "error": error_msg})
+                    return 0 
+                # ... (return ingested_count)
+
+            except Exception as e:
+                error_msg = f"Error in _process_and_ingest_crawled_doc for {url}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                await self._emit_crawl_event(action_name, "error", {"url": url, "error": str(e)})
+                return 0 # Indicate 0 chunks ingested on error
+        
+        # The main execute method and its sub-methods like _crawl_site should already have a top-level try-except.
+        # Ensure that any exceptions from self.crawler methods are caught and handled gracefully.
+        # For example, in _crawl_site:
+        async def _crawl_site(self, url: str, max_depth: int, max_pages: int, chunker_instance: HierarchicalChunker) -> ToolResponse:
+            action_name = "crawl_site"
+            await self._emit_crawl_event(action_name, "starting", {"url": url, ...})
+            try:
+                # ... (loop with self.crawler.crawl_recursive)
+                async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
+                    # ...
+                    pass
+                # ... (summary and success event)
+            except RuntimeError as rte: # e.g. if crawl4ai not available
+                 logger.error(f"WebCrawlerTool ({action_name}): Runtime error - {rte}", exc_info=True)
+                 await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(rte), "type": "RuntimeError"})
+                 return ToolResponse(message=str(rte), error=True)
+            except Exception as e:
+                 logger.error(f"WebCrawlerTool ({action_name}): Unexpected error for {url} - {e}", exc_info=True)
+                 await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException"})
+                 return ToolResponse(message=f"Unexpected error during site crawl: {e}", error=True)
+            # ...
+```
+
+3.  **Modify `python/tools/knowledge_agent_tool.py`:**
+    *   Wrap calls to `self.rag_agent_logic` methods (which call DB and LLM) in try-except.
+    *   Emit `KNOWLEDGE_RESULT` with status "error" or `ERROR_EVENT`.
+
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Wrap calls to `self.memory_system` methods (which call `mem0` library or placeholders) in try-except.
+    *   Emit `MEMORY_UPDATE` with status "error" or `ERROR_EVENT`.
+
+5.  **Modify `python/tools/chatterbox_tts_tool.py`:**
+    *   Wrap calls to `self.tts_handler` and `self.vc_handler` in try-except.
+    *   Emit `PROGRESS_UPDATE` with status "error" or `ERROR_EVENT`. The `execute` method already has some error handling, this would be to make it more comprehensive.
+
+**Dependencies/Prerequisites:**
+*   All previous tasks, especially Task 4 and Task 32 where initial event emission was set up.
+*   `StreamProtocolTool` and `Agent._emit_stream_event` are fully functional.
+
+**Integration with Agent Zero:**
+*   Error handling becomes more standardized across tools.
+*   Failures within tools are more visible to the frontend through `ERROR_EVENT`s.
+*   The `ToolResponse(error=True, ...)` pattern allows the agent's main loop to recognize tool failures and potentially trigger `HUMAN_INTERVENTION` or alternative strategies.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `ChatterboxTTSTool` should catch exceptions during model loading (in `_ensure_model_loaded` of its handlers) and during audio generation/conversion, emitting appropriate `ERROR_EVENT`s.
+
+**Docker Compatibility:**
+*   No new package dependencies. These are code logic changes.
+
+**Summary of Task 38:**
+This task systematically improves the robustness of all newly integrated tools by adding comprehensive try-except blocks around their core operations. When errors occur, tools will now emit a standardized `ERROR_EVENT` via the `StreamProtocolTool` and return a `ToolResponse` indicating failure. This provides better diagnostics for developers and more graceful failure modes for the end-user via the UI (which can react to these error events).
+
+Please confirm to proceed.Okay, let's proceed with Task 38.
+
+## Task 38: Implement Robust Error Handling and Event Emission in Tools
+
+**Focus:**
+This task focuses on systematically reviewing and enhancing error handling within all the newly integrated and modified tools (`BrowserAgentTool`, `WebCrawlerTool`, `KnowledgeAgentTool`, `MemoryAgentTool`, `ChatterboxTTSTool`). The goal is to:
+1.  Ensure that common and foreseeable errors within each tool's operations are caught gracefully.
+2.  When errors occur, the tool should emit a standardized `ERROR_EVENT` via the `StreamProtocolTool` (using `agent._emit_stream_event`).
+3.  The `ToolResponse` object returned by the tool should clearly indicate an error state and provide a user-friendly error message.
+4.  This makes the agent more resilient and provides better feedback to the user/frontend when issues arise.
+
+**File Paths and Code Changes:**
+
+This task involves revisiting the `execute` methods and internal helper methods of each tool created/modified in Tasks 12-31. We'll highlight the pattern with one or two tools and assume similar enhancements for others.
+
+**General Pattern for Error Handling in Tools:**
+
+```python
+# General pattern in a tool's execute or sub-method
+# async def some_tool_operation(self, ...) -> ToolResponse:
+#     action_name = "specific_operation_name" # For event details
+#     try:
+#         await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, 
+#                                            {"source_tool": self.name, "action": action_name, "status": "starting", ...})
+#         
+#         # ... Perform actual logic ...
+#         # result = await self.real_logic_for_operation(...)
+#
+#         await self.agent._emit_stream_event(StreamEventType.PROGRESS_UPDATE, # Or a specific success event
+#                                            {"source_tool": self.name, "action": action_name, "status": "completed", "data": result_summary})
+#         return ToolResponse(message="Operation successful.", data=result)
+#
+#     except PlaywrightError as pe: # Example for BrowserAgentTool
+#         error_message = f"Playwright error during {action_name}: {str(pe)}"
+#         logger.error(error_message, exc_info=True) # Use actual logger
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(pe), "type": "PlaywrightError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except APIError as oai_error: # Example for tools using OpenAI
+#         error_message = f"OpenAI API error during {action_name}: {str(oai_error)}"
+#         logger.error(error_message, exc_info=True)
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(oai_error), "type": "OpenAI_APIError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except FileNotFoundError as fnf_error:
+#         error_message = f"File not found during {action_name}: {str(fnf_error)}"
+#         logger.error(error_message, exc_info=True)
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(fnf_error), "type": "FileNotFoundError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except ValueError as ve_error: # For bad arguments or unexpected data
+#         error_message = f"Invalid value or argument during {action_name}: {str(ve_error)}"
+#         logger.error(error_message, exc_info=True)
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(ve_error), "type": "ValueError"})
+#         return ToolResponse(message=error_message, error=True)
+#
+#     except Exception as e: # Catch-all for unexpected errors
+#         import traceback
+#         error_message = f"Unexpected error in {self.name} during {action_name}: {str(e)}"
+#         detailed_error = f"{error_message}\n{traceback.format_exc()}"
+#         logger.error(detailed_error, exc_info=True) # Log detailed traceback
+#         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT,
+#                                            {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException"})
+#         return ToolResponse(message=error_message, error=True) # Return user-friendly message
+```
+
+1.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   The `execute` method already has a top-level try-except. Ensure sub-methods like `_navigate`, `_ai_act`, `_extract` also have more specific error handling for Playwright errors or LLM call failures, and emit appropriate `ERROR_EVENT`s before returning an error `ToolResponse`.
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports, add logging if not already)
+    import logging
+    logger = logging.getLogger(__name__)
+
+    class BrowserAgentTool(Tool):
+        # ... (__init__, get_browser_manager, _emit_browser_event)
+
+        async def _navigate(self, url: str, session_id: str, page_index: int) -> ToolResponse:
+            action_name = "navigate"
+            await self._emit_browser_event(action_name, "starting", {"url": url, "session_id": session_id, "page_index": page_index})
+            page = await self._get_page_robustly(session_id, page_index, action_name) # _get_page_robustly should also emit error if page is None
+            if not page: 
+                return ToolResponse(f"Navigation failed: could not obtain page.", error=True) # Error already emitted by _get_page_robustly
+
+            try:
+                logger.info(f"Navigating page (session: {session_id}, index: {page_index}) to URL: {url}")
+                # Using page.goto with specific error handling
+                response = await page.goto(url, timeout=self.browser_manager.playwright_timeout, wait_until="domcontentloaded")
+                # ... (success path as before)
+                result_payload = { "url": page.url, "title": await page.title(), "status_code": response.status if response else None, ...}
+                await self._emit_browser_event(action_name, "completed", result_payload)
+                return ToolResponse(message=json.dumps(result_payload))
+            except PlaywrightTimeoutError as pte:
+                error_msg = f"Navigation to {url} timed out after {self.browser_manager.playwright_timeout/1000}s."
+                logger.warning(f"{error_msg} - Session: {session_id}, Page Index: {page_index}")
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": error_msg, "type": "PlaywrightTimeoutError", "url": url})
+                return ToolResponse(message=error_msg, error=True)
+            except PlaywrightError as pe:
+                error_msg = f"Playwright error during navigation to {url}: {str(pe)}"
+                logger.error(f"{error_msg} - Session: {session_id}, Page Index: {page_index}", exc_info=True)
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(pe), "type": "PlaywrightError", "url": url})
+                return ToolResponse(message=error_msg, error=True)
+            except Exception as e: # Catch any other unexpected error during navigation
+                error_msg = f"Unexpected error during navigation to {url}: {str(e)}"
+                logger.error(f"{error_msg} - Session: {session_id}, Page Index: {page_index}", exc_info=True)
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException", "url": url})
+                return ToolResponse(message=error_msg, error=True)
+
+        # Apply similar try-except blocks with specific error types and ERROR_EVENT emission
+        # to _ai_act (for LLM errors from ActionExecutor), _extract (for LLM errors),
+        # _get_page_content, etc.
+        
+        # Example for _ai_act calling ActionExecutor
+        async def _ai_act(self, page: PWPage, instructions: str, session_id: str, page_index: int) -> ToolResponse:
+            action_name = "ai_act"
+            await self._emit_browser_event(action_name, "processing", {"instructions": instructions, "session_id": session_id, "page_index": page_index})
+            try:
+                act_result = await self.action_executor.execute_ai_action(page, instructions)
+                
+                if act_result.get("status") == "error":
+                    error_msg = act_result.get("message", "AI action execution failed.")
+                    logger.warning(f"BrowserAgentTool ({action_name}): {error_msg} for instructions '{instructions}'")
+                    await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": error_msg, "details": act_result})
+                    return ToolResponse(message=error_msg, error=True, data=act_result)
+
+                await self._emit_browser_event(action_name, "completed", {"result": act_result, "session_id": session_id, "page_index": page_index})
+                return ToolResponse(message=json.dumps(act_result.get("action_taken", "Action completed.")), data=act_result)
+            except Exception as e: # Catch errors from action_executor or Playwright if not caught inside
+                error_msg = f"Unexpected error during {action_name}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException"})
+                return ToolResponse(message=error_msg, error=True)
+
+
+    # In python/agents/browser_agent/actions.py
+    # ActionExecutor methods like _translate_instruction_to_action and extract_data
+    # should also have their internal LLM calls wrapped in try-except blocks for APIError, RateLimitError, JSONDecodeError.
+    # They currently return dicts with "status": "error", which _ai_act and _extract in the tool then check.
+    # This is okay, but the ERROR_EVENT emission should happen in the tool after receiving that error status.
+    ```
+
+2.  **Modify `python/tools/web_crawler_tool.py`:**
+    *   Wrap calls to `self.crawler` methods and `self.processor.process_document` in try-except blocks.
+    *   Emit `CRAWL_PROGRESS` with status "error" or a general `ERROR_EVENT` on failure.
+
+    ```python
+    # python/tools/web_crawler_tool.py
+    # ... (imports, add logging)
+    import logging
+    logger = logging.getLogger(__name__)
+
+    class WebCrawlerTool(Tool):
+        # ... (__init__, _emit_crawl_event)
+
+        async def _process_and_ingest_crawled_doc(self, crawl_result: Any, chunker_instance: HierarchicalChunker) -> int:
+            action_name = "process_and_ingest"
+            url = getattr(crawl_result, 'url', 'unknown_url')
+            try:
+                if not crawl_result.success:
+                    # ... (existing error emission)
+                    return 0
+
+                processed_doc_dict = await self.processor.process_document(crawl_result)
+                # ... (check for markdown, chunk, and call KnowledgeAgentTool)
+                # ...
+                # The call to self.agent.call_tool for KnowledgeAgentTool should itself return a ToolResponse.
+                # We need to check if that call was an error.
+                ingestion_response = await self.agent.call_tool("knowledge_agent_tool", {...})
+                if ingestion_response and ingestion_response.error:
+                    error_msg = f"KnowledgeAgentTool ingestion failed for {url}: {ingestion_response.message}"
+                    logger.error(error_msg)
+                    await self._emit_crawl_event(action_name, "ingestion_error", {"url": url, "error": error_msg})
+                    return 0 
+                # ... (return ingested_count)
+
+            except Exception as e:
+                error_msg = f"Error in _process_and_ingest_crawled_doc for {url}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                await self._emit_crawl_event(action_name, "error", {"url": url, "error": str(e)})
+                return 0 # Indicate 0 chunks ingested on error
+        
+        # The main execute method and its sub-methods like _crawl_site should already have a top-level try-except.
+        # Ensure that any exceptions from self.crawler methods are caught and handled gracefully.
+        # For example, in _crawl_site:
+        async def _crawl_site(self, url: str, max_depth: int, max_pages: int, chunker_instance: HierarchicalChunker) -> ToolResponse:
+            action_name = "crawl_site"
+            await self._emit_crawl_event(action_name, "starting", {"url": url, ...})
+            try:
+                # ... (loop with self.crawler.crawl_recursive)
+                async for crawl_result_obj in self.crawler.crawl_recursive(url, max_depth, max_pages):
+                    # ...
+                    pass
+                # ... (summary and success event)
+            except RuntimeError as rte: # e.g. if crawl4ai not available
+                 logger.error(f"WebCrawlerTool ({action_name}): Runtime error - {rte}", exc_info=True)
+                 await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(rte), "type": "RuntimeError"})
+                 return ToolResponse(message=str(rte), error=True)
+            except Exception as e:
+                 logger.error(f"WebCrawlerTool ({action_name}): Unexpected error for {url} - {e}", exc_info=True)
+                 await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"source_tool": self.name, "action": action_name, "error": str(e), "type": "GenericException"})
+                 return ToolResponse(message=f"Unexpected error during site crawl: {e}", error=True)
+            # ...
+    ```
+
+3.  **Modify `python/tools/knowledge_agent_tool.py`:**
+    *   Wrap calls to `self.rag_agent_logic` methods (which call DB and LLM) in try-except.
+    *   Emit `KNOWLEDGE_RESULT` with status "error" or `ERROR_EVENT`.
+
+4.  **Modify `python/tools/memory_agent_tool.py`:**
+    *   Wrap calls to `self.memory_system` methods (which call `mem0` library or placeholders) in try-except.
+    *   Emit `MEMORY_UPDATE` with status "error" or `ERROR_EVENT`.
+
+5.  **Modify `python/tools/chatterbox_tts_tool.py`:**
+    *   Wrap calls to `self.tts_handler` and `self.vc_handler` in try-except.
+    *   Emit `PROGRESS_UPDATE` with status "error" or `ERROR_EVENT`. The `execute` method already has some error handling, this would be to make it more comprehensive.
+
+**Dependencies/Prerequisites:**
+*   All previous tasks, especially Task 4 and Task 32 where initial event emission was set up.
+*   `StreamProtocolTool` and `Agent._emit_stream_event` are fully functional.
+
+**Integration with Agent Zero:**
+*   Error handling becomes more standardized across tools.
+*   Failures within tools are more visible to the frontend through `ERROR_EVENT`s.
+*   The `ToolResponse(error=True, ...)` pattern allows the agent's main loop to recognize tool failures and potentially trigger `HUMAN_INTERVENTION` or alternative strategies.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   The `ChatterboxTTSTool` should catch exceptions during model loading (in `_ensure_model_loaded` of its handlers) and during audio generation/conversion, emitting appropriate `ERROR_EVENT`s.
+
+**Docker Compatibility:**
+*   No new package dependencies. These are code logic changes.
+
+**Summary of Task 38:**
+This task systematically improves the robustness of all newly integrated tools by adding comprehensive try-except blocks around their core operations. When errors occur, tools will now emit a standardized `ERROR_EVENT` via the `StreamProtocolTool` and return a `ToolResponse` indicating failure. This provides better diagnostics for developers and more graceful failure modes for the end-user via the UI (which can react to these error events).
+
+Please confirm to proceed.

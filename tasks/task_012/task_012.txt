@@ -1,0 +1,812 @@
+## Task 12: Implement Real Logic for `BrowserAgentTool` - Navigate Action
+
+**Focus:**
+This task transitions the `BrowserAgentTool` from placeholder logic to a functional implementation for the `navigate` action. This involves integrating a browser automation library (Playwright, as used by Stagehand) and setting up the `BrowserManager` to handle actual browser instances. Subsequent tasks will address the AI-driven actions (`act`, `extract`, `agent_execute`).
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add `playwright`.
+
+    ```
+# requirements.txt
+    # ... (existing requirements including flask-sock)
+    playwright
+```
+
+2.  **Run Playwright installation (outside of Python script, as a one-time setup or Docker build step):**
+    This command downloads the necessary browser binaries.
+
+    ```bash
+python -m playwright install --with-deps chromium 
+    # Or just 'playwright install chromium' if system deps are handled separately, e.g., in Docker
+```
+    *   **Docker Consideration:** This step must be added to the `Dockerfile` (e.g., in `docker/run/fs/ins/install_A0.sh` or a new dedicated script like `install_playwright.sh` from `agent zero full code.md`).
+        The `agent zero full code.md` already has an `install_playwright.sh` script:
+        ```bash
+# docker/run/fs/ins/install_playwright.sh
+        #!/bin/bash
+        . "/ins/setup_venv.sh" "$@" # Activate venv
+        uv pip install playwright # Ensure playwright is installed in venv
+        export PLAYWRIGHT_BROWSERS_PATH=/a0/tmp/playwright # Set persistent cache
+        playwright install --with-deps chromium # Install browser with dependencies
+```
+        This script seems appropriate. We need to ensure it's called during the Docker build. The `docker/run/fs/ins/install_A0.sh` already calls it.
+
+3.  **Modify `python/agents/browser_agent/browser.py`:**
+    *   Replace `BrowserMock`, `PageMock` with actual Playwright-based classes.
+    *   Implement `BrowserManager` to launch and manage Playwright browser contexts.
+
+    ```python
+# python/agents/browser_agent/browser.py
+    import asyncio
+    from playwright.async_api import async_playwright, Browser as PWBrowser, BrowserContext as PWBrowserContext, Page as PWPage, Playwright
+    from typing import Dict, Optional
+
+    class BrowserManager:
+        """
+        Manages Playwright browser instances and contexts.
+        """
+        _playwright_instance: Optional[Playwright] = None
+        _browser_instance: Optional[PWBrowser] = None
+        _contexts: Dict[str, PWBrowserContext] = {} # session_id -> BrowserContext
+        _lock = asyncio.Lock()
+
+        def __init__(self, headless: bool = True, browser_type: str = "chromium"):
+            self.headless = headless
+            self.browser_type = browser_type # e.g., "chromium", "firefox", "webkit"
+            print(f"BrowserManager initialized (Playwright): headless={headless}, browser={browser_type}")
+
+        async def _ensure_playwright_and_browser(self):
+            """Ensures Playwright is started and a browser instance is launched."""
+            async with self._lock:
+                if BrowserManager._playwright_instance is None:
+                    print("BrowserManager: Starting Playwright...")
+                    BrowserManager._playwright_instance = await async_playwright().start()
+                    print("BrowserManager: Playwright started.")
+
+                if BrowserManager._browser_instance is None or not BrowserManager._browser_instance.is_connected():
+                    print(f"BrowserManager: Launching {self.browser_type} browser (headless: {self.headless})...")
+                    if self.browser_type == "chromium":
+                        BrowserManager._browser_instance = await BrowserManager._playwright_instance.chromium.launch(headless=self.headless)
+                    elif self.browser_type == "firefox":
+                        BrowserManager._browser_instance = await BrowserManager._playwright_instance.firefox.launch(headless=self.headless)
+                    elif self.browser_type == "webkit":
+                        BrowserManager._browser_instance = await BrowserManager._playwright_instance.webkit.launch(headless=self.headless)
+                    else:
+                        raise ValueError(f"Unsupported browser type: {self.browser_type}")
+                    print(f"BrowserManager: {self.browser_type} browser launched.")
+        
+        async def get_context(self, session_id: str = "default_context") -> PWBrowserContext:
+            """Gets or creates a new browser context for a given session_id."""
+            await self._ensure_playwright_and_browser()
+            async with self._lock:
+                if session_id not in BrowserManager._contexts or not BrowserManager._contexts[session_id].pages: # Check if context is still valid
+                    print(f"BrowserManager: Creating new browser context for session_id: {session_id}")
+                    # TODO: Add options like viewport, user_agent, etc. from StagehandConfig if needed
+                    BrowserManager._contexts[session_id] = await BrowserManager._browser_instance.new_context(
+                        # Example: Set a user agent
+                        # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                    )
+                    # Create an initial page for the context
+                    # await BrowserManager._contexts[session_id].new_page()
+                return BrowserManager._contexts[session_id]
+
+        async def get_page(self, session_id: str = "default_context", page_index: int = 0) -> PWPage:
+            """
+            Gets a specific page from a browser context, or creates one if none exist.
+            If page_index is specified, returns that page. Otherwise, returns the first page or a new one.
+            """
+            context = await self.get_context(session_id)
+            if not context.pages or page_index >= len(context.pages):
+                print(f"BrowserManager: No page at index {page_index} for session {session_id}, creating new page.")
+                return await context.new_page()
+            return context.pages[page_index]
+
+        async def new_page_in_context(self, session_id: str = "default_context") -> PWPage:
+            """Creates and returns a new page within a specific browser context."""
+            context = await self.get_context(session_id)
+            page = await context.new_page()
+            print(f"BrowserManager: New page created in context {session_id}. URL: {page.url}")
+            return page
+
+        async def close_context(self, session_id: str = "default_context"):
+            async with self._lock:
+                if session_id in BrowserManager._contexts:
+                    print(f"BrowserManager: Closing browser context for session_id: {session_id}")
+                    await BrowserManager._contexts[session_id].close()
+                    del BrowserManager._contexts[session_id]
+                    print(f"BrowserManager: Browser context for session_id {session_id} closed.")
+
+        async def close_all_contexts_and_browser(self):
+            async with self._lock:
+                for session_id in list(BrowserManager._contexts.keys()):
+                    await self.close_context(session_id)
+                if BrowserManager._browser_instance and BrowserManager._browser_instance.is_connected():
+                    print("BrowserManager: Closing browser instance...")
+                    await BrowserManager._browser_instance.close()
+                    BrowserManager._browser_instance = None
+                    print("BrowserManager: Browser instance closed.")
+                if BrowserManager._playwright_instance:
+                    print("BrowserManager: Stopping Playwright...")
+                    await BrowserManager._playwright_instance.stop()
+                    BrowserManager._playwright_instance = None
+                    print("BrowserManager: Playwright stopped.")
+```
+    **Note on `BrowserManager`:** Stagehand has a more complex setup with `Browser`, `Page`, and `Context` classes. This simplified `BrowserManager` provides contexts and pages. We are making `BrowserManager` a class where playwright and browser instances are class-level variables to act as singletons, shared across all `BrowserManager` instances. This is a common pattern for managing a single browser controlled by the application.
+
+4.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   Update `__init__` to instantiate the real `BrowserManager`.
+    *   Implement the `_navigate` method using Playwright.
+    *   Other actions (`_ai_act`, `_extract`, `_agent_execute`) remain placeholders but will now have access to a real `Page` object (though their internal AI logic is still mocked).
+
+    ```python
+# python/tools/browser_agent_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from agents.browser_agent.browser import BrowserManager # Actual BrowserManager
+    from agents.browser_agent.ai_models import AIModelProvider # Still mock for now
+    from agents.browser_agent.actions import ActionExecutor # Still mock for now
+    import asyncio
+    import json
+    from typing import Dict, Any, Optional
+    from playwright.async_api import Error as PlaywrightError # Import Playwright errors
+
+    class BrowserAgentTool(Tool):
+        _browser_manager_instance: Optional[BrowserManager] = None # Class-level singleton for manager
+
+        @classmethod
+        def get_browser_manager(cls, headless: bool = True) -> BrowserManager:
+            if cls._browser_manager_instance is None:
+                cls._browser_manager_instance = BrowserManager(headless=headless)
+            return cls._browser_manager_instance
+
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="browser_agent", 
+                             description="Controls a browser to navigate, interact with web pages, and extract information using AI.",
+                             args_schema=None, 
+                             **kwargs)
+            # Use a shared BrowserManager instance
+            # Headless mode can be configured via agent.config later
+            self.browser_manager = BrowserAgentTool.get_browser_manager(
+                headless=self.agent.config.get("browser_headless", True)
+            )
+            self.ai_provider = AIModelProvider() # Remains mock for now
+            self.action_executor = ActionExecutor() # Remains mock for now
+            print(f"BrowserAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with Playwright BrowserManager.")
+
+        # ... (_emit_browser_event method remains the same as in Task 5)
+        async def _emit_browser_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            payload = {"action": action_name, "status": status}
+            if details:  payload.update(details)
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.BROWSER_ACTION, payload)
+            else:
+                print(f"BrowserAgentTool: Agent does not have _emit_stream_event method. Cannot emit BROWSER_ACTION.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            # Ensure session_id is determined. Fallback to thread_id, then a default.
+            session_id = kwargs.get("session_id", self.agent.get_thread_id())
+            if not session_id:
+                session_id = f"agent0_browser_ctx_{self.agent.context.id}" # Fallback if no thread_id
+            
+            # page_index allows targeting specific pages in a multi-page context (default to 0)
+            page_index = kwargs.get("page_index", 0)
+
+
+            try:
+                if action == "navigate":
+                    url = kwargs.get("url")
+                    if not url: return ToolResponse("Error: 'url' is required for navigate action.", error=True)
+                    return await self._navigate(url, session_id, page_index)
+                
+                elif action == "act":
+                    instructions = kwargs.get("instructions")
+                    if not instructions: return ToolResponse("Error: 'instructions' are required for act action.", error=True)
+                    return await self._ai_act(instructions, session_id, page_index)
+                
+                elif action == "extract":
+                    instructions = kwargs.get("instructions")
+                    schema = kwargs.get("schema")
+                    if not instructions: return ToolResponse("Error: 'instructions' are required for extract action.", error=True)
+                    return await self._extract(instructions, schema, session_id, page_index)
+                
+                elif action == "agent_execute":
+                    instructions = kwargs.get("instructions")
+                    model = kwargs.get("model", "computer-use-preview")
+                    if not instructions: return ToolResponse("Error: 'instructions' are required for agent_execute.", error=True)
+                    return await self._agent_execute(instructions, model, session_id) # agent_execute might use its own session mgmt or a specific page
+
+                elif action == "get_page_content": # New action: Get current page's simplified DOM/content
+                    return await self._get_page_content(session_id, page_index)
+
+                elif action == "new_page": # New action: Open a new page in the context
+                    return await self._new_page(session_id)
+
+                elif action == "close_page": # New action: Close a specific page (by index or current)
+                    # For simplicity, let's assume closing the current page_index
+                    return await self._close_page(session_id, page_index)
+                
+                elif action == "close_context_session": # Renamed from close_session for clarity
+                    return await self._close_context_session(session_id)
+                
+                else:
+                    return ToolResponse(f"Unknown BrowserAgent action: {action}", error=True)
+                    
+            except PlaywrightError as pe: # Catch Playwright specific errors
+                error_message = f"BrowserAgentTool Playwright error during action '{action}': {str(pe)}"
+                print(error_message)
+                await self._emit_browser_event(action, "error", {"error": str(pe), "type": "PlaywrightError"})
+                return ToolResponse(message=error_message, error=True)
+            except Exception as e:
+                import traceback
+                error_message = f"BrowserAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_browser_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _navigate(self, url: str, session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("navigate", "starting", {"url": url, "session_id": session_id, "page_index": page_index})
+            
+            page = await self.browser_manager.get_page(session_id, page_index)
+            if not page: # Should not happen if get_page ensures a page
+                 await self.browser_manager.new_page_in_context(session_id)
+                 page = await self.browser_manager.get_page(session_id, page_index)
+
+            try:
+                await page.goto(url, timeout=60000) # Increased timeout
+                current_url = page.url
+                title = await page.title()
+                
+                result_payload = {
+                    "url": current_url, "title": title, "session_id": session_id, "page_index": page_index,
+                    "details": f"Successfully navigated to {current_url}"
+                }
+                await self._emit_browser_event("navigate", "completed", result_payload)
+                return ToolResponse(message=json.dumps(result_payload))
+            except PlaywrightError as e:
+                error_msg = f"Navigation to {url} failed: {str(e)}"
+                await self._emit_browser_event("navigate", "error", {"url": url, "error": str(e), "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True)
+
+        async def _ai_act(self, instructions: str, session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("ai_act", "processing", {"instructions": instructions, "session_id": session_id, "page_index": page_index})
+            
+            page = await self.browser_manager.get_page(session_id, page_index)
+            # ActionExecutor is still mock, but it now receives a real (mocked by Playwright if not fully implemented) Page object
+            act_result = await self.action_executor.execute_ai_action(page, instructions) # page is PWPage here
+            
+            await self._emit_browser_event("ai_act", "completed", {"result": act_result, "session_id": session_id, "page_index": page_index})
+            return ToolResponse(message=json.dumps(act_result))
+
+        async def _extract(self, instructions: str, schema: Optional[Dict], session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("extract_data", "processing", {"instructions": instructions, "session_id": session_id, "page_index": page_index})
+
+            page = await self.browser_manager.get_page(session_id, page_index)
+            extract_result = await self.action_executor.extract_data(page, instructions, schema) # page is PWPage
+            
+            await self._emit_browser_event("extract_data", "completed", {"result": extract_result, "session_id": session_id, "page_index": page_index})
+            return ToolResponse(message=json.dumps(extract_result))
+
+        async def _agent_execute(self, instructions: str, model: str, session_id: str) -> ToolResponse:
+            # Stagehand's computer_use agent might manage its own browser or expect one.
+            # For now, this remains largely mocked at the AIProvider level.
+            # If it needs a page, we can provide one:
+            # page = await self.browser_manager.get_page(session_id, 0) # Provide default page of session
+            await self._emit_browser_event("agent_execute", "processing", {"instructions": instructions, "model": model, "session_id": session_id})
+
+            computer_agent_mock = await self.ai_provider.get_computer_use_agent(model)
+            exec_result = await computer_agent_mock.execute(instructions) # Pass page if needed: await computer_agent_mock.execute(instructions, page=page)
+            
+            await self._emit_browser_event("agent_execute", "completed", {"result": exec_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(exec_result))
+
+        async def _get_page_content(self, session_id: str, page_index: int) -> ToolResponse:
+            """Gets the HTML content of the current page."""
+            await self._emit_browser_event("get_page_content", "processing", {"session_id": session_id, "page_index": page_index})
+            page = await self.browser_manager.get_page(session_id, page_index)
+            try:
+                content = await page.content()
+                title = await page.title()
+                url = page.url
+                # In a real scenario, use Stagehand's/Crawl4AI's markdown conversion here
+                # For now, just return a snippet of HTML
+                simplified_content = content[:1000] + "..." if len(content) > 1000 else content
+                result_payload = {"url": url, "title": title, "content_snippet_html": simplified_content, "session_id": session_id, "page_index": page_index}
+                await self._emit_browser_event("get_page_content", "completed", result_payload)
+                return ToolResponse(message=json.dumps(result_payload))
+            except PlaywrightError as e:
+                error_msg = f"Failed to get page content: {str(e)}"
+                await self._emit_browser_event("get_page_content", "error", {"error": str(e), "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True)
+
+        async def _new_page(self, session_id: str) -> ToolResponse:
+            """Opens a new page in the specified browser context and returns its index."""
+            await self._emit_browser_event("new_page", "processing", {"session_id": session_id})
+            page = await self.browser_manager.new_page_in_context(session_id)
+            context = await self.browser_manager.get_context(session_id)
+            new_page_index = len(context.pages) -1
+            result_payload = {"session_id": session_id, "new_page_index": new_page_index, "url": page.url, "title": await page.title()}
+            await self._emit_browser_event("new_page", "completed", result_payload)
+            return ToolResponse(message=json.dumps(result_payload))
+
+        async def _close_page(self, session_id: str, page_index: int) -> ToolResponse:
+            """Closes a specific page in the browser context."""
+            await self._emit_browser_event("close_page", "processing", {"session_id": session_id, "page_index": page_index})
+            context = await self.browser_manager.get_context(session_id)
+            if 0 <= page_index < len(context.pages):
+                page_to_close = context.pages[page_index]
+                await page_to_close.close()
+                await self._emit_browser_event("close_page", "completed", {"session_id": session_id, "closed_page_index": page_index})
+                return ToolResponse(message=f"Page at index {page_index} in session {session_id} closed.")
+            else:
+                await self._emit_browser_event("close_page", "error", {"session_id": session_id, "page_index": page_index, "error": "Page index out of bounds"})
+                return ToolResponse(message=f"Error: Page index {page_index} out of bounds for session {session_id}.", error=True)
+
+        async def _close_context_session(self, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("close_context_session", "processing", {"session_id": session_id})
+            await self.browser_manager.close_context(session_id)
+            await self._emit_browser_event("close_context_session", "completed", {"session_id": session_id})
+            return ToolResponse(message=f"Browser context session {session_id} closed.")
+```
+
+5.  **Modify `python/helpers/runtime.py` (or main application shutdown logic):**
+    Ensure that Playwright resources are cleaned up when the application exits.
+
+    ```python
+# python/helpers/runtime.py (Illustrative - add to existing shutdown/cleanup logic)
+    # ...
+    # At the end of your application's lifecycle, or in a cleanup function:
+    async def shutdown_browser_resources():
+        from agents.browser_agent.browser import BrowserManager # Import locally to avoid circular deps at module level
+        # Access the singleton instance directly or through a getter if not using class-level singleton
+        # For BrowserAgentTool.get_browser_manager() to work, an instance of the tool might need to be created first,
+        # or BrowserManager needs its own static getter for its playwright/browser instances if they are class-level.
+        # Simpler: if BrowserManager itself makes _playwright_instance and _browser_instance class variables, it can have a static cleanup.
+        
+        # Assuming BrowserManager keeps static references to playwright and browser instances
+        if hasattr(BrowserManager, '_playwright_instance') and BrowserManager._playwright_instance:
+            print("Runtime: Initiating Playwright shutdown...")
+            await BrowserManager().close_all_contexts_and_browser() # Call instance method that accesses static vars
+            print("Runtime: Playwright shutdown complete.")
+
+    # In your main application shutdown hook (e.g., atexit, or signal handler):
+    # import atexit
+    # def cleanup_sync():
+    #    asyncio.run(shutdown_browser_resources())
+    # atexit.register(cleanup_sync)
+    # Or if your app has an async shutdown sequence:
+    # await shutdown_browser_resources()
+```
+    **Note:** Proper async cleanup requires the event loop to be running. If `atexit` is used in an async app, it can be tricky. A more robust solution is to handle cleanup within the application's main async lifecycle.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-10 completed.
+*   `playwright` library installed and browser binaries downloaded.
+*   The `StreamProtocolTool` and `Agent._emit_stream_event` for event emission.
+
+**Integration with Agent Zero:**
+*   The `BrowserAgentTool`'s `_navigate` action now uses Playwright to control a browser.
+*   `BrowserManager` handles the lifecycle of Playwright browser instances and contexts.
+*   The tool emits `BROWSER_ACTION` events for navigation steps.
+*   Prompts are updated to reflect the new, more specific actions of `BrowserAgentTool`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   `playwright` added to `requirements.txt`.
+*   The Dockerfile must run `playwright install --with-deps chromium` (or similar for other browsers) to download browser binaries. The existing `install_playwright.sh` in `agent zero full code.md` looks suitable for this.
+*   Ensure `PLAYWRIGHT_BROWSERS_PATH` is set correctly in Docker if a persistent cache location is desired (as done in `install_playwright.sh`).
+
+**Summary of Task 12:**
+This task brings the `navigate` action of the `BrowserAgentTool` to life by integrating Playwright. The `BrowserManager` is now responsible for launching and managing real browser contexts and pages. The tool's `_navigate` method performs actual web navigation, and events are emitted to report progress. Placeholder AI actions (`_ai_act`, `_extract`, `_agent_execute`) now receive real (though possibly headed to mock AI logic) Playwright `Page` objects.
+
+Please confirm to proceed.Okay, let's proceed with Task 12.
+
+## Task 12: Implement Real Logic for `BrowserAgentTool` - Navigate Action
+
+**Focus:**
+This task transitions the `BrowserAgentTool` from placeholder logic to a functional implementation for the `navigate` action. This involves integrating a browser automation library (Playwright, as used by Stagehand) and setting up the `BrowserManager` to handle actual browser instances. Subsequent tasks will address the AI-driven actions (`act`, `extract`, `agent_execute`).
+
+**File Paths and Code Changes:**
+
+1.  **Modify `requirements.txt`:**
+    *   Add `playwright`.
+
+    ```
+    # requirements.txt
+    # ... (existing requirements including flask-sock)
+    playwright
+    ```
+
+2.  **Run Playwright installation (outside of Python script, as a one-time setup or Docker build step):**
+    This command downloads the necessary browser binaries.
+
+    ```bash
+    python -m playwright install --with-deps chromium 
+    # Or just 'playwright install chromium' if system deps are handled separately, e.g., in Docker
+    ```
+    *   **Docker Consideration:** This step must be added to the `Dockerfile` (e.g., in `docker/run/fs/ins/install_A0.sh` or a new dedicated script like `install_playwright.sh` from `agent zero full code.md`).
+        The `agent zero full code.md` already has an `install_playwright.sh` script:
+        ```bash
+        # docker/run/fs/ins/install_playwright.sh
+        #!/bin/bash
+        . "/ins/setup_venv.sh" "$@" # Activate venv
+        uv pip install playwright # Ensure playwright is installed in venv
+        export PLAYWRIGHT_BROWSERS_PATH=/a0/tmp/playwright # Set persistent cache
+        playwright install --with-deps chromium # Install browser with dependencies
+        ```
+        This script seems appropriate. We need to ensure it's called during the Docker build. The `docker/run/fs/ins/install_A0.sh` already calls it.
+
+3.  **Modify `python/agents/browser_agent/browser.py`:**
+    *   Replace `BrowserMock`, `PageMock` with actual Playwright-based classes.
+    *   Implement `BrowserManager` to launch and manage Playwright browser contexts.
+
+    ```python
+    # python/agents/browser_agent/browser.py
+    import asyncio
+    from playwright.async_api import async_playwright, Browser as PWBrowser, BrowserContext as PWBrowserContext, Page as PWPage, Playwright
+    from typing import Dict, Optional
+
+    class BrowserManager:
+        """
+        Manages Playwright browser instances and contexts.
+        """
+        _playwright_instance: Optional[Playwright] = None
+        _browser_instance: Optional[PWBrowser] = None
+        _contexts: Dict[str, PWBrowserContext] = {} # session_id -> BrowserContext
+        _lock = asyncio.Lock()
+
+        def __init__(self, headless: bool = True, browser_type: str = "chromium"):
+            self.headless = headless
+            self.browser_type = browser_type # e.g., "chromium", "firefox", "webkit"
+            print(f"BrowserManager initialized (Playwright): headless={headless}, browser={browser_type}")
+
+        async def _ensure_playwright_and_browser(self):
+            """Ensures Playwright is started and a browser instance is launched."""
+            async with self._lock:
+                if BrowserManager._playwright_instance is None:
+                    print("BrowserManager: Starting Playwright...")
+                    BrowserManager._playwright_instance = await async_playwright().start()
+                    print("BrowserManager: Playwright started.")
+
+                if BrowserManager._browser_instance is None or not BrowserManager._browser_instance.is_connected():
+                    print(f"BrowserManager: Launching {self.browser_type} browser (headless: {self.headless})...")
+                    if self.browser_type == "chromium":
+                        BrowserManager._browser_instance = await BrowserManager._playwright_instance.chromium.launch(headless=self.headless)
+                    elif self.browser_type == "firefox":
+                        BrowserManager._browser_instance = await BrowserManager._playwright_instance.firefox.launch(headless=self.headless)
+                    elif self.browser_type == "webkit":
+                        BrowserManager._browser_instance = await BrowserManager._playwright_instance.webkit.launch(headless=self.headless)
+                    else:
+                        raise ValueError(f"Unsupported browser type: {self.browser_type}")
+                    print(f"BrowserManager: {self.browser_type} browser launched.")
+        
+        async def get_context(self, session_id: str = "default_context") -> PWBrowserContext:
+            """Gets or creates a new browser context for a given session_id."""
+            await self._ensure_playwright_and_browser()
+            async with self._lock:
+                if session_id not in BrowserManager._contexts or not BrowserManager._contexts[session_id].pages: # Check if context is still valid
+                    print(f"BrowserManager: Creating new browser context for session_id: {session_id}")
+                    # TODO: Add options like viewport, user_agent, etc. from StagehandConfig if needed
+                    BrowserManager._contexts[session_id] = await BrowserManager._browser_instance.new_context(
+                        # Example: Set a user agent
+                        # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                    )
+                    # Create an initial page for the context
+                    # await BrowserManager._contexts[session_id].new_page()
+                return BrowserManager._contexts[session_id]
+
+        async def get_page(self, session_id: str = "default_context", page_index: int = 0) -> PWPage:
+            """
+            Gets a specific page from a browser context, or creates one if none exist.
+            If page_index is specified, returns that page. Otherwise, returns the first page or a new one.
+            """
+            context = await self.get_context(session_id)
+            if not context.pages or page_index >= len(context.pages):
+                print(f"BrowserManager: No page at index {page_index} for session {session_id}, creating new page.")
+                return await context.new_page()
+            return context.pages[page_index]
+
+        async def new_page_in_context(self, session_id: str = "default_context") -> PWPage:
+            """Creates and returns a new page within a specific browser context."""
+            context = await self.get_context(session_id)
+            page = await context.new_page()
+            print(f"BrowserManager: New page created in context {session_id}. URL: {page.url}")
+            return page
+
+        async def close_context(self, session_id: str = "default_context"):
+            async with self._lock:
+                if session_id in BrowserManager._contexts:
+                    print(f"BrowserManager: Closing browser context for session_id: {session_id}")
+                    await BrowserManager._contexts[session_id].close()
+                    del BrowserManager._contexts[session_id]
+                    print(f"BrowserManager: Browser context for session_id {session_id} closed.")
+
+        async def close_all_contexts_and_browser(self):
+            async with self._lock:
+                for session_id in list(BrowserManager._contexts.keys()):
+                    await self.close_context(session_id)
+                if BrowserManager._browser_instance and BrowserManager._browser_instance.is_connected():
+                    print("BrowserManager: Closing browser instance...")
+                    await BrowserManager._browser_instance.close()
+                    BrowserManager._browser_instance = None
+                    print("BrowserManager: Browser instance closed.")
+                if BrowserManager._playwright_instance:
+                    print("BrowserManager: Stopping Playwright...")
+                    await BrowserManager._playwright_instance.stop()
+                    BrowserManager._playwright_instance = None
+                    print("BrowserManager: Playwright stopped.")
+    ```
+    **Note on `BrowserManager`:** Stagehand has a more complex setup with `Browser`, `Page`, and `Context` classes. This simplified `BrowserManager` provides contexts and pages. We are making `BrowserManager` a class where playwright and browser instances are class-level variables to act as singletons, shared across all `BrowserManager` instances. This is a common pattern for managing a single browser controlled by the application.
+
+4.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   Update `__init__` to instantiate the real `BrowserManager`.
+    *   Implement the `_navigate` method using Playwright.
+    *   Other actions (`_ai_act`, `_extract`, `_agent_execute`) remain placeholders but will now have access to a real `Page` object (though their internal AI logic is still mocked).
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    from python.helpers.tool import Tool, Response as ToolResponse
+    from python.tools.stream_protocol_tool import StreamEventType
+    from agents.browser_agent.browser import BrowserManager # Actual BrowserManager
+    from agents.browser_agent.ai_models import AIModelProvider # Still mock for now
+    from agents.browser_agent.actions import ActionExecutor # Still mock for now
+    import asyncio
+    import json
+    from typing import Dict, Any, Optional
+    from playwright.async_api import Error as PlaywrightError # Import Playwright errors
+
+    class BrowserAgentTool(Tool):
+        _browser_manager_instance: Optional[BrowserManager] = None # Class-level singleton for manager
+
+        @classmethod
+        def get_browser_manager(cls, headless: bool = True) -> BrowserManager:
+            if cls._browser_manager_instance is None:
+                cls._browser_manager_instance = BrowserManager(headless=headless)
+            return cls._browser_manager_instance
+
+        def __init__(self, agent, **kwargs):
+            super().__init__(agent, name="browser_agent", 
+                             description="Controls a browser to navigate, interact with web pages, and extract information using AI.",
+                             args_schema=None, 
+                             **kwargs)
+            # Use a shared BrowserManager instance
+            # Headless mode can be configured via agent.config later
+            self.browser_manager = BrowserAgentTool.get_browser_manager(
+                headless=self.agent.config.get("browser_headless", True)
+            )
+            self.ai_provider = AIModelProvider() # Remains mock for now
+            self.action_executor = ActionExecutor() # Remains mock for now
+            print(f"BrowserAgentTool initialized for agent {agent.agent_name} (context: {agent.context.id}) with Playwright BrowserManager.")
+
+        # ... (_emit_browser_event method remains the same as in Task 5)
+        async def _emit_browser_event(self, action_name: str, status: str, details: Optional[Dict[str, Any]] = None):
+            payload = {"action": action_name, "status": status}
+            if details:  payload.update(details)
+            if hasattr(self.agent, '_emit_stream_event'):
+                 await self.agent._emit_stream_event(StreamEventType.BROWSER_ACTION, payload)
+            else:
+                print(f"BrowserAgentTool: Agent does not have _emit_stream_event method. Cannot emit BROWSER_ACTION.")
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            # Ensure session_id is determined. Fallback to thread_id, then a default.
+            session_id = kwargs.get("session_id", self.agent.get_thread_id())
+            if not session_id:
+                session_id = f"agent0_browser_ctx_{self.agent.context.id}" # Fallback if no thread_id
+            
+            # page_index allows targeting specific pages in a multi-page context (default to 0)
+            page_index = kwargs.get("page_index", 0)
+
+
+            try:
+                if action == "navigate":
+                    url = kwargs.get("url")
+                    if not url: return ToolResponse("Error: 'url' is required for navigate action.", error=True)
+                    return await self._navigate(url, session_id, page_index)
+                
+                elif action == "act":
+                    instructions = kwargs.get("instructions")
+                    if not instructions: return ToolResponse("Error: 'instructions' are required for act action.", error=True)
+                    return await self._ai_act(instructions, session_id, page_index)
+                
+                elif action == "extract":
+                    instructions = kwargs.get("instructions")
+                    schema = kwargs.get("schema")
+                    if not instructions: return ToolResponse("Error: 'instructions' are required for extract action.", error=True)
+                    return await self._extract(instructions, schema, session_id, page_index)
+                
+                elif action == "agent_execute":
+                    instructions = kwargs.get("instructions")
+                    model = kwargs.get("model", "computer-use-preview")
+                    if not instructions: return ToolResponse("Error: 'instructions' are required for agent_execute.", error=True)
+                    return await self._agent_execute(instructions, model, session_id) # agent_execute might use its own session mgmt or a specific page
+
+                elif action == "get_page_content": # New action: Get current page's simplified DOM/content
+                    return await self._get_page_content(session_id, page_index)
+
+                elif action == "new_page": # New action: Open a new page in the context
+                    return await self._new_page(session_id)
+
+                elif action == "close_page": # New action: Close a specific page (by index or current)
+                    # For simplicity, let's assume closing the current page_index
+                    return await self._close_page(session_id, page_index)
+                
+                elif action == "close_context_session": # Renamed from close_session for clarity
+                    return await self._close_context_session(session_id)
+                
+                else:
+                    return ToolResponse(f"Unknown BrowserAgent action: {action}", error=True)
+                    
+            except PlaywrightError as pe: # Catch Playwright specific errors
+                error_message = f"BrowserAgentTool Playwright error during action '{action}': {str(pe)}"
+                print(error_message)
+                await self._emit_browser_event(action, "error", {"error": str(pe), "type": "PlaywrightError"})
+                return ToolResponse(message=error_message, error=True)
+            except Exception as e:
+                import traceback
+                error_message = f"BrowserAgentTool error during action '{action}': {str(e)}\n{traceback.format_exc()}"
+                print(error_message)
+                await self._emit_browser_event(action, "error", {"error": str(e)})
+                return ToolResponse(message=error_message, error=True)
+
+        async def _navigate(self, url: str, session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("navigate", "starting", {"url": url, "session_id": session_id, "page_index": page_index})
+            
+            page = await self.browser_manager.get_page(session_id, page_index)
+            if not page: # Should not happen if get_page ensures a page
+                 await self.browser_manager.new_page_in_context(session_id)
+                 page = await self.browser_manager.get_page(session_id, page_index)
+
+            try:
+                await page.goto(url, timeout=60000) # Increased timeout
+                current_url = page.url
+                title = await page.title()
+                
+                result_payload = {
+                    "url": current_url, "title": title, "session_id": session_id, "page_index": page_index,
+                    "details": f"Successfully navigated to {current_url}"
+                }
+                await self._emit_browser_event("navigate", "completed", result_payload)
+                return ToolResponse(message=json.dumps(result_payload))
+            except PlaywrightError as e:
+                error_msg = f"Navigation to {url} failed: {str(e)}"
+                await self._emit_browser_event("navigate", "error", {"url": url, "error": str(e), "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True)
+
+        async def _ai_act(self, instructions: str, session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("ai_act", "processing", {"instructions": instructions, "session_id": session_id, "page_index": page_index})
+            
+            page = await self.browser_manager.get_page(session_id, page_index)
+            # ActionExecutor is still mock, but it now receives a real (mocked by Playwright if not fully implemented) Page object
+            act_result = await self.action_executor.execute_ai_action(page, instructions) # page is PWPage here
+            
+            await self._emit_browser_event("ai_act", "completed", {"result": act_result, "session_id": session_id, "page_index": page_index})
+            return ToolResponse(message=json.dumps(act_result))
+
+        async def _extract(self, instructions: str, schema: Optional[Dict], session_id: str, page_index: int) -> ToolResponse:
+            await self._emit_browser_event("extract_data", "processing", {"instructions": instructions, "session_id": session_id, "page_index": page_index})
+
+            page = await self.browser_manager.get_page(session_id, page_index)
+            extract_result = await self.action_executor.extract_data(page, instructions, schema) # page is PWPage
+            
+            await self._emit_browser_event("extract_data", "completed", {"result": extract_result, "session_id": session_id, "page_index": page_index})
+            return ToolResponse(message=json.dumps(extract_result))
+
+        async def _agent_execute(self, instructions: str, model: str, session_id: str) -> ToolResponse:
+            # Stagehand's computer_use agent might manage its own browser or expect one.
+            # For now, this remains largely mocked at the AIProvider level.
+            # If it needs a page, we can provide one:
+            # page = await self.browser_manager.get_page(session_id, 0) # Provide default page of session
+            await self._emit_browser_event("agent_execute", "processing", {"instructions": instructions, "model": model, "session_id": session_id})
+
+            computer_agent_mock = await self.ai_provider.get_computer_use_agent(model)
+            exec_result = await computer_agent_mock.execute(instructions) # Pass page if needed: await computer_agent_mock.execute(instructions, page=page)
+            
+            await self._emit_browser_event("agent_execute", "completed", {"result": exec_result, "session_id": session_id})
+            return ToolResponse(message=json.dumps(exec_result))
+
+        async def _get_page_content(self, session_id: str, page_index: int) -> ToolResponse:
+            """Gets the HTML content of the current page."""
+            await self._emit_browser_event("get_page_content", "processing", {"session_id": session_id, "page_index": page_index})
+            page = await self.browser_manager.get_page(session_id, page_index)
+            try:
+                content = await page.content()
+                title = await page.title()
+                url = page.url
+                # In a real scenario, use Stagehand's/Crawl4AI's markdown conversion here
+                # For now, just return a snippet of HTML
+                simplified_content = content[:1000] + "..." if len(content) > 1000 else content
+                result_payload = {"url": url, "title": title, "content_snippet_html": simplified_content, "session_id": session_id, "page_index": page_index}
+                await self._emit_browser_event("get_page_content", "completed", result_payload)
+                return ToolResponse(message=json.dumps(result_payload))
+            except PlaywrightError as e:
+                error_msg = f"Failed to get page content: {str(e)}"
+                await self._emit_browser_event("get_page_content", "error", {"error": str(e), "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True)
+
+        async def _new_page(self, session_id: str) -> ToolResponse:
+            """Opens a new page in the specified browser context and returns its index."""
+            await self._emit_browser_event("new_page", "processing", {"session_id": session_id})
+            page = await self.browser_manager.new_page_in_context(session_id)
+            context = await self.browser_manager.get_context(session_id)
+            new_page_index = len(context.pages) -1
+            result_payload = {"session_id": session_id, "new_page_index": new_page_index, "url": page.url, "title": await page.title()}
+            await self._emit_browser_event("new_page", "completed", result_payload)
+            return ToolResponse(message=json.dumps(result_payload))
+
+        async def _close_page(self, session_id: str, page_index: int) -> ToolResponse:
+            """Closes a specific page in the browser context."""
+            await self._emit_browser_event("close_page", "processing", {"session_id": session_id, "page_index": page_index})
+            context = await self.browser_manager.get_context(session_id)
+            if 0 <= page_index < len(context.pages):
+                page_to_close = context.pages[page_index]
+                await page_to_close.close()
+                await self._emit_browser_event("close_page", "completed", {"session_id": session_id, "closed_page_index": page_index})
+                return ToolResponse(message=f"Page at index {page_index} in session {session_id} closed.")
+            else:
+                await self._emit_browser_event("close_page", "error", {"session_id": session_id, "page_index": page_index, "error": "Page index out of bounds"})
+                return ToolResponse(message=f"Error: Page index {page_index} out of bounds for session {session_id}.", error=True)
+
+        async def _close_context_session(self, session_id: str) -> ToolResponse:
+            await self._emit_browser_event("close_context_session", "processing", {"session_id": session_id})
+            await self.browser_manager.close_context(session_id)
+            await self._emit_browser_event("close_context_session", "completed", {"session_id": session_id})
+            return ToolResponse(message=f"Browser context session {session_id} closed.")
+
+    ```
+
+5.  **Modify `python/helpers/runtime.py` (or main application shutdown logic):**
+    Ensure that Playwright resources are cleaned up when the application exits.
+
+    ```python
+    # python/helpers/runtime.py (Illustrative - add to existing shutdown/cleanup logic)
+    # ...
+    # At the end of your application's lifecycle, or in a cleanup function:
+    async def shutdown_browser_resources():
+        from agents.browser_agent.browser import BrowserManager # Import locally to avoid circular deps at module level
+        # Access the singleton instance directly or through a getter if not using class-level singleton
+        # For BrowserAgentTool.get_browser_manager() to work, an instance of the tool might need to be created first,
+        # or BrowserManager needs its own static getter for its playwright/browser instances if they are class-level.
+        # Simpler: if BrowserManager itself makes _playwright_instance and _browser_instance class variables, it can have a static cleanup.
+        
+        # Assuming BrowserManager keeps static references to playwright and browser instances
+        if hasattr(BrowserManager, '_playwright_instance') and BrowserManager._playwright_instance:
+            print("Runtime: Initiating Playwright shutdown...")
+            await BrowserManager().close_all_contexts_and_browser() # Call instance method that accesses static vars
+            print("Runtime: Playwright shutdown complete.")
+
+    # In your main application shutdown hook (e.g., atexit, or signal handler):
+    # import atexit
+    # def cleanup_sync():
+    #    asyncio.run(shutdown_browser_resources())
+    # atexit.register(cleanup_sync)
+    # Or if your app has an async shutdown sequence:
+    # await shutdown_browser_resources()
+    ```
+    **Note:** Proper async cleanup requires the event loop to be running. If `atexit` is used in an async app, it can be tricky. A more robust solution is to handle cleanup within the application's main async lifecycle.
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-10 completed.
+*   `playwright` library installed and browser binaries downloaded.
+*   The `StreamProtocolTool` and `Agent._emit_stream_event` for event emission.
+
+**Integration with Agent Zero:**
+*   The `BrowserAgentTool`'s `_navigate` action now uses Playwright to control a browser.
+*   `BrowserManager` handles the lifecycle of Playwright browser instances and contexts.
+*   The tool emits `BROWSER_ACTION` events for navigation steps.
+*   Prompts are updated to reflect the new, more specific actions of `BrowserAgentTool`.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   `playwright` added to `requirements.txt`.
+*   The Dockerfile must run `playwright install --with-deps chromium` (or similar for other browsers) to download browser binaries. The existing `install_playwright.sh` in `agent zero full code.md` looks suitable for this.
+*   Ensure `PLAYWRIGHT_BROWSERS_PATH` is set correctly in Docker if a persistent cache location is desired (as done in `install_playwright.sh`).
+
+**Summary of Task 12:**
+This task brings the `navigate` action of the `BrowserAgentTool` to life by integrating Playwright. The `BrowserManager` is now responsible for launching and managing real browser contexts and pages. The tool's `_navigate` method performs actual web navigation, and events are emitted to report progress. Placeholder AI actions (`_ai_act`, `_extract`, `_agent_execute`) now receive real (though possibly headed to mock AI logic) Playwright `Page` objects.
+
+Please confirm to proceed.

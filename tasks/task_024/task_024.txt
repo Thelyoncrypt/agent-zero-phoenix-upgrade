@@ -1,0 +1,550 @@
+## Task 24: Implement Real Logic for `BrowserAgentTool` - Basic AI-driven `agent_execute` Action (Computer Use Simulation)
+
+**Focus:**
+This task begins to implement the `agent_execute` functionality in `BrowserAgentTool`, which is inspired by Stagehand's "computer use" models. For this iteration, we will *not* attempt to build a full, separate AI agent that controls the entire desktop. Instead, we will simulate a more complex, multi-step browser-based task by having an LLM generate a sequence of simpler browser actions (like those implemented in `act` and `navigate`) to achieve a higher-level goal.
+
+This involves:
+1.  Taking a high-level instruction (e.g., "Find the latest NVIDIA stock price and tell me what it is").
+2.  Using an LLM to break this down into a sequence of `navigate`, `type`, `click`, and `extract` sub-actions that `BrowserAgentTool` can already (or will soon be able to) perform.
+3.  The `ActionExecutor` or a new helper class within `python/agents/browser_agent/` will manage this LLM-driven task decomposition and sequential execution of sub-actions.
+4.  The `BrowserAgentTool._agent_execute` method will orchestrate this.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/browser_agent/ai_models.py` (or create a new file for task decomposition logic):**
+    *   We'll enhance `ComputerUseAgentMock` or create a new class to handle task decomposition using an LLM.
+    *   The LLM will be prompted to output a list of structured sub-actions.
+
+    ```python
+# python/agents/browser_agent/ai_models.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+    import os
+    from openai import OpenAI, APIError, RateLimitError # For LLM calls
+    # from .browser import PageMock # Not directly used here but by the tool that calls this
+
+    # (dotenv and Path imports if needed - should be in ActionExecutor already)
+
+    TASK_DECOMPOSITION_SYSTEM_PROMPT = """
+    You are an expert planner for web browser automation.
+    Given a high-level user goal, break it down into a sequence of specific, simple browser actions.
+    Each action in the sequence should be one of the following types: "navigate", "type", "fill", "click", "press", "extract", "scroll", "select_option".
+    For each action, provide the necessary parameters (e.g., 'url' for navigate, 'selector' and 'value' for type/fill, 'instructions' and 'schema' for extract).
+    The 'selector' should be a best-guess CSS selector.
+    The 'extract' action should define what information to get and optionally a JSON schema for the output. 
+    The final step should usually be an 'extract' action to get the information needed to answer the user's goal, or a 'report_finding' action with the finding.
+
+    Respond with a JSON list of action objects. Example:
+    [
+        {"action_type": "navigate", "url": "https://google.com"},
+        {"action_type": "type", "selector": "textarea[name=q]", "value": "NVIDIA stock price"},
+        {"action_type": "press", "selector": "textarea[name=q]", "key": "Enter"},
+        {"action_type": "extract", "instructions": "Extract the current stock price for NVIDIA.", "schema": {"type": "object", "properties": {"stock_price": {"type": "string"}}}}
+    ]
+    
+    If the goal seems too complex for a short sequence or requires non-browser actions, indicate that.
+    If the goal is simple and can be achieved by a single action, output a list with that single action.
+    """
+
+    class ComputerUsePlanner: # Renamed from ComputerUseAgentMock
+        def __init__(self, model_name: Optional[str] = None):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.llm_model = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            if not self.api_key:
+                raise ValueError("OpenAI API key required for ComputerUsePlanner.")
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"ComputerUsePlanner: Initialized with OpenAI model '{self.llm_model}'.")
+
+        async def decompose_task(self, high_level_goal: str, current_page_summary: Optional[str] = None) -> List[Dict[str, Any]]:
+            """
+            Decomposes a high-level goal into a sequence of browser sub-actions using an LLM.
+            """
+            print(f"ComputerUsePlanner: Decomposing task: '{high_level_goal}'")
+            
+            context_info = f"Current page context (if available):\n{current_page_summary}\n---\n" if current_page_summary else ""
+            prompt = f"""
+            {context_info}
+            User's high-level goal: "{high_level_goal}"
+
+            Break this goal down into a sequence of specific browser actions.
+            Output a JSON list of action objects.
+            """
+            messages = [
+                {"role": "system", "content": TASK_DECOMPOSITION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
+
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.llm_client.chat.completions.create,
+                        model=self.llm_model,
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        temperature=0.2
+                    )
+                    plan_json_str = response.choices[0].message.content
+                    # The LLM is asked to return a list directly, so we expect the "json_object" to be a list.
+                    # If it's wrapped in a dict like {"plan": [...]}, we need to adjust.
+                    # For now, assume it returns the list as the root JSON object.
+                    parsed_plan = json.loads(plan_json_str)
+                    if isinstance(parsed_plan, list): # Check if the root is a list
+                        print(f"ComputerUsePlanner: Decomposed plan: {parsed_plan}")
+                        return parsed_plan
+                    elif isinstance(parsed_plan, dict) and "plan" in parsed_plan and isinstance(parsed_plan["plan"], list):
+                        print(f"ComputerUsePlanner: Decomposed plan (from dict): {parsed_plan['plan']}")
+                        return parsed_plan["plan"] # Handle if LLM wraps it
+                    else:
+                        print(f"ComputerUsePlanner: LLM returned unexpected JSON structure for plan: {parsed_plan}")
+                        return [{"action_type": "error", "message": "LLM returned unexpected plan structure."}]
+                except json.JSONDecodeError:
+                    print(f"ComputerUsePlanner: LLM returned invalid JSON for plan (attempt {attempt+1}): {plan_json_str}")
+                    if attempt == max_retries - 1:
+                        return [{"action_type": "error", "message": "LLM failed to return valid JSON plan."}]
+                except Exception as e:
+                    print(f"ComputerUsePlanner: Error calling LLM for task decomposition (attempt {attempt+1}): {e}")
+                    if attempt == max_retries - 1:
+                        return [{"action_type": "error", "message": f"LLM error during task decomposition: {str(e)}"}]
+                
+                if attempt < max_retries - 1:
+                     await asyncio.sleep((2**attempt) + np.random.rand())
+            
+            return [{"action_type": "error", "message": "Failed to decompose task after multiple attempts."}]
+
+    # AIModelProvider can now provide this planner
+    class AIModelProvider:
+        def __init__(self):
+            print("AIModelProvider: Initialized.")
+            self.computer_use_planner = ComputerUsePlanner() # Initialize the planner
+
+        async def get_computer_use_planner(self) -> ComputerUsePlanner:
+            # In a real scenario, model_name might be passed to select different planner configurations
+            return self.computer_use_planner
+```
+
+2.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   Update `_agent_execute` to use the `ComputerUsePlanner` to get a sequence of sub-actions.
+    *   Iterate through the sub-actions and call the appropriate existing methods of `BrowserAgentTool` (like `_navigate`, `_ai_act` (for simple clicks/types), `_extract`).
+    *   Collect results from each sub-action, especially the final extraction.
+
+    ```python
+# python/tools/browser_agent_tool.py
+    # ... (imports, including AIModelProvider from agents.browser_agent.ai_models)
+
+    class BrowserAgentTool(Tool):
+        # ... (__init__, get_browser_manager, _emit_browser_event, other action methods)
+
+        async def _execute_sub_action(self, sub_action: Dict[str, Any], session_id: str, page_index: int) -> ToolResponse:
+            """Helper to execute a single sub-action dict from the plan."""
+            action_type = sub_action.get("action_type")
+            print(f"BrowserAgentTool: Executing sub-action: {action_type} with args {sub_action}")
+
+            if action_type == "navigate":
+                return await self._navigate(sub_action.get("url", ""), session_id, page_index)
+            elif action_type in ["click", "type", "fill", "press", "scroll", "select_option"]:
+                # Use _ai_act for these, but provide more structured input if possible,
+                # or rely on _ai_act's own LLM call to interpret based on "selector" and "value".
+                # For a more direct execution without a second LLM call in _ai_act for *these specific* sub-actions:
+                # We'd need to refactor _ai_act or add more direct Playwright execution methods here.
+                # Let's assume for now we pass a precise instruction to _ai_act.
+                instruction_for_act = f"{action_type} "
+                if sub_action.get("selector"):
+                    instruction_for_act += f"on element '{sub_action['selector']}'"
+                if sub_action.get("value"):
+                    instruction_for_act += f" with value '{sub_action['value']}'"
+                if sub_action.get("key"):
+                    instruction_for_act += f" the key '{sub_action['key']}'"
+                if sub_action.get("option_value"):
+                    instruction_for_act += f" option '{sub_action['option_value']}'"
+                if sub_action.get("scroll_direction"):
+                     instruction_for_act += f" direction '{sub_action['scroll_direction']}'"
+
+                return await self._ai_act(instruction_for_act.strip(), session_id, page_index)
+            
+            elif action_type == "extract":
+                return await self._extract(
+                    sub_action.get("instructions", ""), 
+                    sub_action.get("schema"), 
+                    session_id, 
+                    page_index
+                )
+            elif action_type == "report_finding": # A special action type for the planner to signal completion
+                return ToolResponse(message="Finding reported by planner.", data=sub_action.get("finding"))
+            else:
+                return ToolResponse(f"Unsupported sub-action type: {action_type}", error=True)
+
+
+        async def _agent_execute(self, instructions: str, model_for_planner: str, session_id: str) -> ToolResponse:
+            """
+            Executes a high-level computer use instruction by decomposing it into
+            a sequence of browser actions and executing them.
+            """
+            await self._emit_browser_event("agent_execute", "starting", {"goal": instructions, "planner_model": model_for_planner, "session_id": session_id})
+            
+            planner = await self.ai_provider.get_computer_use_planner() # model_for_planner could be used here
+
+            # Get current page summary for better planning context
+            try:
+                page_for_context = await self.browser_manager.get_page(session_id, 0) # Use default page for initial context
+                page_content_summary = await self.action_executor._get_simplified_page_content_for_llm(page_for_context)
+            except Exception as e:
+                print(f"BrowserAgentTool: Could not get page context for planner: {e}")
+                page_content_summary = "Could not retrieve current page context."
+
+            sub_actions_plan = await planner.decompose_task(instructions, page_content_summary)
+
+            if not sub_actions_plan or (sub_actions_plan[0].get("action_type") == "error"):
+                error_msg = sub_actions_plan[0].get("message", "Failed to decompose task into sub-actions.") if sub_actions_plan else "Planner returned empty plan."
+                await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True)
+
+            await self._emit_browser_event("agent_execute", "plan_generated", {"goal": instructions, "plan": sub_actions_plan, "session_id": session_id})
+
+            execution_summary = []
+            final_extracted_data = None
+            current_page_index = 0 # For now, assume all actions on the first page of the context unless navigate changes it.
+
+            for i, sub_action_spec in enumerate(sub_actions_plan):
+                await self._emit_browser_event("agent_execute_sub_action", "starting", 
+                                               {"step": i+1, "total_steps": len(sub_actions_plan), "sub_action": sub_action_spec, "session_id": session_id})
+                
+                # If sub_action is navigate, it creates/switches to a new page in its own context.
+                # For other actions, we need to ensure they operate on the "current" page.
+                # A more robust system would manage current_page_index or page objects explicitly through the plan.
+                # For now, most actions operate on page_index 0 of the session_id context.
+                # If a "navigate" action occurs, subsequent actions in *this* loop would still use page_index 0
+                # of the *same session_id context*, which means they'd use the newly navigated page.
+
+                sub_action_response = await self._execute_sub_action(sub_action_spec, session_id, current_page_index)
+                
+                execution_summary.append({
+                    "step": i + 1,
+                    "action_spec": sub_action_spec,
+                    "result_message": sub_action_response.message,
+                    "error": sub_action_response.error,
+                    "data": sub_action_response.data
+                })
+
+                if sub_action_response.error:
+                    error_msg = f"Sub-action failed: {sub_action_response.message}"
+                    await self._emit_browser_event("agent_execute_sub_action", "error", {"step": i+1, "error": error_msg, "session_id": session_id})
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": error_msg, "completed_steps": execution_summary, "session_id": session_id})
+                    return ToolResponse(message=error_msg, data={"completed_sub_actions": execution_summary}, error=True)
+                
+                await self._emit_browser_event("agent_execute_sub_action", "completed", {"step": i+1, "result_data": sub_action_response.data, "session_id": session_id})
+
+                if sub_action_spec.get("action_type") == "extract" and sub_action_response.data:
+                    final_extracted_data = sub_action_response.data # Store the data from the (last) extract step
+                if sub_action_spec.get("action_type") == "report_finding" and sub_action_response.data:
+                    final_extracted_data = sub_action_response.data # Planner explicitly reported a finding
+
+
+            success_message = f"Agent execution for '{instructions}' completed. Summary: {len(execution_summary)} steps."
+            if final_extracted_data:
+                success_message += f" Final extracted data/finding: {json.dumps(final_extracted_data)}"
+            
+            await self._emit_browser_event("agent_execute", "completed", {"goal": instructions, "summary": execution_summary, "final_data": final_extracted_data, "session_id": session_id})
+            return ToolResponse(message=success_message, data={"summary": execution_summary, "final_data": final_extracted_data})
+```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-23 completed.
+*   `openai` library installed and configured for LLM calls.
+*   `BrowserAgentTool` has functional (even if basic for `act`) `_navigate`, `_ai_act`, `_extract` methods.
+
+**Integration with Agent Zero:**
+*   The `_agent_execute` method of `BrowserAgentTool` now uses an LLM (`ComputerUsePlanner`) to break down complex user goals into a sequence of simpler browser actions.
+*   It then iterates through this plan, executing each sub-action using the tool's existing capabilities (e.g., `_navigate`, `_ai_act` for clicks/types, `_extract`).
+*   Events are emitted for the overall `agent_execute` task and for each sub-action.
+*   This provides a more powerful, albeit still simulated, "computer use" capability focused on browser automation.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `openai` is in `requirements.txt`.
+*   The Docker container needs network access for OpenAI API calls.
+*   `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables must be available.
+
+**Summary of Task 24:**
+This task implements a basic version of the `agent_execute` action for the `BrowserAgentTool`. Instead of a full "computer use" agent, it uses an LLM as a "planner" to decompose high-level browser-related goals into a sequence of simpler, executable browser sub-actions. The tool then executes this plan. This significantly increases the tool's autonomy for more complex web interactions. The robustness of this depends heavily on the LLM's planning capabilities and the reliability of the sub-action execution.
+
+Please confirm to proceed.Okay, let's proceed with Task 24.
+
+## Task 24: Implement Real Logic for `BrowserAgentTool` - Basic AI-driven `agent_execute` Action (Computer Use Simulation)
+
+**Focus:**
+This task begins to implement the `agent_execute` functionality in `BrowserAgentTool`, which is inspired by Stagehand's "computer use" models. For this iteration, we will *not* attempt to build a full, separate AI agent that controls the entire desktop. Instead, we will simulate a more complex, multi-step browser-based task by having an LLM generate a sequence of simpler browser actions (like those implemented in `act` and `navigate`) to achieve a higher-level goal.
+
+This involves:
+1.  Taking a high-level instruction (e.g., "Find the latest NVIDIA stock price and tell me what it is").
+2.  Using an LLM to break this down into a sequence of `navigate`, `type`, `click`, and `extract` sub-actions that `BrowserAgentTool` can already (or will soon be able to) perform.
+3.  The `ActionExecutor` or a new helper class within `python/agents/browser_agent/` will manage this LLM-driven task decomposition and sequential execution of sub-actions.
+4.  The `BrowserAgentTool._agent_execute` method will orchestrate this.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `python/agents/browser_agent/ai_models.py` (or create a new file for task decomposition logic):**
+    *   We'll enhance `ComputerUseAgentMock` or create a new class to handle task decomposition using an LLM.
+    *   The LLM will be prompted to output a list of structured sub-actions.
+
+    ```python
+    # python/agents/browser_agent/ai_models.py
+    import asyncio
+    import json
+    from typing import Dict, Any, List, Optional
+    import os
+    from openai import OpenAI, APIError, RateLimitError # For LLM calls
+    # from .browser import PageMock # Not directly used here but by the tool that calls this
+
+    # (dotenv and Path imports if needed - should be in ActionExecutor already)
+
+    TASK_DECOMPOSITION_SYSTEM_PROMPT = """
+    You are an expert planner for web browser automation.
+    Given a high-level user goal, break it down into a sequence of specific, simple browser actions.
+    Each action in the sequence should be one of the following types: "navigate", "type", "fill", "click", "press", "extract", "scroll", "select_option".
+    For each action, provide the necessary parameters (e.g., 'url' for navigate, 'selector' and 'value' for type/fill, 'instructions' and 'schema' for extract).
+    The 'selector' should be a best-guess CSS selector.
+    The 'extract' action should define what information to get and optionally a JSON schema for the output. 
+    The final step should usually be an 'extract' action to get the information needed to answer the user's goal, or a 'report_finding' action with the finding.
+
+    Respond with a JSON list of action objects. Example:
+    [
+        {"action_type": "navigate", "url": "https://google.com"},
+        {"action_type": "type", "selector": "textarea[name=q]", "value": "NVIDIA stock price"},
+        {"action_type": "press", "selector": "textarea[name=q]", "key": "Enter"},
+        {"action_type": "extract", "instructions": "Extract the current stock price for NVIDIA.", "schema": {"type": "object", "properties": {"stock_price": {"type": "string"}}}}
+    ]
+    
+    If the goal seems too complex for a short sequence or requires non-browser actions, indicate that.
+    If the goal is simple and can be achieved by a single action, output a list with that single action.
+    """
+
+    class ComputerUsePlanner: # Renamed from ComputerUseAgentMock
+        def __init__(self, model_name: Optional[str] = None):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.llm_model = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            if not self.api_key:
+                raise ValueError("OpenAI API key required for ComputerUsePlanner.")
+            self.llm_client = OpenAI(api_key=self.api_key)
+            print(f"ComputerUsePlanner: Initialized with OpenAI model '{self.llm_model}'.")
+
+        async def decompose_task(self, high_level_goal: str, current_page_summary: Optional[str] = None) -> List[Dict[str, Any]]:
+            """
+            Decomposes a high-level goal into a sequence of browser sub-actions using an LLM.
+            """
+            print(f"ComputerUsePlanner: Decomposing task: '{high_level_goal}'")
+            
+            context_info = f"Current page context (if available):\n{current_page_summary}\n---\n" if current_page_summary else ""
+            prompt = f"""
+            {context_info}
+            User's high-level goal: "{high_level_goal}"
+
+            Break this goal down into a sequence of specific browser actions.
+            Output a JSON list of action objects.
+            """
+            messages = [
+                {"role": "system", "content": TASK_DECOMPOSITION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
+
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = await asyncio.to_thread(
+                        self.llm_client.chat.completions.create,
+                        model=self.llm_model,
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        temperature=0.2
+                    )
+                    plan_json_str = response.choices[0].message.content
+                    # The LLM is asked to return a list directly, so we expect the "json_object" to be a list.
+                    # If it's wrapped in a dict like {"plan": [...]}, we need to adjust.
+                    # For now, assume it returns the list as the root JSON object.
+                    parsed_plan = json.loads(plan_json_str)
+                    if isinstance(parsed_plan, list): # Check if the root is a list
+                        print(f"ComputerUsePlanner: Decomposed plan: {parsed_plan}")
+                        return parsed_plan
+                    elif isinstance(parsed_plan, dict) and "plan" in parsed_plan and isinstance(parsed_plan["plan"], list):
+                        print(f"ComputerUsePlanner: Decomposed plan (from dict): {parsed_plan['plan']}")
+                        return parsed_plan["plan"] # Handle if LLM wraps it
+                    else:
+                        print(f"ComputerUsePlanner: LLM returned unexpected JSON structure for plan: {parsed_plan}")
+                        return [{"action_type": "error", "message": "LLM returned unexpected plan structure."}]
+                except json.JSONDecodeError:
+                    print(f"ComputerUsePlanner: LLM returned invalid JSON for plan (attempt {attempt+1}): {plan_json_str}")
+                    if attempt == max_retries - 1:
+                        return [{"action_type": "error", "message": "LLM failed to return valid JSON plan."}]
+                except Exception as e:
+                    print(f"ComputerUsePlanner: Error calling LLM for task decomposition (attempt {attempt+1}): {e}")
+                    if attempt == max_retries - 1:
+                        return [{"action_type": "error", "message": f"LLM error during task decomposition: {str(e)}"}]
+                
+                if attempt < max_retries - 1:
+                     await asyncio.sleep((2**attempt) + np.random.rand())
+            
+            return [{"action_type": "error", "message": "Failed to decompose task after multiple attempts."}]
+
+    # AIModelProvider can now provide this planner
+    class AIModelProvider:
+        def __init__(self):
+            print("AIModelProvider: Initialized.")
+            self.computer_use_planner = ComputerUsePlanner() # Initialize the planner
+
+        async def get_computer_use_planner(self) -> ComputerUsePlanner:
+            # In a real scenario, model_name might be passed to select different planner configurations
+            return self.computer_use_planner
+    ```
+
+2.  **Modify `python/tools/browser_agent_tool.py`:**
+    *   Update `_agent_execute` to use the `ComputerUsePlanner` to get a sequence of sub-actions.
+    *   Iterate through the sub-actions and call the appropriate existing methods of `BrowserAgentTool` (like `_navigate`, `_ai_act` (for simple clicks/types), `_extract`).
+    *   Collect results from each sub-action, especially the final extraction.
+
+    ```python
+    # python/tools/browser_agent_tool.py
+    # ... (imports, including AIModelProvider from agents.browser_agent.ai_models)
+
+    class BrowserAgentTool(Tool):
+        # ... (__init__, get_browser_manager, _emit_browser_event, other action methods)
+
+        async def _execute_sub_action(self, sub_action: Dict[str, Any], session_id: str, page_index: int) -> ToolResponse:
+            """Helper to execute a single sub-action dict from the plan."""
+            action_type = sub_action.get("action_type")
+            print(f"BrowserAgentTool: Executing sub-action: {action_type} with args {sub_action}")
+
+            if action_type == "navigate":
+                return await self._navigate(sub_action.get("url", ""), session_id, page_index)
+            elif action_type in ["click", "type", "fill", "press", "scroll", "select_option"]:
+                # Use _ai_act for these, but provide more structured input if possible,
+                # or rely on _ai_act's own LLM call to interpret based on "selector" and "value".
+                # For a more direct execution without a second LLM call in _ai_act for *these specific* sub-actions:
+                # We'd need to refactor _ai_act or add more direct Playwright execution methods here.
+                # Let's assume for now we pass a precise instruction to _ai_act.
+                instruction_for_act = f"{action_type} "
+                if sub_action.get("selector"):
+                    instruction_for_act += f"on element '{sub_action['selector']}'"
+                if sub_action.get("value"):
+                    instruction_for_act += f" with value '{sub_action['value']}'"
+                if sub_action.get("key"):
+                    instruction_for_act += f" the key '{sub_action['key']}'"
+                if sub_action.get("option_value"):
+                    instruction_for_act += f" option '{sub_action['option_value']}'"
+                if sub_action.get("scroll_direction"):
+                     instruction_for_act += f" direction '{sub_action['scroll_direction']}'"
+
+                return await self._ai_act(instruction_for_act.strip(), session_id, page_index)
+            
+            elif action_type == "extract":
+                return await self._extract(
+                    sub_action.get("instructions", ""), 
+                    sub_action.get("schema"), 
+                    session_id, 
+                    page_index
+                )
+            elif action_type == "report_finding": # A special action type for the planner to signal completion
+                return ToolResponse(message="Finding reported by planner.", data=sub_action.get("finding"))
+            else:
+                return ToolResponse(f"Unsupported sub-action type: {action_type}", error=True)
+
+
+        async def _agent_execute(self, instructions: str, model_for_planner: str, session_id: str) -> ToolResponse:
+            """
+            Executes a high-level computer use instruction by decomposing it into
+            a sequence of browser actions and executing them.
+            """
+            await self._emit_browser_event("agent_execute", "starting", {"goal": instructions, "planner_model": model_for_planner, "session_id": session_id})
+            
+            planner = await self.ai_provider.get_computer_use_planner() # model_for_planner could be used here
+
+            # Get current page summary for better planning context
+            try:
+                page_for_context = await self.browser_manager.get_page(session_id, 0) # Use default page for initial context
+                page_content_summary = await self.action_executor._get_simplified_page_content_for_llm(page_for_context)
+            except Exception as e:
+                print(f"BrowserAgentTool: Could not get page context for planner: {e}")
+                page_content_summary = "Could not retrieve current page context."
+
+            sub_actions_plan = await planner.decompose_task(instructions, page_content_summary)
+
+            if not sub_actions_plan or (sub_actions_plan[0].get("action_type") == "error"):
+                error_msg = sub_actions_plan[0].get("message", "Failed to decompose task into sub-actions.") if sub_actions_plan else "Planner returned empty plan."
+                await self._emit_browser_event("agent_execute", "error", {"goal": instructions, "error": error_msg, "session_id": session_id})
+                return ToolResponse(message=error_msg, error=True)
+
+            await self._emit_browser_event("agent_execute", "plan_generated", {"goal": instructions, "plan": sub_actions_plan, "session_id": session_id})
+
+            execution_summary = []
+            final_extracted_data = None
+            current_page_index = 0 # For now, assume all actions on the first page of the context unless navigate changes it.
+
+            for i, sub_action_spec in enumerate(sub_actions_plan):
+                await self._emit_browser_event("agent_execute_sub_action", "starting", 
+                                               {"step": i+1, "total_steps": len(sub_actions_plan), "sub_action": sub_action_spec, "session_id": session_id})
+                
+                # If sub_action is navigate, it creates/switches to a new page in its own context.
+                # For other actions, we need to ensure they operate on the "current" page.
+                # A more robust system would manage current_page_index or page objects explicitly through the plan.
+                # For now, most actions operate on page_index 0 of the session_id context.
+                # If a "navigate" action occurs, subsequent actions in *this* loop would still use page_index 0
+                # of the *same session_id context*, which means they'd use the newly navigated page.
+
+                sub_action_response = await self._execute_sub_action(sub_action_spec, session_id, current_page_index)
+                
+                execution_summary.append({
+                    "step": i + 1,
+                    "action_spec": sub_action_spec,
+                    "result_message": sub_action_response.message,
+                    "error": sub_action_response.error,
+                    "data": sub_action_response.data
+                })
+
+                if sub_action_response.error:
+                    error_msg = f"Sub-action failed: {sub_action_response.message}"
+                    await self._emit_browser_event("agent_execute_sub_action", "error", {"step": i+1, "error": error_msg, "session_id": session_id})
+                    await self._emit_browser_event("agent_execute", "failed", {"goal": instructions, "error": error_msg, "completed_steps": execution_summary, "session_id": session_id})
+                    return ToolResponse(message=error_msg, data={"completed_sub_actions": execution_summary}, error=True)
+                
+                await self._emit_browser_event("agent_execute_sub_action", "completed", {"step": i+1, "result_data": sub_action_response.data, "session_id": session_id})
+
+                if sub_action_spec.get("action_type") == "extract" and sub_action_response.data:
+                    final_extracted_data = sub_action_response.data # Store the data from the (last) extract step
+                if sub_action_spec.get("action_type") == "report_finding" and sub_action_response.data:
+                    final_extracted_data = sub_action_response.data # Planner explicitly reported a finding
+
+
+            success_message = f"Agent execution for '{instructions}' completed. Summary: {len(execution_summary)} steps."
+            if final_extracted_data:
+                success_message += f" Final extracted data/finding: {json.dumps(final_extracted_data)}"
+            
+            await self._emit_browser_event("agent_execute", "completed", {"goal": instructions, "summary": execution_summary, "final_data": final_extracted_data, "session_id": session_id})
+            return ToolResponse(message=success_message, data={"summary": execution_summary, "final_data": final_extracted_data})
+
+    ```
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-23 completed.
+*   `openai` library installed and configured for LLM calls.
+*   `BrowserAgentTool` has functional (even if basic for `act`) `_navigate`, `_ai_act`, `_extract` methods.
+
+**Integration with Agent Zero:**
+*   The `_agent_execute` method of `BrowserAgentTool` now uses an LLM (`ComputerUsePlanner`) to break down complex user goals into a sequence of simpler browser actions.
+*   It then iterates through this plan, executing each sub-action using the tool's existing capabilities (e.g., `_navigate`, `_ai_act` for clicks/types, `_extract`).
+*   Events are emitted for the overall `agent_execute` task and for each sub-action.
+*   This provides a more powerful, albeit still simulated, "computer use" capability focused on browser automation.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly.
+
+**Docker Compatibility:**
+*   Ensure `openai` is in `requirements.txt`.
+*   The Docker container needs network access for OpenAI API calls.
+*   `OPENAI_API_KEY` and `OPENAI_MODEL` environment variables must be available.
+
+**Summary of Task 24:**
+This task implements a basic version of the `agent_execute` action for the `BrowserAgentTool`. Instead of a full "computer use" agent, it uses an LLM as a "planner" to decompose high-level browser-related goals into a sequence of simpler, executable browser sub-actions. The tool then executes this plan. This significantly increases the tool's autonomy for more complex web interactions. The robustness of this depends heavily on the LLM's planning capabilities and the reliability of the sub-action execution.
+
+Please confirm to proceed.

@@ -1,0 +1,243 @@
+Okay, let's proceed with Task 34.
+
+## Task 34: Implement `HUMAN_INTERVENTION` Event Emission and Handling Placeholder
+
+**Focus:**
+This task focuses on integrating the `HUMAN_INTERVENTION` event from the AG-UI protocol. This involves:
+1.  Modifying the `Agent`'s logic (e.g., in `monologue` or a dedicated intervention check) to identify situations where human input is required.
+2.  Emitting a `HUMAN_INTERVENTION` event with a prompt/question for the human when such a situation arises.
+3.  Ensuring the agent pauses its execution (using `AgentContext.halt_event`) after emitting this event.
+4.  The `StreamProtocolTool`'s `_handle_input` (or a new dedicated action) will be the mechanism through which the human's response (as a new user message) eventually unpauses the agent.
+
+**File Paths and Code Changes:**
+
+1.  **Modify `agent.py` (`Agent` and `AgentContext` classes):**
+
+    ```python
+# agent.py
+    # ... (imports, including StreamEventType)
+    import asyncio
+
+    class AgentContext:
+        # ... (existing attributes)
+        # self.halt_event: asyncio.Event = asyncio.Event() (should exist)
+        # self.intervention_needed: bool = False (should exist)
+        # self.intervention_message: Optional[UserMessage] = None (should exist, or just a prompt string)
+        self.intervention_prompt: Optional[str] = None # Store the prompt sent to human
+
+        def request_intervention(self, prompt_for_human: str):
+            """Sets flags indicating intervention is needed."""
+            print(f"AgentContext {self.id}: Intervention requested with prompt: '{prompt_for_human}'")
+            self.intervention_needed = True
+            self.intervention_prompt = prompt_for_human
+            self.halt_event.clear() # Ensure halt_event is not set, so agent will pause
+
+        def resolve_intervention(self):
+            """Clears intervention flags and allows agent to proceed."""
+            print(f"AgentContext {self.id}: Intervention resolved.")
+            self.intervention_needed = False
+            self.intervention_prompt = None
+            self.halt_event.set() # Signal the agent to continue
+
+    class Agent:
+        # ... (__init__, _get_stream_protocol_tool, _emit_stream_event, update_and_broadcast_agent_state as before)
+
+        async def _check_and_handle_intervention(self):
+            """Checks if intervention is needed and waits if so."""
+            if self.context.intervention_needed:
+                # The HUMAN_INTERVENTION event should have been emitted when intervention_needed was set.
+                # Here, we just log and wait.
+                prompt = self.context.intervention_prompt or "Waiting for human input..."
+                print(f"Agent {self.agent_name}: Pausing for human intervention. Prompt: '{prompt}'")
+                await self.context.log.set_progress_message(f"Waiting for human: {prompt}") # Update UI log
+                
+                # Wait for the halt_event to be set (by a new message or explicit resume)
+                await self.context.halt_event.wait()
+                
+                # Once resumed:
+                print(f"Agent {self.agent_name}: Resuming after intervention.")
+                self.context.intervention_needed = False # Clear the flag as it's being handled
+                self.context.intervention_prompt = None
+                await self._emit_stream_event(StreamEventType.HUMAN_INTERVENTION, {"status": "resolved"})
+                await self.context.log.set_progress_message("Resuming operation...")
+                # The new message that resolved the intervention will be in history.
+                # The monologue loop will pick it up.
+
+        # Example modification in monologue for requesting intervention
+        async def monologue(self) -> Optional[str]:
+            # ...
+            while self.iteration_no < self.max_iterations:
+                self.iteration_no += 1
+                await self._check_and_handle_intervention() # Check at start of each iteration
+
+                # ... (existing monologue logic: thoughts, LLM call, tool parsing)
+
+                if not response_json: # Example: LLM failed
+                    err_msg = "LLM call failed. Human, please advise or provide new instructions."
+                    self.context.request_intervention(err_msg)
+                    await self._emit_stream_event(
+                        StreamEventType.HUMAN_INTERVENTION,
+                        {"prompt": err_msg, "status": "required", "details": {"reason": "LLM_FAILURE"}}
+                    )
+                    await self._check_and_handle_intervention() # This will now pause
+                    # After resuming, the loop will continue, likely with new user input in history.
+                    # We might want to re-evaluate or break depending on how intervention is resolved.
+                    # For now, just continue the loop. If new message came, it will be processed.
+                    continue # Restart loop iteration to process potential new input
+
+                # ... (tool call logic)
+
+                if tool_response and tool_response.error and tool_name != "response":
+                    # Example: Tool failed, ask human for help
+                    err_msg = f"Tool '{tool_name}' failed with: {tool_response.message}. What should I do next?"
+                    self.context.request_intervention(err_msg)
+                    await self._emit_stream_event(
+                        StreamEventType.HUMAN_INTERVENTION,
+                        {"prompt": err_msg, "status": "required", "details": {"reason": "TOOL_FAILURE", "tool_name": tool_name}}
+                    )
+                    await self._check_and_handle_intervention()
+                    continue
+
+                # ... (rest of monologue loop)
+            # ... (end of monologue)
+            return None
+
+
+        async def process_streamed_message(self, content: str, role: str = "user", 
+                                           attachments: Optional[List[Dict[str, Any]]] = None,
+                                           incoming_state: Optional[Dict[str, Any]] = None):
+            # ... (state update logic from Task 33)
+
+            if role.lower() == "user":
+                # If the agent was waiting for intervention, this new user message resolves it.
+                if self.context.intervention_needed:
+                    print(f"Agent {self.agent_name}: Received user message, resolving intervention.")
+                    self.context.resolve_intervention() 
+                    # The halt_event is set, _check_and_handle_intervention will now pass.
+                
+                user_message_obj = UserMessage(message=content, attachments=attachments or [])
+                self.hist_add_user_message(user_message_obj)
+                await self._emit_stream_event(StreamEventType.CONTEXT_UPDATE, {"type": "user_message_added", "content_preview": content[:50]})
+                
+                # If the agent was paused for intervention, it will now resume when monologue calls _check_and_handle_intervention.
+                # The monologue is the main processing driver.
+                return await self.monologue() 
+            # ... (handle other roles)
+            return None
+```
+    **Key changes in `agent.py`:**
+    *   `AgentContext` gets `request_intervention` and `resolve_intervention` methods to manage the `intervention_needed` flag and `halt_event`.
+    *   `Agent._check_and_handle_intervention` is a new async method that actually waits on `halt_event.wait()` if `intervention_needed` is true.
+    *   `Agent.monologue` calls `_check_and_handle_intervention` at the start of each loop and at points where it decides human input is necessary (e.g., LLM failure, tool failure). When intervention is requested, it emits the `HUMAN_INTERVENTION` event.
+    *   `Agent.process_streamed_message`: If a user message arrives while `intervention_needed` is true, it calls `context.resolve_intervention()` to set the `halt_event`, allowing the agent to resume.
+
+2.  **Modify `python/tools/stream_protocol_tool.py`:**
+    *   The `_handle_input` method (when receiving messages from the client via WebSocket or HTTP) now correctly calls `agent.process_streamed_message`. This method in the `Agent` class will now handle resolving an intervention if one is active and a user message comes in.
+    *   A new, optional tool action like `resume_agent` could be added if a client needs to unpause the agent *without* sending a new message (e.g., just acknowledging something or providing state).
+
+    ```python
+# python/tools/stream_protocol_tool.py
+    # ... (imports)
+
+    class StreamProtocolTool(Tool):
+        # ... (__init__, _emit_event_internal, _emit_event, _start_session, _end_session, _update_state, etc.)
+
+        async def execute(self, action: str, **kwargs) -> ToolResponse:
+            # ... (existing actions)
+            try:
+                if action == "handle_input": # Typically called by server for new client messages
+                    input_data = kwargs.get("input_data")
+                    if not input_data: return ToolResponse("Missing 'input_data'.", error=True)
+                    return await self._handle_input(input_data)
+                
+                elif action == "resume_agent_with_message": # Explicit client action to send message and resume
+                    message_content = kwargs.get("message_content")
+                    attachments = kwargs.get("attachments")
+                    client_state = kwargs.get("state") # Optional state from client
+                    if message_content is None : return ToolResponse("Missing 'message_content'.", error=True)
+                    
+                    # This will call agent.process_streamed_message, which handles intervention resolution
+                    await self.agent.process_streamed_message(
+                        content=message_content, 
+                        role="user", # Assuming resume implies user input
+                        attachments=attachments,
+                        incoming_state=client_state
+                    )
+                    return self.agent_response({"status": "agent_resumed_and_processing_message"})
+
+                elif action == "force_resume_agent": # Client wants to unpause without new message content
+                    if self.agent.context.intervention_needed:
+                        print(f"StreamProtocolTool: Forcing agent resume for context {self.agent.context.id}")
+                        self.agent.context.resolve_intervention()
+                        # Optionally, trigger a "nudge" or re-evaluation in the agent
+                        # For now, just resolving allows the monologue to continue.
+                        # A subsequent poll or internal agent logic might be needed to make it act immediately.
+                        # We can also emit an event here.
+                        await self._emit_event_internal(StreamEventType.HUMAN_INTERVENTION, 
+                                                        {"status": "resolved_by_client_force_resume", "prompt_resolved": self.agent.context.intervention_prompt},
+                                                        self.agent.get_thread_id(), self.agent.get_user_id())
+                        return self.agent_response({"status": "agent_resume_forced", "message": "Agent will continue on its next processing cycle."})
+                    else:
+                        return self.agent_response({"status": "agent_not_paused_for_intervention"})
+                # ... (other actions)
+            # ... (exception handling)
+            except Exception as e: # Top-level try-except in execute
+                # ... (as before)
+                pass
+
+
+        async def _handle_input(self, input_data: Dict[str, Any]): # From Task 33
+            # ... (parsing RunAgentInput logic from Task 33)
+            run_input = RunAgentInput(...) # Simplified
+            
+            # ... (set thread_id, user_id on agent context)
+            self.agent.set_thread_id(run_input.thread_id)
+            if run_input.user_id: self.agent.set_user_id(run_input.user_id)
+
+
+            # Key change: process_streamed_message now also handles incoming state and intervention resolution
+            if run_input.messages:
+                for i, message_data in enumerate(run_input.messages):
+                    # Pass state only with the first message of the batch from RunAgentInput
+                    state_to_pass = run_input.state if i == 0 else None
+                    await self.agent.process_streamed_message(
+                        content=message_data.get("content", ""),
+                        role=message_data.get("role", "user").lower(),
+                        attachments=message_data.get("attachments"),
+                        incoming_state=state_to_pass 
+                    )
+            elif run_input.state is not None: # Only state, no messages
+                await self.agent.set_agent_state_from_external(run_input.state, source="client_state_push_no_message")
+            
+            # ... (Tool's local active_threads management and session start emission as before)
+            # ...
+            return self.agent_response({
+                "success": True, "thread_id": run_input.thread_id, 
+                "messages_processed": len(run_input.messages),
+                "state_applied": bool(run_input.state is not None)
+            })
+```
+    **Note on `StreamProtocolTool`:** The `resume_agent_with_message` action provides a more explicit API for client responses to interventions. The `force_resume_agent` is for cases where the client just wants the agent to continue without new textual input (the agent would then re-evaluate its current situation).
+
+**Dependencies/Prerequisites:**
+*   Tasks 1-33 completed.
+*   `AgentContext` has `halt_event`, `intervention_needed`, `intervention_prompt`, `request_intervention`, `resolve_intervention`.
+*   `Agent` has `_check_and_handle_intervention` and its `monologue` and `process_streamed_message` are updated.
+*   `StreamProtocolTool` is set up.
+
+**Integration with Agent Zero:**
+*   The agent can now programmatically request human intervention by setting flags in its context and emitting a `HUMAN_INTERVENTION` event.
+*   The agent's main processing loop (`monologue`) will pause via `halt_event.wait()` when intervention is required.
+*   Incoming user messages processed via `StreamProtocolTool` and `Agent.process_streamed_message` will automatically resolve the intervention state and unpause the agent.
+*   An explicit `force_resume_agent` action is added to `StreamProtocolTool` for clients that want to unpause the agent without necessarily sending new message content.
+
+**Chatterbox TTS Integration Requirements for this Task:**
+*   None directly. However, if a TTS operation failed and required human intervention (e.g., to clarify unpronounceable text), this mechanism would be used.
+
+**Docker Compatibility:**
+*   No new Python package dependencies. Changes are within existing Python files.
+
+**Summary of Task 34:**
+This task implements the core logic for human intervention. The agent can now identify points where it needs help, emit a `HUMAN_INTERVENTION` event, and pause. When a new user message (or an explicit resume command) is received via the `StreamProtocolTool`, the agent resumes its operation, taking the new input into account. This is crucial for building more interactive and robust autonomous agents that can recover from errors or ambiguities with human assistance.
+
+Please confirm to proceed.
