@@ -1,0 +1,1 @@
+# Browser Agent Package - Stagehand-inspired browser automation

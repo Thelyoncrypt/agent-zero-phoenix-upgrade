@@ -174,6 +174,10 @@ class Agent:
         self.iteration_no = 0
         self.last_tool_was_response_tool = False
         self._stream_protocol_tool_instance = None
+        
+        # Auto-register available tools
+        self._register_default_tools()
+        
         print(f"Agent initialized: {agent_name} (id: {agent_id}, context: {context.id})")
 
     def get_thread_id(self) -> Optional[str]:
@@ -394,12 +398,20 @@ class Agent:
         
         # Simulate a structured LLM response with thoughts and potential tool calls
         if "iteration 1" in prompt.lower():
-            return {
-                "thoughts": ["I need to understand what the user is asking for.", "Let me analyze their request carefully."],
-                "tool_name": "analyze",
-                "tool_args": {"query": prompt},
-                "response": "I'm analyzing your request."
-            }
+            if "website" in prompt.lower() or "navigate" in prompt.lower() or "browser" in prompt.lower():
+                return {
+                    "thoughts": ["The user wants me to interact with a website.", "I should use the browser agent tool."],
+                    "tool_name": "browser_agent",
+                    "tool_args": {"action": "navigate", "url": "https://example.com"},
+                    "response": "I'll help you navigate to that website."
+                }
+            else:
+                return {
+                    "thoughts": ["I need to understand what the user is asking for.", "Let me analyze their request carefully."],
+                    "tool_name": "analyze",
+                    "tool_args": {"query": prompt},
+                    "response": "I'm analyzing your request."
+                }
         elif "iteration" in prompt.lower():
             return {
                 "thoughts": ["Based on my analysis, I can now provide a helpful response."],
@@ -421,26 +433,78 @@ class Agent:
         return tool_name, tool_args, tool_message
     
     async def _call_tool(self, tool_name: str, tool_args: Dict[str, Any], tool_message: str) -> Dict[str, Any]:
-        """Execute a tool call - enhanced placeholder"""
+        """Execute a tool call - enhanced with real tool execution"""
         print(f"Agent {self.agent_name} calling tool '{tool_name}' with args: {tool_args}")
         
-        # Simulate different tool responses
-        if tool_name == "response":
-            return {
-                "message": tool_args.get("text", "Default response"),
-                "break_loop": True
-            }
-        elif tool_name == "analyze":
-            return {
-                "message": f"Analysis complete for: {tool_args.get('query', 'unknown')}",
-                "break_loop": False
-            }
+        # Find the tool in registered tools
+        tool_instance = None
+        for tool in self.tools:
+            if hasattr(tool, 'name') and tool.name == tool_name:
+                tool_instance = tool
+                break
+        
+        if tool_instance:
+            try:
+                # Execute the actual tool
+                result = await tool_instance.execute(**tool_args)
+                
+                # Convert tool response to expected format
+                if hasattr(result, 'success') and hasattr(result, 'message'):
+                    return {
+                        "message": result.message,
+                        "break_loop": getattr(result, 'break_loop', False),
+                        "data": getattr(result, 'data', None),
+                        "error": getattr(result, 'error', None) if not result.success else None
+                    }
+                else:
+                    # Fallback for tools that don't return proper Response objects
+                    return {
+                        "message": str(result),
+                        "break_loop": False
+                    }
+            except Exception as e:
+                print(f"Agent {self.agent_name}: Error executing tool {tool_name}: {e}")
+                return {
+                    "message": f"Error executing tool {tool_name}: {str(e)}",
+                    "break_loop": False,
+                    "error": str(e)
+                }
         else:
-            return {
-                "message": f"Tool {tool_name} executed successfully",
-                "break_loop": False
-            }
+            # Fallback to simulated responses for unknown tools
+            if tool_name == "response":
+                return {
+                    "message": tool_args.get("text", "Default response"),
+                    "break_loop": True
+                }
+            elif tool_name == "analyze":
+                return {
+                    "message": f"Analysis complete for: {tool_args.get('query', 'unknown')}",
+                    "break_loop": False
+                }
+            else:
+                return {
+                    "message": f"Tool {tool_name} not found - simulated execution",
+                    "break_loop": False
+                }
 
+    def _register_default_tools(self):
+        """Register default tools available to the agent"""
+        try:
+            # Register BrowserAgent tool
+            from python.tools.browser_agent_tool import BrowserAgentTool
+            browser_tool = BrowserAgentTool(self)
+            self.add_tool(browser_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: BrowserAgent tool not available: {e}")
+        
+        try:
+            # Register Response tool
+            from python.tools.response import ResponseTool
+            response_tool = ResponseTool(self)
+            self.add_tool(response_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: Response tool not available: {e}")
+    
     def add_tool(self, tool):
         """Add a tool to the agent"""
         self.tools.append(tool)
