@@ -530,6 +530,14 @@ class Agent:
             print(f"Agent {self.agent_name}: HybridMemory tool not available: {e}")
         
         try:
+            # Register ChatterboxTTS tool
+            from python.tools.chatterbox_tts_tool import ChatterboxTTSTool
+            chatterbox_tts_tool = ChatterboxTTSTool(self)
+            self.add_tool(chatterbox_tts_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: ChatterboxTTS tool not available: {e}")
+        
+        try:
             # Register Response tool
             from python.tools.response import ResponseTool
             response_tool = ResponseTool(self)

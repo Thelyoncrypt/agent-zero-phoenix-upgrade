@@ -164,3 +164,45 @@ Parameters: {
   "user_id": "user456"
 }
 ```
+
+### chatterbox_tts_tool
+
+**Purpose**: Generates speech from text (TTS) or performs voice conversion (VC) using Chatterbox models for high-quality AI speech synthesis.
+
+**Actions**:
+- `generate_speech`: Convert text to speech with optional voice cloning
+- `convert_voice`: Convert one voice to another using voice conversion
+
+**Parameters**:
+- `action` (required): Type of TTS operation
+- `text`: Text to synthesize (for generate_speech)
+- `audio_prompt_path`: Path to .wav file for voice cloning (optional)
+- `exaggeration`: Controls emotion/intensity (default: 0.5)
+- `cfg_weight`: Controls pacing/adherence to prompt (default: 0.5)  
+- `temperature`: Sampling temperature (default: 0.8)
+- `source_audio_path`: Path to source .wav file (for convert_voice)
+- `target_voice_path`: Path to target voice .wav file (for convert_voice)
+
+**Events**: Emits PROGRESS_UPDATE events via StreamProtocol for TTS generation progress tracking.
+
+**Example for TTS generation**:
+```
+Action: chatterbox_tts_tool
+Parameters: {
+  "action": "generate_speech",
+  "text": "Hello, world! This is Agent Zero speaking.",
+  "audio_prompt_path": "/path/to/reference_voice.wav",
+  "exaggeration": 0.7,
+  "temperature": 0.9
+}
+```
+
+**Example for Voice Conversion**:
+```
+Action: chatterbox_tts_tool
+Parameters: {
+  "action": "convert_voice",
+  "source_audio_path": "/path/to/source_audio.wav",
+  "target_voice_path": "/path/to/target_voice_prompt.wav"
+}
+```
