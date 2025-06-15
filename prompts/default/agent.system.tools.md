@@ -121,3 +121,46 @@ Parameters: {
   "user_id": "user123"
 }
 ```
+
+### hybrid_memory_tool
+
+**Purpose**: Manages a hybrid memory system that combines Agent Zero's structured memory with intelligent Mem0-inspired memory capabilities, providing a unified interface for storing and retrieving context.
+
+**Actions**:
+- `store_interaction`: Store interaction data in both structured and intelligent memory systems
+- `retrieve_context`: Retrieve and combine relevant context from both memory systems
+
+**Parameters**:
+- `action` (required): Type of hybrid memory operation
+- `user_id`: Identifier for the user context (optional, defaults to current session)
+- `interaction_data`: Data about the interaction to store (for store_interaction) - should include 'content' for structured memory and can include 'messages' for intelligent memory
+- `query`: Query to retrieve relevant context (for retrieve_context)
+- `limit`: Maximum results from each memory source (default: 5)
+
+**Events**: Emits MEMORY_UPDATE events via StreamProtocol with hybrid memory operation details.
+
+**Example for storing an interaction**:
+```
+Action: hybrid_memory_tool
+Parameters: {
+  "action": "store_interaction",
+  "interaction_data": {
+    "type": "user_query",
+    "content": "User asked about machine learning algorithms",
+    "messages": [{"role": "user", "content": "What are the best ML algorithms for classification?"}],
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "user_id": "user456"
+}
+```
+
+**Example for retrieving context**:
+```
+Action: hybrid_memory_tool
+Parameters: {
+  "action": "retrieve_context",
+  "query": "machine learning classification algorithms",
+  "limit": 3,
+  "user_id": "user456"
+}
+```

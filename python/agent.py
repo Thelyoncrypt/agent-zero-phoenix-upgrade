@@ -522,6 +522,14 @@ class Agent:
             print(f"Agent {self.agent_name}: MemoryAgent tool not available: {e}")
         
         try:
+            # Register HybridMemory tool
+            from python.tools.hybrid_memory_tool import HybridMemoryTool
+            hybrid_memory_tool = HybridMemoryTool(self)
+            self.add_tool(hybrid_memory_tool)
+        except ImportError as e:
+            print(f"Agent {self.agent_name}: HybridMemory tool not available: {e}")
+        
+        try:
             # Register Response tool
             from python.tools.response import ResponseTool
             response_tool = ResponseTool(self)
