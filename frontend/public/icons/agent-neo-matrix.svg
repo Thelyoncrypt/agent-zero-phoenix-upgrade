@@ -1,0 +1,290 @@
+<svg id="agent-neo-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Glow Effects -->
+    <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="pulseGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="5" result="coloredBlur"/>
+      <animate attributeName="stdDeviation" values="3;6;3" dur="3s" repeatCount="indefinite"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Glitch Effect -->
+    <filter id="glitch">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="1" result="turbulence" seed="1">
+        <animate attributeName="seed" values="1;5;1" dur="0.1s" repeatCount="indefinite"/>
+      </feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="turbulence" scale="0" xChannelSelector="R" yChannelSelector="G">
+        <animate attributeName="scale" values="0;3;0" dur="0.2s" begin="0s" repeatCount="1" id="glitchAnim"/>
+      </feDisplacementMap>
+    </filter>
+    
+    <!-- Gradients -->
+    <linearGradient id="matrixGreen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:0">
+        <animate attributeName="stop-opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="50%" style="stop-color:#00FF41;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#008F11;stop-opacity:0.3"/>
+    </linearGradient>
+    
+    <radialGradient id="sunglassReflection">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:0.8"/>
+      <stop offset="100%" style="stop-color:#003311;stop-opacity:0.2"/>
+    </radialGradient>
+    
+    <!-- Mask for code rain -->
+    <mask id="codeMask">
+      <rect x="0" y="0" width="200" height="200" fill="white"/>
+      <rect x="60" y="60" width="80" height="80" fill="black" opacity="0.7"/>
+    </mask>
+    
+    <!-- Circuit Pattern -->
+    <pattern id="circuitPattern" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M0,20 L10,20 L15,15 L20,15 M20,0 L20,10 M30,20 L40,20" stroke="#00FF41" stroke-width="0.5" fill="none" opacity="0.3">
+        <animate attributeName="opacity" values="0.3;0.8;0.3" dur="4s" repeatCount="indefinite"/>
+      </path>
+      <circle cx="10" cy="20" r="1.5" fill="#00FF41" opacity="0.5">
+        <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="20" cy="10" r="1.5" fill="#00FF41" opacity="0.5">
+        <animate attributeName="opacity" values="0.5;1;0.5" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+      </circle>
+    </pattern>
+  </defs>
+  
+  <style>
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-5px); }
+    }
+    
+    @keyframes typewriter {
+      from { clip-path: inset(0 100% 0 0); }
+      to { clip-path: inset(0 0 0 0); }
+    }
+    
+    #agent-neo-logo:hover #matrix-rain-group .rain-column {
+      animation-duration: 0.5s !important;
+    }
+    
+    #agent-neo-logo:hover #sunglasses {
+      filter: url(#pulseGlow);
+    }
+    
+    #agent-neo-logo:hover #circuit-overlay {
+      opacity: 1 !important;
+    }
+    
+    #neo-silhouette {
+      animation: float 4s ease-in-out infinite;
+    }
+    
+    .clickable { cursor: pointer; }
+  </style>
+  
+  <!-- Background Matrix Rain -->
+  <g id="matrix-rain-group" mask="url(#codeMask)">
+    <!-- Column 1 -->
+    <g class="rain-column">
+      <text x="10" y="0" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="10" dy="0">0</tspan>
+        <tspan x="10" dy="12">1</tspan>
+        <tspan x="10" dy="12">1</tspan>
+        <tspan x="10" dy="12">0</tspan>
+        <tspan x="10" dy="12">1</tspan>
+        <animate attributeName="y" values="0;200;0" dur="3s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <!-- Column 2 -->
+    <g class="rain-column">
+      <text x="30" y="-50" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="30" dy="0">1</tspan>
+        <tspan x="30" dy="12">0</tspan>
+        <tspan x="30" dy="12">1</tspan>
+        <tspan x="30" dy="12">1</tspan>
+        <animate attributeName="y" values="-50;200;-50" dur="2.5s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <!-- Column 3 -->
+    <g class="rain-column">
+      <text x="50" y="-20" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="50" dy="0">0</tspan>
+        <tspan x="50" dy="12">0</tspan>
+        <tspan x="50" dy="12">1</tspan>
+        <tspan x="50" dy="12">0</tspan>
+        <tspan x="50" dy="12">1</tspan>
+        <animate attributeName="y" values="-20;200;-20" dur="3.5s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <!-- More columns -->
+    <g class="rain-column">
+      <text x="70" y="-80" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="70" dy="0">1</tspan>
+        <tspan x="70" dy="12">1</tspan>
+        <tspan x="70" dy="12">0</tspan>
+        <animate attributeName="y" values="-80;200;-80" dur="2.8s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <g class="rain-column">
+      <text x="90" y="-30" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="90" dy="0">0</tspan>
+        <tspan x="90" dy="12">1</tspan>
+        <tspan x="90" dy="12">0</tspan>
+        <tspan x="90" dy="12">1</tspan>
+        <animate attributeName="y" values="-30;200;-30" dur="4s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <g class="rain-column">
+      <text x="110" y="-60" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="110" dy="0">1</tspan>
+        <tspan x="110" dy="12">0</tspan>
+        <tspan x="110" dy="12">0</tspan>
+        <animate attributeName="y" values="-60;200;-60" dur="2.3s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <g class="rain-column">
+      <text x="130" y="-10" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="130" dy="0">0</tspan>
+        <tspan x="130" dy="12">1</tspan>
+        <tspan x="130" dy="12">1</tspan>
+        <tspan x="130" dy="12">1</tspan>
+        <animate attributeName="y" values="-10;200;-10" dur="3.2s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <g class="rain-column">
+      <text x="150" y="-40" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="150" dy="0">1</tspan>
+        <tspan x="150" dy="12">0</tspan>
+        <tspan x="150" dy="12">1</tspan>
+        <animate attributeName="y" values="-40;200;-40" dur="2.7s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <g class="rain-column">
+      <text x="170" y="-70" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="170" dy="0">0</tspan>
+        <tspan x="170" dy="12">0</tspan>
+        <tspan x="170" dy="12">1</tspan>
+        <tspan x="170" dy="12">0</tspan>
+        <animate attributeName="y" values="-70;200;-70" dur="3.8s" repeatCount="indefinite"/>
+      </text>
+    </g>
+    <g class="rain-column">
+      <text x="190" y="-25" font-family="monospace" font-size="10" fill="url(#matrixGreen)">
+        <tspan x="190" dy="0">1</tspan>
+        <tspan x="190" dy="12">1</tspan>
+        <tspan x="190" dy="12">0</tspan>
+        <tspan x="190" dy="12">1</tspan>
+        <animate attributeName="y" values="-25;200;-25" dur="2.9s" repeatCount="indefinite"/>
+      </text>
+    </g>
+  </g>
+  
+  <!-- Circuit Overlay -->
+  <rect id="circuit-overlay" x="0" y="0" width="200" height="200" fill="url(#circuitPattern)" opacity="0" style="transition: opacity 0.3s ease"/>
+  
+  <!-- Neo Silhouette -->
+  <g id="neo-silhouette" filter="url(#glitch)" opacity="0">
+    <!-- Head and Body -->
+    <ellipse cx="100" cy="80" rx="35" ry="40" fill="#00FF41" opacity="0.8"/>
+    <rect x="75" y="100" width="50" height="60" rx="10" fill="#00FF41" opacity="0.8"/>
+    
+    <!-- Sunglasses -->
+    <g id="sunglasses">
+      <rect x="70" y="70" width="25" height="15" rx="7" fill="url(#sunglassReflection)" stroke="#00FF41" stroke-width="2"/>
+      <rect x="105" y="70" width="25" height="15" rx="7" fill="url(#sunglassReflection)" stroke="#00FF41" stroke-width="2"/>
+      <path d="M95,77 L105,77" stroke="#00FF41" stroke-width="2"/>
+      
+      <!-- Scrolling code reflection -->
+      <g clip-path="url(#sunglassClip)">
+        <text x="75" y="75" font-family="monospace" font-size="4" fill="#00FF41" opacity="0.7">
+          <animate attributeName="y" values="75;85;75" dur="1s" repeatCount="indefinite"/>
+          10110
+        </text>
+        <text x="110" y="80" font-family="monospace" font-size="4" fill="#00FF41" opacity="0.7">
+          <animate attributeName="y" values="80;70;80" dur="1.2s" repeatCount="indefinite"/>
+          01101
+        </text>
+      </g>
+    </g>
+    
+    <!-- Materialize animation -->
+    <animate attributeName="opacity" values="0;1" dur="2s" begin="0.5s" fill="freeze"/>
+    <animateTransform attributeName="transform" type="scale" values="0.8,0.8;1,1" dur="2s" begin="0.5s" fill="freeze"/>
+  </g>
+  
+  <!-- Interactive Hit Area -->
+  <rect id="hit-area" x="0" y="0" width="200" height="200" fill="transparent" class="clickable"/>
+  
+  <!-- AGENT NEO Text -->
+  <g id="agent-neo-text" filter="url(#neonGlow)">
+    <text x="100" y="170" font-family="Courier New, monospace" font-size="20" font-weight="bold" fill="#00FF41" text-anchor="middle" letter-spacing="2">
+      <tspan>AGENT</tspan>
+      <tspan x="100" dy="25">NEO</tspan>
+    </text>
+    
+    <!-- Typewriter reveal on load -->
+    <rect x="0" y="150" width="200" height="50" fill="#000000">
+      <animate attributeName="width" values="200;0" dur="2s" begin="1s" fill="freeze"/>
+    </rect>
+  </g>
+  
+  <!-- Awakening Flash (triggered by click) -->
+  <circle id="awakening-flash" cx="100" cy="100" r="0" fill="none" stroke="#00FFFF" stroke-width="2" opacity="0">
+    <animate id="flashAnim" attributeName="r" values="0;150" dur="1s" begin="indefinite" fill="freeze"/>
+    <animate attributeName="opacity" values="0;1;0" dur="1s" begin="flashAnim.begin" fill="freeze"/>
+    <animate attributeName="stroke-width" values="2;0" dur="1s" begin="flashAnim.begin" fill="freeze"/>
+  </circle>
+  
+  <!-- JavaScript for interactivity -->
+  <script type="text/javascript">
+    <![CDATA[
+    (function() {
+      const logo = document.getElementById('agent-neo-logo');
+      const hitArea = document.getElementById('hit-area');
+      const flashAnim = document.getElementById('flashAnim');
+      const glitchFilter = document.getElementById('glitchAnim');
+      const neoSilhouette = document.getElementById('neo-silhouette');
+      
+      // Click interaction
+      hitArea.addEventListener('click', function() {
+        // Trigger awakening flash
+        flashAnim.beginElement();
+        
+        // Trigger glitch effect
+        glitchFilter.beginElement();
+        
+        // Transform binary rain temporarily
+        const rainColumns = document.querySelectorAll('.rain-column text');
+        rainColumns.forEach(column => {
+          const tspans = column.querySelectorAll('tspan');
+          tspans.forEach(tspan => {
+            const originalText = tspan.textContent;
+            tspan.textContent = Math.random() > 0.5 ? 'AI' : '∞';
+            setTimeout(() => {
+              tspan.textContent = originalText;
+            }, 2000);
+          });
+        });
+      });
+      
+      // Idle glitch effect
+      setInterval(() => {
+        if (Math.random() > 0.8) {
+          glitchFilter.beginElement();
+        }
+      }, 5000);
+    })();
+    ]]>
+  </script>
+</svg>

@@ -1,0 +1,865 @@
+## TASK_AUI_002: Svelte UI - `ChatHistoryPanel.svelte` Integration into Sidebar (A0 Style)
+
+**Goal:**
+1.  Take the `ChatHistoryPanel.svelte` component (previously conceptualized in Task 081 for its UI elements) and fully implement its Svelte logic.
+2.  Style it to closely resemble the original Agent Zero's chat list:
+    *   Display chat name and timestamp/message count.
+    *   Highlight the active chat.
+    *   Provide actions per chat item (Load, Rename, Delete) - icons are good.
+    *   "New Chat" button.
+3.  Integrate `ChatHistoryPanel.svelte` into `AppSidebar.svelte`.
+4.  Ensure its actions correctly call methods on `chatStore` (which, in turn, will use `socketStore` to send messages like `request_chat_list`, `load_chat_request`, etc., to the Phoenix backend).
+
+**Prerequisites:**
+*   TASK_AUI_001 completed: `AppSidebar.svelte` exists as a placeholder.
+*   `chatStore.js` (from Task 058, refined in Task 081 logic) has:
+    *   State: `chatList: Array<{ thread_id, chat_name, last_updated, message_count }>`, `currentThreadId`, `currentUserId`.
+    *   Methods: `requestChatList()`, `requestLoadChat(threadId)`, `requestDeleteChat(threadId)`, `requestRenameChat(threadId, newName)`, `requestNewChat()`.
+*   `socketStore.js` can send these new message types to the backend.
+*   Phoenix backend (from Task 081 logic) can handle:
+    *   `request_chat_list` -> responds with `CHAT_LIST_UPDATE` event.
+    *   `load_chat_request` -> responds with `CHAT_LOADED_DATA` event.
+    *   `delete_chat_request` -> responds with `CHAT_LIST_UPDATE` event.
+    *   `rename_chat_request` -> responds with `CHAT_LIST_UPDATE` and `CURRENT_CHAT_RENAMED` events.
+    *   `new_chat_request` -> responds with `NEW_CHAT_SESSION_INITIATED` and then `CHAT_LOADED_DATA` (for the new empty chat).
+
+**Detailed Steps:**
+
+**1. Implement/Refine `src/lib/components/sidebar/ChatHistoryPanel.svelte`:**
+    *   Action: Create or update this file with the full Svelte logic.
+        ```html
+<!-- src/lib/components/sidebar/ChatHistoryPanel.svelte -->
+        <script>
+            import { chatStore } from '$lib/stores/chatStore';
+            import Button from '../shared/Button.svelte'; // Assuming your base Button
+            import Icon from '../shared/Icon.svelte';   // Assuming your Icon component
+
+            // Icon paths (examples, replace with your actual SVG paths or component usage)
+            const newChatIcon = "M12 5v14m-7-7h14"; // Plus
+            const chatBubbleIcon = "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z";
+            const editIcon = "M11.071 2.507a2.047 2.047 0 012.896 0l2.526 2.526a2.047 2.047 0 010 2.896L9.366 15.056l-4.243 1.414 1.414-4.243L11.071 2.507zM17.5 9.5l-2-2"; // Pencil
+            const trashIcon = "M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2";
+            const loadIcon = "M4 12h16M4 12l5-5m-5 5l5 5M21 12H8"; // Arrow pointing into a container or similar "load" metaphor
+            const saveIcon = "M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM7 3v5h8V3m-2 14v-4a2 2 0 00-2-2h-2a2 2 0 00-2 2v4"; // Floppy disk
+
+            let renamingThreadId = null;
+            let newNameForRename = "";
+
+            function handleLoadChat(threadId) {
+                if (threadId === $chatStore.currentThreadId) {
+                    console.log("Chat already loaded:", threadId);
+                    return;
+                }
+                // Could add a confirmation if current chat has unsaved changes,
+                // but for now, Phoenix backend might auto-save current before loading new.
+                chatStore.requestLoadChat(threadId);
+            }
+
+            function handleDeleteChat(threadId, chatName) {
+                // Add a more robust confirmation modal later if desired
+                if (window.confirm(`Are you sure you want to delete chat "${chatName || 'this chat'}"? This cannot be undone.`)) {
+                    chatStore.requestDeleteChat(threadId);
+                }
+            }
+
+            function startRename(chat) {
+                renamingThreadId = chat.thread_id;
+                newNameForRename = chat.chat_name;
+                // Ensure input is focused after it becomes visible
+                setTimeout(() => {
+                    const inputEl = document.querySelector(`.rename-input[data-thread-id="${chat.thread_id}"]`);
+                    if (inputEl) inputEl.focus();
+                }, 0);
+            }
+
+            function submitRename(event, threadId) {
+                // Can be called by Enter key or Save button
+                if (event && event.key && event.key !== 'Enter') return;
+                if (threadId && newNameForRename.trim()) {
+                    chatStore.requestRenameChat(threadId, newNameForRename.trim());
+                }
+                renamingThreadId = null; // Reset editing state
+            }
+
+            function cancelRename() {
+                renamingThreadId = null;
+                newNameForRename = "";
+            }
+            
+            function formatDate(isoString) {
+                if (!isoString) return 'No updates';
+                try {
+                    const date = new Date(isoString);
+                    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                } catch (e) { return 'Invalid Date'; }
+            }
+
+            // Request chat list when the component mounts (if user is known)
+            // This is also called in +layout.svelte, so one might be redundant but safe.
+            $: if ($chatStore.currentUserId && !$chatStore.chatList.length) {
+                 chatStore.requestChatList();
+            }
+
+        </script>
+
+        <div class="chat-history-panel-content">
+            <div class="panel-header">
+                <h5>YOUR CHATS</h5>
+                <Button 
+                    type="extruded" 
+                    onClick={() => chatStore.requestNewChat()} 
+                    customClass="new-chat-btn" 
+                    title="Start New Chat"
+                >
+                    <Icon path={newChatIcon} size="16" color="var(--accent-green-primary)"/>
+                    <span>New</span>
+                </Button>
+            </div>
+
+            <div class="chat-list-container">
+                {#if $chatStore.chatList.length === 0}
+                    <p class="no-chats-info">Click "New" to start a chat.</p>
+                {:else}
+                    {#each $chatStore.chatList as chat (chat.thread_id)}
+                        <div 
+                            class="chat-item neumorphic" 
+                            class:active={chat.thread_id === $chatStore.currentThreadId}
+                            class:editing={renamingThreadId === chat.thread_id}
+                            on:click={() => renamingThreadId !== chat.thread_id && handleLoadChat(chat.thread_id)}
+                            role="button"
+                            tabindex="0"
+                            on:keydown={(e) => e.key === 'Enter' && renamingThreadId !== chat.thread_id && handleLoadChat(chat.thread_id)}
+                            title={renamingThreadId !== chat.thread_id ? `Load chat: ${chat.chat_name}` : 'Editing name'}
+                        >
+                            <div class="chat-item-main-info">
+                                {#if renamingThreadId === chat.thread_id}
+                                    <input 
+                                        type="text" 
+                                        bind:value={newNameForRename} 
+                                        on:keydown={(e) => submitRename(e, chat.thread_id)} 
+                                        on:blur={() => setTimeout(cancelRename, 100)} /* Timeout to allow save click */
+                                        class="rename-input"
+                                        data-thread-id={chat.thread_id}
+                                        placeholder="Enter new chat name"
+                                    />
+                                {:else}
+                                    <Icon path={chatBubbleIcon} size="15" customClass="chat-item-icon" />
+                                    <span class="chat-name">{chat.chat_name}</span>
+                                {/if}
+                            </div>
+                            {#if renamingThreadId !== chat.thread_id}
+                                <span class="chat-timestamp">{formatDate(chat.last_updated)}</span>
+                                <div class="chat-actions">
+                                    <Button onClick|stopPropagation={(e) => startRename(chat)} customClass="action-btn" title="Rename Chat">
+                                        <Icon path={editIcon} size="14"/>
+                                    </Button>
+                                    <Button onClick|stopPropagation={() => handleDeleteChat(chat.thread_id, chat.chat_name)} customClass="action-btn delete" title="Delete Chat">
+                                        <Icon path={trashIcon} size="14"/>
+                                    </Button>
+                                </div>
+                            {:else}
+                                <div class="chat-actions edit-mode">
+                                     <Button onClick|stopPropagation={() => submitRename(null, chat.thread_id)} customClass="action-btn save" title="Save Name">
+                                        <Icon path={saveIcon} size="14"/>
+                                    </Button>
+                                </div>
+                            {/if}
+                        </div>
+                    {/each}
+                {/if}
+            </div>
+        </div>
+
+        <style>
+            .chat-history-panel-content {
+                display: flex;
+                flex-direction: column;
+                height: 100%; /* Fill sidebar */
+            }
+            .panel-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px 12px; /* Slightly reduced padding */
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+            .panel-header h5 {
+                margin: 0;
+                color: var(--text-secondary); /* Subtler header text */
+                font-size: 0.75em;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+            }
+            .new-chat-btn {
+                font-size: 0.8em;
+                padding: 5px 8px; /* Smaller button */
+                gap: 4px;
+                color: var(--accent-green-primary);
+                /* Neumorphic style from Button.svelte */
+            }
+            .new-chat-btn:hover { /* Consistent hover for buttons */
+                 box-shadow: 
+                    -2px -2px 5px var(--neumorphic-shadow-light), 
+                    2px 2px 5px var(--neumorphic-shadow-dark);
+            }
+             .new-chat-btn:active {
+                 box-shadow: 
+                    inset -2px -2px 5px var(--neumorphic-shadow-light), 
+                    inset 2px 2px 5px var(--neumorphic-shadow-dark);
+            }
+
+
+            .chat-list-container {
+                flex-grow: 1;
+                overflow-y: auto;
+                padding: 8px;
+            }
+            .chat-list-container::-webkit-scrollbar { width: 5px; }
+            .chat-list-container::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+            
+            .no-chats-info {
+                text-align: center;
+                color: var(--text-secondary);
+                font-style: italic;
+                font-size: 0.85em;
+                padding: 20px 10px;
+            }
+
+            .chat-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 8px 10px;
+                margin-bottom: 6px;
+                border-radius: 8px; /* Softer neumorphic */
+                cursor: pointer;
+                transition: all 0.15s ease-out;
+                background-color: var(--bg-dark-primary); /* Base for neumorphic extrusion */
+                 box-shadow: 
+                    -3px -3px 6px var(--neumorphic-shadow-light), 
+                    3px 3px 6px var(--neumorphic-shadow-dark);
+                border: 1px solid transparent; /* For active state */
+            }
+            .chat-item:hover:not(.editing) {
+                 box-shadow: 
+                    -2px -2px 4px var(--neumorphic-shadow-light), 
+                    2px 2px 4px var(--neumorphic-shadow-dark);
+            }
+            .chat-item.active:not(.editing) {
+                background-color: var(--accent-green-secondary); /* Accent color for active */
+                color: var(--bg-dark-primary);
+                box-shadow: inset -3px -3px 6px rgba(0,0,0,0.3), inset 3px 3px 6px rgba(255,255,255,0.05); /* Inset for active */
+            }
+             .chat-item.active .chat-name,
+             .chat-item.active .chat-timestamp,
+             .chat-item.active :global(.chat-item-icon path) { /* Target SVG path for color */
+                color: var(--bg-dark-primary) !important; /* Ensure text/icon color contrasts with active bg */
+                fill: var(--bg-dark-primary) !important; /* For SVG fill */
+                stroke: var(--bg-dark-primary) !important; /* For SVG stroke */
+            }
+             .chat-item.active .action-btn :global(svg path) {
+                stroke: var(--bg-dark-primary) !important;
+            }
+             .chat-item.active .action-btn:hover :global(svg path) {
+                stroke: white !important;
+            }
+
+
+            .chat-item-main-info {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-grow: 1;
+                overflow: hidden;
+            }
+            .chat-item-icon {
+                color: var(--text-secondary);
+                flex-shrink: 0;
+            }
+            .chat-name {
+                font-weight: 500;
+                font-size: 0.9em;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                color: var(--text-primary);
+                 flex-grow: 1;
+            }
+            .rename-input {
+                width: 100%;
+                padding: 4px 6px;
+                font-size: 0.9em;
+                background-color: var(--neumorphic-shadow-dark); /* Inset appearance */
+                color: var(--text-primary);
+                border: 1px solid var(--neumorphic-shadow-light);
+                border-radius: 4px;
+                box-shadow: inset 1px 1px 2px var(--neumorphic-shadow-dark), inset -1px -1px 2px var(--neumorphic-shadow-light);
+            }
+            .rename-input:focus {
+                outline: none;
+                border-color: var(--accent-green-primary);
+            }
+            .chat-timestamp {
+                font-size: 0.7em;
+                color: var(--text-secondary);
+                margin-left: 8px; /* Space from name if on same line conceptually */
+                flex-shrink: 0;
+                text-align: right;
+            }
+
+            .chat-actions {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                flex-shrink: 0;
+                margin-left: 8px;
+                opacity: 0; /* Hidden by default */
+                transition: opacity 0.2s ease;
+            }
+            .chat-item:hover .chat-actions, .chat-item.editing .chat-actions {
+                opacity: 1; /* Show on hover or when editing */
+            }
+            .action-btn {
+                padding: 5px; /* Small icon buttons */
+                color: var(--text-secondary);
+                background: transparent; /* Make them look like part of the item */
+                border-radius: 50%; /* Circular icon buttons */
+                 width: 28px; height: 28px;
+            }
+             .action-btn:hover :global(svg path) { /* Target icon path on hover */
+                stroke: var(--accent-green-primary) !important;
+            }
+            .action-btn.delete:hover :global(svg path) {
+                stroke: var(--error-color) !important;
+            }
+             .action-btn.save :global(svg path) {
+                stroke: var(--accent-green-primary) !important;
+            }
+        </style>
+```
+    *   Verify: Component implemented.
+
+**2. Integrate `ChatHistoryPanel.svelte` into `src/lib/components/layout/AppSidebar.svelte`:**
+    *   Action: Replace the placeholder content in `AppSidebar.svelte`.
+        ```html
+<!-- src/lib/components/layout/AppSidebar.svelte -->
+        <script>
+            import ChatHistoryPanel from '../sidebar/ChatHistoryPanel.svelte'; // Adjust path
+            export let isOpen = true;
+        </script>
+
+        {#if isOpen}
+        <aside class="app-sidebar card-base neumorphic neumorphic-extruded">
+            <!-- ChatHistoryPanel will have its own header internally -->
+            <ChatHistoryPanel />
+        </aside>
+        {/if}
+
+        <style>
+            .app-sidebar {
+                width: 300px; /* Adjusted width */
+                height: 100%; 
+                display: flex; /* Will be flex-column from ChatHistoryPanel */
+                flex-direction: column;
+                flex-shrink: 0;
+                padding: 0; 
+                background-color: var(--bg-dark-primary); /* Ensure base background */
+                border-right: 1px solid var(--neumorphic-shadow-dark);
+                box-shadow: 
+                    2px 0px 5px -1px var(--neumorphic-shadow-dark); /* Softer right shadow */
+            }
+        </style>
+```
+    *   Verify: Integration complete.
+
+**3. Trigger Initial Chat List Fetch in Root Layout/App Component:**
+    *   Action: In `src/routes/+layout.svelte` (or `App.svelte`), ensure `chatStore.requestChatList()` is called after session initialization (using `currentThreadId` and `currentUserId`). This was added in Task_AUI_001's `+layout.svelte` example, verify it's robust.
+        ```javascript
+// In src/routes/+layout.svelte - onMount
+        onMount(() => {
+            // ...
+            const userIdToUse = $chatStore.currentUserId || initialUserId; // Ensure userId is available
+            // Ensure socket is connected or about to connect before sending messages
+            if ($socketStore.isConnected) {
+                 chatStore.requestChatList();
+            } else {
+                const unsubscribe = socketStore.subscribe(store => { // Wait for connection
+                    if (store.isConnected) {
+                        chatStore.requestChatList();
+                        unsubscribe(); // Clean up listener
+                    }
+                });
+            }
+        });
+```
+    *   Verify: Initial chat list is requested.
+
+**4. Testing TASK_AUI_002:**
+    *   Action:
+        1.  Ensure Phoenix backend has handlers for `request_chat_list`, `load_chat_request`, `delete_chat_request`, `rename_chat_request`, `new_chat_request` and emits corresponding `CHAT_LIST_UPDATE`, `CHAT_LOADED_DATA`, `NEW_CHAT_SESSION_INITIATED`, `CURRENT_CHAT_RENAMED` events.
+        2.  The `chat_history_manager.py` should save/load chats to/from `work_dir/chat_histories/{userId}/`.
+        3.  Start Phoenix backend and Svelte UI.
+    *   Expected Behavior:
+        *   **Initial Load:** `ChatHistoryPanel` appears in the left sidebar. It requests the chat list. If no chats exist for the `currentUserId`, it shows "Click 'New' to start a chat."
+        *   **New Chat:**
+            *   Clicking "New Chat" button in `ChatHistoryPanel`.
+            *   UI sends `new_chat_request`.
+            *   Backend responds (e.g., with `NEW_CHAT_SESSION_INITIATED` and `CHAT_LOADED_DATA` for an empty new chat).
+            *   `chatStore` updates `currentThreadId`, `currentChatName` to "New Chat", clears `messagesAndEvents`.
+            *   Chat view in the main area becomes empty.
+            *   The sidebar list highlights "New Chat" (or the new `threadId` entry if saved immediately).
+        *   **Interacting & Saving:**
+            *   Send some messages in the new chat. (For now, saving is implicit when loading another chat or creating new, or via a dedicated save button if you add one).
+            *   The backend should save the current chat session's state (messages, name) when a new chat is created or another chat is loaded.
+        *   **Listing Chats:** The `ChatHistoryPanel` should display a list of chats, each with its name and last updated time/message count.
+        *   **Loading a Chat:** Clicking a different chat in the panel (or its load button):
+            *   UI sends `load_chat_request`.
+            *   Backend responds with `CHAT_LOADED_DATA`.
+            *   `chatStore` updates, and the main chat view populates with the loaded chat's history. The selected chat is highlighted in the sidebar.
+        *   **Renaming a Chat:** Clicking the edit icon on a chat item:
+            *   Input field appears for the name.
+            *   Changing name and submitting sends `rename_chat_request`.
+            *   Backend renames, sends `CHAT_LIST_UPDATE` (and `CURRENT_CHAT_RENAMED` if it's the active chat). UI list and header (if showing chat name) update.
+        *   **Deleting a Chat:** Clicking the trash icon:
+            *   Confirmation prompt.
+            *   UI sends `delete_chat_request`.
+            *   Backend deletes, sends `CHAT_LIST_UPDATE`. Chat is removed from the list. If current chat is deleted, UI should ideally switch to a new chat or an empty state.
+        *   **Styling:** The panel and its items should have a neumorphic appearance consistent with the theme. Active chat should be clearly highlighted. Action icons should be visible (perhaps on hover) and functional.
+
+This task provides the core chat management experience.
+
+Let me know when you are ready for TASK_AUI_003!## TASK_AUI_002: Svelte UI - `ChatHistoryPanel.svelte` Integration into Sidebar (A0 Style)
+
+**Goal:**
+1.  Take the `ChatHistoryPanel.svelte` component (previously conceptualized in Task 081 for its UI elements) and fully implement its Svelte logic.
+2.  Style it to closely resemble the original Agent Zero's chat list:
+    *   Display chat name and timestamp/message count.
+    *   Highlight the active chat.
+    *   Provide actions per chat item (Load, Rename, Delete) - icons are good.
+    *   "New Chat" button.
+3.  Integrate `ChatHistoryPanel.svelte` into `AppSidebar.svelte`.
+4.  Ensure its actions correctly call methods on `chatStore` (which, in turn, will use `socketStore` to send messages like `request_chat_list`, `load_chat_request`, etc., to the Phoenix backend).
+
+**Prerequisites:**
+*   TASK_AUI_001 completed: `AppSidebar.svelte` exists as a placeholder.
+*   `chatStore.js` (from Task 058, refined in Task 081 logic) has:
+    *   State: `chatList: Array<{ thread_id, chat_name, last_updated, message_count }>`, `currentThreadId`, `currentUserId`.
+    *   Methods: `requestChatList()`, `requestLoadChat(threadId)`, `requestDeleteChat(threadId)`, `requestRenameChat(threadId, newName)`, `requestNewChat()`.
+*   `socketStore.js` can send these new message types to the backend.
+*   Phoenix backend (from Task 081 logic) can handle:
+    *   `request_chat_list` -> responds with `CHAT_LIST_UPDATE` event.
+    *   `load_chat_request` -> responds with `CHAT_LOADED_DATA` event.
+    *   `delete_chat_request` -> responds with `CHAT_LIST_UPDATE` event.
+    *   `rename_chat_request` -> responds with `CHAT_LIST_UPDATE` and `CURRENT_CHAT_RENAMED` events.
+    *   `new_chat_request` -> responds with `NEW_CHAT_SESSION_INITIATED` and then `CHAT_LOADED_DATA` (for the new empty chat).
+
+**Detailed Steps:**
+
+**1. Implement/Refine `src/lib/components/sidebar/ChatHistoryPanel.svelte`:**
+    *   Action: Create or update this file with the full Svelte logic.
+        ```html
+        <!-- src/lib/components/sidebar/ChatHistoryPanel.svelte -->
+        <script>
+            import { chatStore } from '$lib/stores/chatStore';
+            import Button from '../shared/Button.svelte'; // Assuming your base Button
+            import Icon from '../shared/Icon.svelte';   // Assuming your Icon component
+
+            // Icon paths (examples, replace with your actual SVG paths or component usage)
+            const newChatIcon = "M12 5v14m-7-7h14"; // Plus
+            const chatBubbleIcon = "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z";
+            const editIcon = "M11.071 2.507a2.047 2.047 0 012.896 0l2.526 2.526a2.047 2.047 0 010 2.896L9.366 15.056l-4.243 1.414 1.414-4.243L11.071 2.507zM17.5 9.5l-2-2"; // Pencil
+            const trashIcon = "M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2";
+            const loadIcon = "M4 12h16M4 12l5-5m-5 5l5 5M21 12H8"; // Arrow pointing into a container or similar "load" metaphor
+            const saveIcon = "M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM7 3v5h8V3m-2 14v-4a2 2 0 00-2-2h-2a2 2 0 00-2 2v4"; // Floppy disk
+
+            let renamingThreadId = null;
+            let newNameForRename = "";
+
+            function handleLoadChat(threadId) {
+                if (threadId === $chatStore.currentThreadId) {
+                    console.log("Chat already loaded:", threadId);
+                    return;
+                }
+                // Could add a confirmation if current chat has unsaved changes,
+                // but for now, Phoenix backend might auto-save current before loading new.
+                chatStore.requestLoadChat(threadId);
+            }
+
+            function handleDeleteChat(threadId, chatName) {
+                // Add a more robust confirmation modal later if desired
+                if (window.confirm(`Are you sure you want to delete chat "${chatName || 'this chat'}"? This cannot be undone.`)) {
+                    chatStore.requestDeleteChat(threadId);
+                }
+            }
+
+            function startRename(chat) {
+                renamingThreadId = chat.thread_id;
+                newNameForRename = chat.chat_name;
+                // Ensure input is focused after it becomes visible
+                setTimeout(() => {
+                    const inputEl = document.querySelector(`.rename-input[data-thread-id="${chat.thread_id}"]`);
+                    if (inputEl) inputEl.focus();
+                }, 0);
+            }
+
+            function submitRename(event, threadId) {
+                // Can be called by Enter key or Save button
+                if (event && event.key && event.key !== 'Enter') return;
+                if (threadId && newNameForRename.trim()) {
+                    chatStore.requestRenameChat(threadId, newNameForRename.trim());
+                }
+                renamingThreadId = null; // Reset editing state
+            }
+
+            function cancelRename() {
+                renamingThreadId = null;
+                newNameForRename = "";
+            }
+            
+            function formatDate(isoString) {
+                if (!isoString) return 'No updates';
+                try {
+                    const date = new Date(isoString);
+                    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                } catch (e) { return 'Invalid Date'; }
+            }
+
+            // Request chat list when the component mounts (if user is known)
+            // This is also called in +layout.svelte, so one might be redundant but safe.
+            $: if ($chatStore.currentUserId && !$chatStore.chatList.length) {
+                 chatStore.requestChatList();
+            }
+
+        </script>
+
+        <div class="chat-history-panel-content">
+            <div class="panel-header">
+                <h5>YOUR CHATS</h5>
+                <Button 
+                    type="extruded" 
+                    onClick={() => chatStore.requestNewChat()} 
+                    customClass="new-chat-btn" 
+                    title="Start New Chat"
+                >
+                    <Icon path={newChatIcon} size="16" color="var(--accent-green-primary)"/>
+                    <span>New</span>
+                </Button>
+            </div>
+
+            <div class="chat-list-container">
+                {#if $chatStore.chatList.length === 0}
+                    <p class="no-chats-info">Click "New" to start a chat.</p>
+                {:else}
+                    {#each $chatStore.chatList as chat (chat.thread_id)}
+                        <div 
+                            class="chat-item neumorphic" 
+                            class:active={chat.thread_id === $chatStore.currentThreadId}
+                            class:editing={renamingThreadId === chat.thread_id}
+                            on:click={() => renamingThreadId !== chat.thread_id && handleLoadChat(chat.thread_id)}
+                            role="button"
+                            tabindex="0"
+                            on:keydown={(e) => e.key === 'Enter' && renamingThreadId !== chat.thread_id && handleLoadChat(chat.thread_id)}
+                            title={renamingThreadId !== chat.thread_id ? `Load chat: ${chat.chat_name}` : 'Editing name'}
+                        >
+                            <div class="chat-item-main-info">
+                                {#if renamingThreadId === chat.thread_id}
+                                    <input 
+                                        type="text" 
+                                        bind:value={newNameForRename} 
+                                        on:keydown={(e) => submitRename(e, chat.thread_id)} 
+                                        on:blur={() => setTimeout(cancelRename, 100)} /* Timeout to allow save click */
+                                        class="rename-input"
+                                        data-thread-id={chat.thread_id}
+                                        placeholder="Enter new chat name"
+                                    />
+                                {:else}
+                                    <Icon path={chatBubbleIcon} size="15" customClass="chat-item-icon" />
+                                    <span class="chat-name">{chat.chat_name}</span>
+                                {/if}
+                            </div>
+                            {#if renamingThreadId !== chat.thread_id}
+                                <span class="chat-timestamp">{formatDate(chat.last_updated)}</span>
+                                <div class="chat-actions">
+                                    <Button onClick|stopPropagation={(e) => startRename(chat)} customClass="action-btn" title="Rename Chat">
+                                        <Icon path={editIcon} size="14"/>
+                                    </Button>
+                                    <Button onClick|stopPropagation={() => handleDeleteChat(chat.thread_id, chat.chat_name)} customClass="action-btn delete" title="Delete Chat">
+                                        <Icon path={trashIcon} size="14"/>
+                                    </Button>
+                                </div>
+                            {:else}
+                                <div class="chat-actions edit-mode">
+                                     <Button onClick|stopPropagation={() => submitRename(null, chat.thread_id)} customClass="action-btn save" title="Save Name">
+                                        <Icon path={saveIcon} size="14"/>
+                                    </Button>
+                                </div>
+                            {/if}
+                        </div>
+                    {/each}
+                {/if}
+            </div>
+        </div>
+
+        <style>
+            .chat-history-panel-content {
+                display: flex;
+                flex-direction: column;
+                height: 100%; /* Fill sidebar */
+            }
+            .panel-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px 12px; /* Slightly reduced padding */
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+            .panel-header h5 {
+                margin: 0;
+                color: var(--text-secondary); /* Subtler header text */
+                font-size: 0.75em;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+            }
+            .new-chat-btn {
+                font-size: 0.8em;
+                padding: 5px 8px; /* Smaller button */
+                gap: 4px;
+                color: var(--accent-green-primary);
+                /* Neumorphic style from Button.svelte */
+            }
+            .new-chat-btn:hover { /* Consistent hover for buttons */
+                 box-shadow: 
+                    -2px -2px 5px var(--neumorphic-shadow-light), 
+                    2px 2px 5px var(--neumorphic-shadow-dark);
+            }
+             .new-chat-btn:active {
+                 box-shadow: 
+                    inset -2px -2px 5px var(--neumorphic-shadow-light), 
+                    inset 2px 2px 5px var(--neumorphic-shadow-dark);
+            }
+
+
+            .chat-list-container {
+                flex-grow: 1;
+                overflow-y: auto;
+                padding: 8px;
+            }
+            .chat-list-container::-webkit-scrollbar { width: 5px; }
+            .chat-list-container::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+            
+            .no-chats-info {
+                text-align: center;
+                color: var(--text-secondary);
+                font-style: italic;
+                font-size: 0.85em;
+                padding: 20px 10px;
+            }
+
+            .chat-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 8px 10px;
+                margin-bottom: 6px;
+                border-radius: 8px; /* Softer neumorphic */
+                cursor: pointer;
+                transition: all 0.15s ease-out;
+                background-color: var(--bg-dark-primary); /* Base for neumorphic extrusion */
+                 box-shadow: 
+                    -3px -3px 6px var(--neumorphic-shadow-light), 
+                    3px 3px 6px var(--neumorphic-shadow-dark);
+                border: 1px solid transparent; /* For active state */
+            }
+            .chat-item:hover:not(.editing) {
+                 box-shadow: 
+                    -2px -2px 4px var(--neumorphic-shadow-light), 
+                    2px 2px 4px var(--neumorphic-shadow-dark);
+            }
+            .chat-item.active:not(.editing) {
+                background-color: var(--accent-green-secondary); /* Accent color for active */
+                color: var(--bg-dark-primary);
+                box-shadow: inset -3px -3px 6px rgba(0,0,0,0.3), inset 3px 3px 6px rgba(255,255,255,0.05); /* Inset for active */
+            }
+             .chat-item.active .chat-name,
+             .chat-item.active .chat-timestamp,
+             .chat-item.active :global(.chat-item-icon path) { /* Target SVG path for color */
+                color: var(--bg-dark-primary) !important; /* Ensure text/icon color contrasts with active bg */
+                fill: var(--bg-dark-primary) !important; /* For SVG fill */
+                stroke: var(--bg-dark-primary) !important; /* For SVG stroke */
+            }
+             .chat-item.active .action-btn :global(svg path) {
+                stroke: var(--bg-dark-primary) !important;
+            }
+             .chat-item.active .action-btn:hover :global(svg path) {
+                stroke: white !important;
+            }
+
+
+            .chat-item-main-info {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-grow: 1;
+                overflow: hidden;
+            }
+            .chat-item-icon {
+                color: var(--text-secondary);
+                flex-shrink: 0;
+            }
+            .chat-name {
+                font-weight: 500;
+                font-size: 0.9em;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                color: var(--text-primary);
+                 flex-grow: 1;
+            }
+            .rename-input {
+                width: 100%;
+                padding: 4px 6px;
+                font-size: 0.9em;
+                background-color: var(--neumorphic-shadow-dark); /* Inset appearance */
+                color: var(--text-primary);
+                border: 1px solid var(--neumorphic-shadow-light);
+                border-radius: 4px;
+                box-shadow: inset 1px 1px 2px var(--neumorphic-shadow-dark), inset -1px -1px 2px var(--neumorphic-shadow-light);
+            }
+            .rename-input:focus {
+                outline: none;
+                border-color: var(--accent-green-primary);
+            }
+            .chat-timestamp {
+                font-size: 0.7em;
+                color: var(--text-secondary);
+                margin-left: 8px; /* Space from name if on same line conceptually */
+                flex-shrink: 0;
+                text-align: right;
+            }
+
+            .chat-actions {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                flex-shrink: 0;
+                margin-left: 8px;
+                opacity: 0; /* Hidden by default */
+                transition: opacity 0.2s ease;
+            }
+            .chat-item:hover .chat-actions, .chat-item.editing .chat-actions {
+                opacity: 1; /* Show on hover or when editing */
+            }
+            .action-btn {
+                padding: 5px; /* Small icon buttons */
+                color: var(--text-secondary);
+                background: transparent; /* Make them look like part of the item */
+                border-radius: 50%; /* Circular icon buttons */
+                 width: 28px; height: 28px;
+            }
+             .action-btn:hover :global(svg path) { /* Target icon path on hover */
+                stroke: var(--accent-green-primary) !important;
+            }
+            .action-btn.delete:hover :global(svg path) {
+                stroke: var(--error-color) !important;
+            }
+             .action-btn.save :global(svg path) {
+                stroke: var(--accent-green-primary) !important;
+            }
+        </style>
+        ```
+    *   Verify: Component implemented.
+
+**2. Integrate `ChatHistoryPanel.svelte` into `src/lib/components/layout/AppSidebar.svelte`:**
+    *   Action: Replace the placeholder content in `AppSidebar.svelte`.
+        ```html
+        <!-- src/lib/components/layout/AppSidebar.svelte -->
+        <script>
+            import ChatHistoryPanel from '../sidebar/ChatHistoryPanel.svelte'; // Adjust path
+            export let isOpen = true;
+        </script>
+
+        {#if isOpen}
+        <aside class="app-sidebar card-base neumorphic neumorphic-extruded">
+            <!-- ChatHistoryPanel will have its own header internally -->
+            <ChatHistoryPanel />
+        </aside>
+        {/if}
+
+        <style>
+            .app-sidebar {
+                width: 300px; /* Adjusted width */
+                height: 100%; 
+                display: flex; /* Will be flex-column from ChatHistoryPanel */
+                flex-direction: column;
+                flex-shrink: 0;
+                padding: 0; 
+                background-color: var(--bg-dark-primary); /* Ensure base background */
+                border-right: 1px solid var(--neumorphic-shadow-dark);
+                box-shadow: 
+                    2px 0px 5px -1px var(--neumorphic-shadow-dark); /* Softer right shadow */
+            }
+        </style>
+        ```
+    *   Verify: Integration complete.
+
+**3. Trigger Initial Chat List Fetch in Root Layout/App Component:**
+    *   Action: In `src/routes/+layout.svelte` (or `App.svelte`), ensure `chatStore.requestChatList()` is called after session initialization (using `currentThreadId` and `currentUserId`). This was added in Task_AUI_001's `+layout.svelte` example, verify it's robust.
+        ```javascript
+        // In src/routes/+layout.svelte - onMount
+        onMount(() => {
+            // ...
+            const userIdToUse = $chatStore.currentUserId || initialUserId; // Ensure userId is available
+            // Ensure socket is connected or about to connect before sending messages
+            if ($socketStore.isConnected) {
+                 chatStore.requestChatList();
+            } else {
+                const unsubscribe = socketStore.subscribe(store => { // Wait for connection
+                    if (store.isConnected) {
+                        chatStore.requestChatList();
+                        unsubscribe(); // Clean up listener
+                    }
+                });
+            }
+        });
+        ```
+    *   Verify: Initial chat list is requested.
+
+**4. Testing TASK_AUI_002:**
+    *   Action:
+        1.  Ensure Phoenix backend has handlers for `request_chat_list`, `load_chat_request`, `delete_chat_request`, `rename_chat_request`, `new_chat_request` and emits corresponding `CHAT_LIST_UPDATE`, `CHAT_LOADED_DATA`, `NEW_CHAT_SESSION_INITIATED`, `CURRENT_CHAT_RENAMED` events.
+        2.  The `chat_history_manager.py` should save/load chats to/from `work_dir/chat_histories/{userId}/`.
+        3.  Start Phoenix backend and Svelte UI.
+    *   Expected Behavior:
+        *   **Initial Load:** `ChatHistoryPanel` appears in the left sidebar. It requests the chat list. If no chats exist for the `currentUserId`, it shows "Click 'New' to start a chat."
+        *   **New Chat:**
+            *   Clicking "New Chat" button in `ChatHistoryPanel`.
+            *   UI sends `new_chat_request`.
+            *   Backend responds (e.g., with `NEW_CHAT_SESSION_INITIATED` and `CHAT_LOADED_DATA` for an empty new chat).
+            *   `chatStore` updates `currentThreadId`, `currentChatName` to "New Chat", clears `messagesAndEvents`.
+            *   Chat view in the main area becomes empty.
+            *   The sidebar list highlights "New Chat" (or the new `threadId` entry if saved immediately).
+        *   **Interacting & Saving:**
+            *   Send some messages in the new chat. (For now, saving is implicit when loading another chat or creating new, or via a dedicated save button if you add one).
+            *   The backend should save the current chat session's state (messages, name) when a new chat is created or another chat is loaded.
+        *   **Listing Chats:** The `ChatHistoryPanel` should display a list of chats, each with its name and last updated time/message count.
+        *   **Loading a Chat:** Clicking a different chat in the panel (or its load button):
+            *   UI sends `load_chat_request`.
+            *   Backend responds with `CHAT_LOADED_DATA`.
+            *   `chatStore` updates, and the main chat view populates with the loaded chat's history. The selected chat is highlighted in the sidebar.
+        *   **Renaming a Chat:** Clicking the edit icon on a chat item:
+            *   Input field appears for the name.
+            *   Changing name and submitting sends `rename_chat_request`.
+            *   Backend renames, sends `CHAT_LIST_UPDATE` (and `CURRENT_CHAT_RENAMED` if it's the active chat). UI list and header (if showing chat name) update.
+        *   **Deleting a Chat:** Clicking the trash icon:
+            *   Confirmation prompt.
+            *   UI sends `delete_chat_request`.
+            *   Backend deletes, sends `CHAT_LIST_UPDATE`. Chat is removed from the list. If current chat is deleted, UI should ideally switch to a new chat or an empty state.
+        *   **Styling:** The panel and its items should have a neumorphic appearance consistent with the theme. Active chat should be clearly highlighted. Action icons should be visible (perhaps on hover) and functional.
+
+This task provides the core chat management experience.
+
+Let me know when you are ready for TASK_AUI_003!

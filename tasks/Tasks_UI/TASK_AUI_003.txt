@@ -1,0 +1,934 @@
+## TASK_AUI_003: Svelte UI - "Context" Tab Content (History & LLM Context Window Viewers)
+
+**Goal:**
+1.  **Phoenix Backend:**
+    *   Implement a new StreamProtocol message type `request_llm_context_window` that the Svelte UI can send.
+    *   When the backend receives this, the active `Agent` instance for that `threadId` should retrieve the last prompt/context it sent to its main LLM and send it back to the UI via a `LLM_CONTEXT_WINDOW_DATA` event.
+    *   The agent will need to store its last composed prompt temporarily for this purpose.
+2.  **Svelte UI:**
+    *   Create `src/lib/components/inspector/HistoryViewer.svelte`: Displays the raw or formatted full `messagesAndEvents` list from `chatStore` for the current session.
+    *   Create `src/lib/components/inspector/ContextWindowViewer.svelte`: Displays the LLM context window text received from the backend.
+    *   Create `src/lib/components/inspector/InspectorTabs.svelte`: A simple tab component to switch between the History Viewer and Context Window Viewer.
+    *   This "Inspector" area will eventually be part of the Right Sidebar (Task_AUI_004), but for now, it can be a modal or a distinct section on the page for testing.
+
+**Prerequisites:**
+*   TASK_AUI_002 completed: Main UI layout with sidebar is taking shape.
+*   `chatStore.js` contains the `messagesAndEvents` array.
+*   Phoenix backend can handle new StreamProtocol message types and emit new event types.
+*   Agent Zero original UI's "Context" tab as a reference for functionality.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes:**
+
+**1. Define New StreamProtocol Event/Message Types:**
+    *   Action: In `python/tools/stream_protocol_tool.py` (or `python/agent.py`).
+        ```python
+# In StreamEventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            REQUEST_LLM_CONTEXT_WINDOW = "request_llm_context_window" # Client to Server
+            LLM_CONTEXT_WINDOW_DATA = "llm_context_window_data"     # Server to Client
+```
+    *   Verify: Enum updated.
+
+**2. Modify `python/agent.py` - `Agent` Class:**
+    *   Action: The agent needs to store the last prompt it sent to its main LLM.
+        ```python
+# In python/agent.py - within Agent class
+        class Agent:
+            def __init__(self, ...):
+                # ...
+                self.last_llm_prompt_data: Optional[Dict[str, Any]] = None # Store {'system': ..., 'messages': [...]} or just the final string
+
+            # When the agent prepares and calls its main LLM (e.g., in _get_llm_response or similar):
+            async def _get_llm_response(self, system_prompt_str: str, messages_for_llm: List[Dict[str,Any]], ...) -> str:
+                # Store the prompt data before making the call
+                self.last_llm_prompt_data = {
+                    "system_prompt": system_prompt_str, # Or however you structure it
+                    "conversation_history": messages_for_llm, # The list of user/assistant/tool messages
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                
+                # ... (actual LLM call logic) ...
+                # llm_response_content = await self.llm_client.chat.completions.create(...)
+                # return llm_response_content
+                pass # Placeholder for actual LLM call logic
+            
+            def get_last_llm_prompt_for_display(self) -> Dict[str, Any]:
+                """Formats the last LLM prompt for UI display."""
+                if not self.last_llm_prompt_data:
+                    return {"error": "No LLM prompt has been recorded for this session yet."}
+                
+                # You can format this nicely, e.g., into a single string
+                # or return the structured data for the UI to format.
+                # For simplicity, let's return structured, UI can format.
+                return {
+                    "system_prompt": self.last_llm_prompt_data.get("system_prompt", ""),
+                    "messages": self.last_llm_prompt_data.get("conversation_history", []),
+                    "timestamp": self.last_llm_prompt_data.get("timestamp", "")
+                }
+```
+    *   Verify: Agent now stores `last_llm_prompt_data`.
+
+**3. Update WebSocket Handler (in `StreamProtocolTool` or `run_ui.py`):**
+    *   Action: Handle the `request_llm_context_window` message from the client.
+        ```python
+# In python/tools/stream_protocol_tool.py or run_ui.py WebSocket message handler
+        # ...
+        # elif message_type == StreamEventType.REQUEST_LLM_CONTEXT_WINDOW.value: # Assuming message_type is string value of Enum
+        #     thread_id = payload.get("threadId")
+        #     user_id = payload.get("userId")
+        #     if thread_id:
+        #         agent_instance = self.agent # Or get agent associated with thread_id/user_id
+        #         if agent_instance:
+        #             context_window_data = agent_instance.get_last_llm_prompt_for_display()
+        #             await agent_instance._emit_stream_event(
+        #                 StreamEventType.LLM_CONTEXT_WINDOW_DATA,
+        #                 {"context_data": context_window_data},
+        #                 specific_thread_id=thread_id # Send back to the requesting client tab
+        #             )
+        #         else: # Error: agent not found for thread
+        #             await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"message": "Agent instance not found for context window request."}, specific_thread_id=thread_id)
+        #     else: # Error: threadId missing
+        #          await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"message": "Thread ID required for context window request."}) # This might need a default thread if client doesn't send.
+```
+    *   Verify: Handler added.
+
+**II. Svelte UI Changes:**
+
+**4. Create `src/lib/components/inspector/HistoryViewer.svelte`:**
+    *   Action: This component will display the raw `messagesAndEvents` from `chatStore`.
+        ```html
+<!-- src/lib/components/inspector/HistoryViewer.svelte -->
+        <script>
+            import { chatStore } from '$lib/stores/chatStore';
+            // Optional: Import a JSON pretty printer component or use <pre>
+        </script>
+
+        <div class="history-viewer">
+            <h4>Full Interaction History ({$chatStore.messagesAndEvents.length} items)</h4>
+            {#if $chatStore.messagesAndEvents.length === 0}
+                <p>No history items yet for this session.</p>
+            {:else}
+                <div class="history-items-container">
+                    {#each $chatStore.messagesAndEvents as item (item.id)}
+                        <div class="history-item">
+                            <span class="item-timestamp">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                            <span class="item-type">[{item.type?.toUpperCase() || 'MESSAGE'}]</span>
+                            {#if item.role}
+                                <span class="item-role">{item.role.toUpperCase()}:</span>
+                            {/if}
+                            <div class="item-content">
+                                {#if typeof item.content === 'string'}
+                                    <pre>{item.content}</pre>
+                                {:else if item.tool_name} <!-- For tool_call -->
+                                    <pre>Tool: {item.tool_name}\nArgs: {JSON.stringify(item.tool_args, null, 2)}\nStatus: {item.status}\nResult: {JSON.stringify(item.result, null, 2)}</pre>
+                                {:else}
+                                    <pre>{JSON.stringify(item, null, 2)}</pre>
+                                {/if}
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            {/if}
+        </div>
+
+        <style>
+            .history-viewer {
+                padding: 10px;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+            }
+            .history-viewer h4 {
+                margin-top: 0;
+                margin-bottom: 10px;
+                color: var(--text-secondary);
+                font-size: 0.9em;
+                text-transform: uppercase;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                padding-bottom: 5px;
+            }
+            .history-items-container {
+                flex-grow: 1;
+                overflow-y: auto;
+                font-size: 0.8em;
+                background-color: var(--neumorphic-shadow-dark);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            .history-items-container::-webkit-scrollbar { width: 5px; }
+            .history-items-container::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+            .history-item {
+                margin-bottom: 8px;
+                padding-bottom: 8px;
+                border-bottom: 1px dashed var(--bg-dark-primary);
+            }
+            .history-item:last-child {
+                border-bottom: none;
+            }
+            .item-timestamp {
+                font-size: 0.85em;
+                color: var(--text-secondary);
+                margin-right: 5px;
+            }
+            .item-type {
+                font-weight: bold;
+                color: var(--accent-green-secondary);
+                margin-right: 5px;
+            }
+            .item-role {
+                font-weight: 500;
+                color: var(--accent-green-primary);
+                 margin-right: 5px;
+            }
+            .item-content pre {
+                white-space: pre-wrap;
+                word-break: break-all;
+                background-color: transparent; /* Inherit from container */
+                padding: 5px;
+                border-radius: 3px;
+                color: var(--text-primary);
+                margin-top: 3px;
+            }
+        </style>
+```
+    *   Verify: Component created.
+
+**5. Create `src/lib/stores/inspectorStore.js` (New Store for Context Window Data):**
+    *   Action:
+        ```javascript
+// src/lib/stores/inspectorStore.js
+        import { writable } from 'svelte/store';
+        import { socketStore } from './socketStore'; // To send request
+        import { chatStore } from './chatStore';   // To get currentThreadId, currentUserId
+
+        const initialInspectorState = {
+            llmContextWindow: null, // { system_prompt, messages, timestamp, error }
+            isLoadingContext: false,
+        };
+
+        const createInspectorStore = () => {
+            const { subscribe, update, set } = writable({...initialInspectorState});
+
+            async function fetchLLMContextWindow() {
+                let currentThreadIdVal, currentUserIdVal;
+                chatStore.subscribe(s => { // Get current values
+                    currentThreadIdVal = s.currentThreadId;
+                    currentUserIdVal = s.currentUserId;
+                })(); // Immediately invoke to get current value
+
+                if (!currentThreadIdVal) {
+                    console.warn("InspectorStore: Cannot fetch LLM context, no current thread ID.");
+                    return;
+                }
+
+                update(s => ({ ...s, isLoadingContext: true, llmContextWindow: null }));
+                socketStore.sendMessage({
+                    type: "request_llm_context_window",
+                    payload: { threadId: currentThreadIdVal, userId: currentUserIdVal }
+                });
+            }
+
+            function setLLMContextWindowData(data) { // Called by socketStore on LLM_CONTEXT_WINDOW_DATA event
+                if (data && data.context_data) {
+                    update(s => ({ ...s, llmContextWindow: data.context_data, isLoadingContext: false }));
+                } else {
+                     update(s => ({ ...s, llmContextWindow: { error: "Received empty context data from backend." }, isLoadingContext: false }));
+                }
+            }
+
+            return {
+                subscribe,
+                fetchLLMContextWindow,
+                setLLMContextWindowData
+            };
+        };
+
+        export const inspectorStore = createInspectorStore();
+```
+    *   Modify `socketStore.js` `onMessage` (or `chatStore.handleStreamEvent` if it's the central dispatcher) to call `inspectorStore.setLLMContextWindowData(parsedEvent.payload)` when a `LLM_CONTEXT_WINDOW_DATA` event arrives.
+    *   Verify: Store created.
+
+**6. Create `src/lib/components/inspector/ContextWindowViewer.svelte`:**
+    *   Action:
+        ```html
+<!-- src/lib/components/inspector/ContextWindowViewer.svelte -->
+        <script>
+            import { inspectorStore } from '$lib/stores/inspectorStore';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            // Optional: MarkdownRenderer if system prompt or messages can contain markdown
+            // import MarkdownRenderer from '../shared/MarkdownRenderer.svelte';
+
+            const refreshIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17";
+        </script>
+
+        <div class="context-viewer">
+            <div class="viewer-header">
+                <h4>Last LLM Context Window</h4>
+                <Button onClick={() => inspectorStore.fetchLLMContextWindow()} customClass="refresh-context-btn" disabled={$inspectorStore.isLoadingContext}>
+                    <Icon path={refreshIconPath} size="16" /> 
+                    {#if $inspectorStore.isLoadingContext}Refreshing...{:else}Refresh{/if}
+                </Button>
+            </div>
+
+            {#if $inspectorStore.isLoadingContext}
+                <p>Loading LLM context...</p>
+            {:else if !$inspectorStore.llmContextWindow || $inspectorStore.llmContextWindow.error}
+                <p class="error-text">
+                    {$inspectorStore.llmContextWindow?.error || "No LLM context available or not yet requested."}
+                </p>
+            {:else}
+                <div class="context-content">
+                    {#if $inspectorStore.llmContextWindow.system_prompt}
+                        <div class="prompt-section">
+                            <h5>System Prompt:</h5>
+                            <pre>{$inspectorStore.llmContextWindow.system_prompt}</pre>
+                            <!-- Or <MarkdownRenderer source={$inspectorStore.llmContextWindow.system_prompt} /> -->
+                        </div>
+                    {/if}
+                    {#if $inspectorStore.llmContextWindow.messages && $inspectorStore.llmContextWindow.messages.length > 0}
+                        <div class="prompt-section">
+                            <h5>Messages:</h5>
+                            {#each $inspectorStore.llmContextWindow.messages as msg, i}
+                                <div class="context-message role-{msg.role}">
+                                    <strong>{msg.role.toUpperCase()}:</strong>
+                                    {#if typeof msg.content === 'string'}
+                                        <pre>{msg.content}</pre>
+                                    {:else if Array.isArray(msg.content))} <!-- For multimodal vision prompts -->
+                                        {#each msg.content as content_part}
+                                            {#if content_part.type === 'text'}
+                                                <pre>{content_part.text}</pre>
+                                            {:else if content_part.type === 'image_url'}
+                                                <p><em>[Image: {content_part.image_url.url.substring(0,50)}...]</em></p>
+                                            {/if}
+                                        {/each}
+                                    {/if}
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                    <p class="timestamp-info">Context as of: {new Date($inspectorStore.llmContextWindow.timestamp).toLocaleString()}</p>
+                </div>
+            {/if}
+        </div>
+
+        <style>
+            .context-viewer {
+                padding: 10px;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+            }
+            .viewer-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+                 border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                padding-bottom: 5px;
+            }
+            .viewer-header h4 {
+                margin: 0;
+                color: var(--text-secondary);
+                font-size: 0.9em;
+                text-transform: uppercase;
+            }
+            .refresh-context-btn {
+                font-size: 0.8em;
+                padding: 4px 8px;
+                gap: 4px;
+            }
+            .context-content {
+                flex-grow: 1;
+                overflow-y: auto;
+                font-size: 0.8em;
+                background-color: var(--neumorphic-shadow-dark);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            .context-content::-webkit-scrollbar { width: 5px; }
+            .context-content::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+            .prompt-section { margin-bottom: 10px; }
+            .prompt-section h5 { font-size: 0.9em; color: var(--accent-green-secondary); margin: 0 0 5px 0; }
+            .prompt-section pre {
+                white-space: pre-wrap;
+                word-break: break-all;
+                background-color: var(--bg-dark-primary);
+                padding: 8px;
+                border-radius: 4px;
+                color: var(--text-primary);
+                border: 1px solid var(--neumorphic-shadow-light);
+            }
+            .context-message { margin-bottom: 5px; }
+            .context-message strong { color: var(--accent-green-primary); }
+            .timestamp-info { font-size: 0.75em; color: var(--text-secondary); margin-top: 10px; text-align: right; }
+            .error-text { color: var(--error-color); }
+        </style>
+```
+    *   Verify: Component created.
+
+**7. Create `src/lib/components/inspector/InspectorTabs.svelte`:**
+    *   Action:
+        ```html
+<!-- src/lib/components/inspector/InspectorTabs.svelte -->
+        <script>
+            import HistoryViewer from './HistoryViewer.svelte';
+            import ContextWindowViewer from './ContextWindowViewer.svelte';
+
+            let activeTab = 'history'; // 'history' or 'llm_context'
+        </script>
+
+        <div class="inspector-tabs-container">
+            <div class="tabs-nav">
+                <button 
+                    class:active={activeTab === 'history'}
+                    on:click={() => activeTab = 'history'}
+                >Full History</button>
+                <button 
+                    class:active={activeTab === 'llm_context'}
+                    on:click={() => activeTab = 'llm_context'}
+                >LLM Context</button>
+            </div>
+            <div class="tab-content">
+                {#if activeTab === 'history'}
+                    <HistoryViewer />
+                {:else if activeTab === 'llm_context'}
+                    <ContextWindowViewer />
+                {/if}
+            </div>
+        </div>
+
+        <style>
+            .inspector-tabs-container {
+                display: flex;
+                flex-direction: column;
+                height: 100%; /* Fill its parent (e.g., AppInspectorPanel) */
+            }
+            .tabs-nav {
+                display: flex;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+            .tabs-nav button {
+                padding: 10px 15px;
+                border: none;
+                background: none;
+                color: var(--text-secondary);
+                cursor: pointer;
+                font-size: 0.9em;
+                font-weight: 500;
+                border-bottom: 2px solid transparent; /* For active indicator */
+                margin-bottom: -1px; /* Overlap container border */
+                transition: color 0.2s, border-color 0.2s;
+            }
+            .tabs-nav button:hover {
+                color: var(--text-primary);
+            }
+            .tabs-nav button.active {
+                color: var(--accent-green-primary);
+                border-bottom-color: var(--accent-green-primary);
+            }
+            .tab-content {
+                flex-grow: 1;
+                overflow-y: auto; /* Content within tab will scroll */
+                padding: 5px 0 0 0; /* Small padding, actual padding in viewers */
+            }
+        </style>
+```
+    *   Verify: Component created.
+
+**8. (Next Task Preview - TASK_AUI_004) Integration into a Right Sidebar:**
+    *   The `InspectorTabs.svelte` component will be placed inside an `AppInspectorPanel.svelte` in the next task. For now, you could temporarily add `<InspectorTabs />` to your `+page.svelte` to test its functionality in the main content area.
+
+**9. Testing TASK_AUI_003:**
+    *   Action:
+        1.  Start Phoenix backend (with Agent storing `last_llm_prompt_data` and WebSocket handler for `request_llm_context_window`).
+        2.  Start Svelte UI.
+        3.  Temporarily add `<InspectorTabs />` to your `+page.svelte` if `AppInspectorPanel` is not yet ready.
+    *   Expected Behavior:
+        *   **History Viewer Tab:**
+            *   Displays all items from `$chatStore.messagesAndEvents` in a readable, chronological format.
+            *   Updates automatically as new messages/events arrive.
+        *   **LLM Context Tab:**
+            *   Initially shows "No LLM context available...".
+            *   Clicking "Refresh":
+                *   Sends `request_llm_context_window` to backend.
+                *   Shows "Loading LLM context...".
+                *   When `LLM_CONTEXT_WINDOW_DATA` arrives, displays the system prompt and messages that were (or would be) sent to the main agent LLM.
+                *   Shows the timestamp of when that context was captured.
+        *   Switching between tabs works.
+        *   Styling is consistent with the dark neumorphic/glassmorphic theme.
+
+This task provides crucial debugging and introspection capabilities, much like the original Agent Zero.
+
+Let me know when you're ready for TASK_AUI_004, where we'll build the actual right sidebar panel!## TASK_AUI_003: Svelte UI - "Context" Tab Content (History & LLM Context Window Viewers)
+
+**Goal:**
+1.  **Phoenix Backend:**
+    *   Implement a new StreamProtocol message type `request_llm_context_window` that the Svelte UI can send.
+    *   When the backend receives this, the active `Agent` instance for that `threadId` should retrieve the last prompt/context it sent to its main LLM and send it back to the UI via a `LLM_CONTEXT_WINDOW_DATA` event.
+    *   The agent will need to store its last composed prompt temporarily for this purpose.
+2.  **Svelte UI:**
+    *   Create `src/lib/components/inspector/HistoryViewer.svelte`: Displays the raw or formatted full `messagesAndEvents` list from `chatStore` for the current session.
+    *   Create `src/lib/components/inspector/ContextWindowViewer.svelte`: Displays the LLM context window text received from the backend.
+    *   Create `src/lib/components/inspector/InspectorTabs.svelte`: A simple tab component to switch between the History Viewer and Context Window Viewer.
+    *   This "Inspector" area will eventually be part of the Right Sidebar (Task_AUI_004), but for now, it can be a modal or a distinct section on the page for testing.
+
+**Prerequisites:**
+*   TASK_AUI_002 completed: Main UI layout with sidebar is taking shape.
+*   `chatStore.js` contains the `messagesAndEvents` array.
+*   Phoenix backend can handle new StreamProtocol message types and emit new event types.
+*   Agent Zero original UI's "Context" tab as a reference for functionality.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes:**
+
+**1. Define New StreamProtocol Event/Message Types:**
+    *   Action: In `python/tools/stream_protocol_tool.py` (or `python/agent.py`).
+        ```python
+        # In StreamEventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            REQUEST_LLM_CONTEXT_WINDOW = "request_llm_context_window" # Client to Server
+            LLM_CONTEXT_WINDOW_DATA = "llm_context_window_data"     # Server to Client
+        ```
+    *   Verify: Enum updated.
+
+**2. Modify `python/agent.py` - `Agent` Class:**
+    *   Action: The agent needs to store the last prompt it sent to its main LLM.
+        ```python
+        # In python/agent.py - within Agent class
+        class Agent:
+            def __init__(self, ...):
+                # ...
+                self.last_llm_prompt_data: Optional[Dict[str, Any]] = None # Store {'system': ..., 'messages': [...]} or just the final string
+
+            # When the agent prepares and calls its main LLM (e.g., in _get_llm_response or similar):
+            async def _get_llm_response(self, system_prompt_str: str, messages_for_llm: List[Dict[str,Any]], ...) -> str:
+                # Store the prompt data before making the call
+                self.last_llm_prompt_data = {
+                    "system_prompt": system_prompt_str, # Or however you structure it
+                    "conversation_history": messages_for_llm, # The list of user/assistant/tool messages
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                
+                # ... (actual LLM call logic) ...
+                # llm_response_content = await self.llm_client.chat.completions.create(...)
+                # return llm_response_content
+                pass # Placeholder for actual LLM call logic
+            
+            def get_last_llm_prompt_for_display(self) -> Dict[str, Any]:
+                """Formats the last LLM prompt for UI display."""
+                if not self.last_llm_prompt_data:
+                    return {"error": "No LLM prompt has been recorded for this session yet."}
+                
+                # You can format this nicely, e.g., into a single string
+                # or return the structured data for the UI to format.
+                # For simplicity, let's return structured, UI can format.
+                return {
+                    "system_prompt": self.last_llm_prompt_data.get("system_prompt", ""),
+                    "messages": self.last_llm_prompt_data.get("conversation_history", []),
+                    "timestamp": self.last_llm_prompt_data.get("timestamp", "")
+                }
+
+        ```
+    *   Verify: Agent now stores `last_llm_prompt_data`.
+
+**3. Update WebSocket Handler (in `StreamProtocolTool` or `run_ui.py`):**
+    *   Action: Handle the `request_llm_context_window` message from the client.
+        ```python
+        # In python/tools/stream_protocol_tool.py or run_ui.py WebSocket message handler
+        # ...
+        # elif message_type == StreamEventType.REQUEST_LLM_CONTEXT_WINDOW.value: # Assuming message_type is string value of Enum
+        #     thread_id = payload.get("threadId")
+        #     user_id = payload.get("userId")
+        #     if thread_id:
+        #         agent_instance = self.agent # Or get agent associated with thread_id/user_id
+        #         if agent_instance:
+        #             context_window_data = agent_instance.get_last_llm_prompt_for_display()
+        #             await agent_instance._emit_stream_event(
+        #                 StreamEventType.LLM_CONTEXT_WINDOW_DATA,
+        #                 {"context_data": context_window_data},
+        #                 specific_thread_id=thread_id # Send back to the requesting client tab
+        #             )
+        #         else: # Error: agent not found for thread
+        #             await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"message": "Agent instance not found for context window request."}, specific_thread_id=thread_id)
+        #     else: # Error: threadId missing
+        #          await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"message": "Thread ID required for context window request."}) # This might need a default thread if client doesn't send.
+        ```
+    *   Verify: Handler added.
+
+**II. Svelte UI Changes:**
+
+**4. Create `src/lib/components/inspector/HistoryViewer.svelte`:**
+    *   Action: This component will display the raw `messagesAndEvents` from `chatStore`.
+        ```html
+        <!-- src/lib/components/inspector/HistoryViewer.svelte -->
+        <script>
+            import { chatStore } from '$lib/stores/chatStore';
+            // Optional: Import a JSON pretty printer component or use <pre>
+        </script>
+
+        <div class="history-viewer">
+            <h4>Full Interaction History ({$chatStore.messagesAndEvents.length} items)</h4>
+            {#if $chatStore.messagesAndEvents.length === 0}
+                <p>No history items yet for this session.</p>
+            {:else}
+                <div class="history-items-container">
+                    {#each $chatStore.messagesAndEvents as item (item.id)}
+                        <div class="history-item">
+                            <span class="item-timestamp">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                            <span class="item-type">[{item.type?.toUpperCase() || 'MESSAGE'}]</span>
+                            {#if item.role}
+                                <span class="item-role">{item.role.toUpperCase()}:</span>
+                            {/if}
+                            <div class="item-content">
+                                {#if typeof item.content === 'string'}
+                                    <pre>{item.content}</pre>
+                                {:else if item.tool_name} <!-- For tool_call -->
+                                    <pre>Tool: {item.tool_name}\nArgs: {JSON.stringify(item.tool_args, null, 2)}\nStatus: {item.status}\nResult: {JSON.stringify(item.result, null, 2)}</pre>
+                                {:else}
+                                    <pre>{JSON.stringify(item, null, 2)}</pre>
+                                {/if}
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            {/if}
+        </div>
+
+        <style>
+            .history-viewer {
+                padding: 10px;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+            }
+            .history-viewer h4 {
+                margin-top: 0;
+                margin-bottom: 10px;
+                color: var(--text-secondary);
+                font-size: 0.9em;
+                text-transform: uppercase;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                padding-bottom: 5px;
+            }
+            .history-items-container {
+                flex-grow: 1;
+                overflow-y: auto;
+                font-size: 0.8em;
+                background-color: var(--neumorphic-shadow-dark);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            .history-items-container::-webkit-scrollbar { width: 5px; }
+            .history-items-container::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+            .history-item {
+                margin-bottom: 8px;
+                padding-bottom: 8px;
+                border-bottom: 1px dashed var(--bg-dark-primary);
+            }
+            .history-item:last-child {
+                border-bottom: none;
+            }
+            .item-timestamp {
+                font-size: 0.85em;
+                color: var(--text-secondary);
+                margin-right: 5px;
+            }
+            .item-type {
+                font-weight: bold;
+                color: var(--accent-green-secondary);
+                margin-right: 5px;
+            }
+            .item-role {
+                font-weight: 500;
+                color: var(--accent-green-primary);
+                 margin-right: 5px;
+            }
+            .item-content pre {
+                white-space: pre-wrap;
+                word-break: break-all;
+                background-color: transparent; /* Inherit from container */
+                padding: 5px;
+                border-radius: 3px;
+                color: var(--text-primary);
+                margin-top: 3px;
+            }
+        </style>
+        ```
+    *   Verify: Component created.
+
+**5. Create `src/lib/stores/inspectorStore.js` (New Store for Context Window Data):**
+    *   Action:
+        ```javascript
+        // src/lib/stores/inspectorStore.js
+        import { writable } from 'svelte/store';
+        import { socketStore } from './socketStore'; // To send request
+        import { chatStore } from './chatStore';   // To get currentThreadId, currentUserId
+
+        const initialInspectorState = {
+            llmContextWindow: null, // { system_prompt, messages, timestamp, error }
+            isLoadingContext: false,
+        };
+
+        const createInspectorStore = () => {
+            const { subscribe, update, set } = writable({...initialInspectorState});
+
+            async function fetchLLMContextWindow() {
+                let currentThreadIdVal, currentUserIdVal;
+                chatStore.subscribe(s => { // Get current values
+                    currentThreadIdVal = s.currentThreadId;
+                    currentUserIdVal = s.currentUserId;
+                })(); // Immediately invoke to get current value
+
+                if (!currentThreadIdVal) {
+                    console.warn("InspectorStore: Cannot fetch LLM context, no current thread ID.");
+                    return;
+                }
+
+                update(s => ({ ...s, isLoadingContext: true, llmContextWindow: null }));
+                socketStore.sendMessage({
+                    type: "request_llm_context_window",
+                    payload: { threadId: currentThreadIdVal, userId: currentUserIdVal }
+                });
+            }
+
+            function setLLMContextWindowData(data) { // Called by socketStore on LLM_CONTEXT_WINDOW_DATA event
+                if (data && data.context_data) {
+                    update(s => ({ ...s, llmContextWindow: data.context_data, isLoadingContext: false }));
+                } else {
+                     update(s => ({ ...s, llmContextWindow: { error: "Received empty context data from backend." }, isLoadingContext: false }));
+                }
+            }
+
+            return {
+                subscribe,
+                fetchLLMContextWindow,
+                setLLMContextWindowData
+            };
+        };
+
+        export const inspectorStore = createInspectorStore();
+        ```
+    *   Modify `socketStore.js` `onMessage` (or `chatStore.handleStreamEvent` if it's the central dispatcher) to call `inspectorStore.setLLMContextWindowData(parsedEvent.payload)` when a `LLM_CONTEXT_WINDOW_DATA` event arrives.
+    *   Verify: Store created.
+
+**6. Create `src/lib/components/inspector/ContextWindowViewer.svelte`:**
+    *   Action:
+        ```html
+        <!-- src/lib/components/inspector/ContextWindowViewer.svelte -->
+        <script>
+            import { inspectorStore } from '$lib/stores/inspectorStore';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            // Optional: MarkdownRenderer if system prompt or messages can contain markdown
+            // import MarkdownRenderer from '../shared/MarkdownRenderer.svelte';
+
+            const refreshIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17";
+        </script>
+
+        <div class="context-viewer">
+            <div class="viewer-header">
+                <h4>Last LLM Context Window</h4>
+                <Button onClick={() => inspectorStore.fetchLLMContextWindow()} customClass="refresh-context-btn" disabled={$inspectorStore.isLoadingContext}>
+                    <Icon path={refreshIconPath} size="16" /> 
+                    {#if $inspectorStore.isLoadingContext}Refreshing...{:else}Refresh{/if}
+                </Button>
+            </div>
+
+            {#if $inspectorStore.isLoadingContext}
+                <p>Loading LLM context...</p>
+            {:else if !$inspectorStore.llmContextWindow || $inspectorStore.llmContextWindow.error}
+                <p class="error-text">
+                    {$inspectorStore.llmContextWindow?.error || "No LLM context available or not yet requested."}
+                </p>
+            {:else}
+                <div class="context-content">
+                    {#if $inspectorStore.llmContextWindow.system_prompt}
+                        <div class="prompt-section">
+                            <h5>System Prompt:</h5>
+                            <pre>{$inspectorStore.llmContextWindow.system_prompt}</pre>
+                            <!-- Or <MarkdownRenderer source={$inspectorStore.llmContextWindow.system_prompt} /> -->
+                        </div>
+                    {/if}
+                    {#if $inspectorStore.llmContextWindow.messages && $inspectorStore.llmContextWindow.messages.length > 0}
+                        <div class="prompt-section">
+                            <h5>Messages:</h5>
+                            {#each $inspectorStore.llmContextWindow.messages as msg, i}
+                                <div class="context-message role-{msg.role}">
+                                    <strong>{msg.role.toUpperCase()}:</strong>
+                                    {#if typeof msg.content === 'string'}
+                                        <pre>{msg.content}</pre>
+                                    {:else if Array.isArray(msg.content))} <!-- For multimodal vision prompts -->
+                                        {#each msg.content as content_part}
+                                            {#if content_part.type === 'text'}
+                                                <pre>{content_part.text}</pre>
+                                            {:else if content_part.type === 'image_url'}
+                                                <p><em>[Image: {content_part.image_url.url.substring(0,50)}...]</em></p>
+                                            {/if}
+                                        {/each}
+                                    {/if}
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                    <p class="timestamp-info">Context as of: {new Date($inspectorStore.llmContextWindow.timestamp).toLocaleString()}</p>
+                </div>
+            {/if}
+        </div>
+
+        <style>
+            .context-viewer {
+                padding: 10px;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+            }
+            .viewer-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+                 border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                padding-bottom: 5px;
+            }
+            .viewer-header h4 {
+                margin: 0;
+                color: var(--text-secondary);
+                font-size: 0.9em;
+                text-transform: uppercase;
+            }
+            .refresh-context-btn {
+                font-size: 0.8em;
+                padding: 4px 8px;
+                gap: 4px;
+            }
+            .context-content {
+                flex-grow: 1;
+                overflow-y: auto;
+                font-size: 0.8em;
+                background-color: var(--neumorphic-shadow-dark);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            .context-content::-webkit-scrollbar { width: 5px; }
+            .context-content::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+            .prompt-section { margin-bottom: 10px; }
+            .prompt-section h5 { font-size: 0.9em; color: var(--accent-green-secondary); margin: 0 0 5px 0; }
+            .prompt-section pre {
+                white-space: pre-wrap;
+                word-break: break-all;
+                background-color: var(--bg-dark-primary);
+                padding: 8px;
+                border-radius: 4px;
+                color: var(--text-primary);
+                border: 1px solid var(--neumorphic-shadow-light);
+            }
+            .context-message { margin-bottom: 5px; }
+            .context-message strong { color: var(--accent-green-primary); }
+            .timestamp-info { font-size: 0.75em; color: var(--text-secondary); margin-top: 10px; text-align: right; }
+            .error-text { color: var(--error-color); }
+        </style>
+        ```
+    *   Verify: Component created.
+
+**7. Create `src/lib/components/inspector/InspectorTabs.svelte`:**
+    *   Action:
+        ```html
+        <!-- src/lib/components/inspector/InspectorTabs.svelte -->
+        <script>
+            import HistoryViewer from './HistoryViewer.svelte';
+            import ContextWindowViewer from './ContextWindowViewer.svelte';
+
+            let activeTab = 'history'; // 'history' or 'llm_context'
+        </script>
+
+        <div class="inspector-tabs-container">
+            <div class="tabs-nav">
+                <button 
+                    class:active={activeTab === 'history'}
+                    on:click={() => activeTab = 'history'}
+                >Full History</button>
+                <button 
+                    class:active={activeTab === 'llm_context'}
+                    on:click={() => activeTab = 'llm_context'}
+                >LLM Context</button>
+            </div>
+            <div class="tab-content">
+                {#if activeTab === 'history'}
+                    <HistoryViewer />
+                {:else if activeTab === 'llm_context'}
+                    <ContextWindowViewer />
+                {/if}
+            </div>
+        </div>
+
+        <style>
+            .inspector-tabs-container {
+                display: flex;
+                flex-direction: column;
+                height: 100%; /* Fill its parent (e.g., AppInspectorPanel) */
+            }
+            .tabs-nav {
+                display: flex;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+            .tabs-nav button {
+                padding: 10px 15px;
+                border: none;
+                background: none;
+                color: var(--text-secondary);
+                cursor: pointer;
+                font-size: 0.9em;
+                font-weight: 500;
+                border-bottom: 2px solid transparent; /* For active indicator */
+                margin-bottom: -1px; /* Overlap container border */
+                transition: color 0.2s, border-color 0.2s;
+            }
+            .tabs-nav button:hover {
+                color: var(--text-primary);
+            }
+            .tabs-nav button.active {
+                color: var(--accent-green-primary);
+                border-bottom-color: var(--accent-green-primary);
+            }
+            .tab-content {
+                flex-grow: 1;
+                overflow-y: auto; /* Content within tab will scroll */
+                padding: 5px 0 0 0; /* Small padding, actual padding in viewers */
+            }
+        </style>
+        ```
+    *   Verify: Component created.
+
+**8. (Next Task Preview - TASK_AUI_004) Integration into a Right Sidebar:**
+    *   The `InspectorTabs.svelte` component will be placed inside an `AppInspectorPanel.svelte` in the next task. For now, you could temporarily add `<InspectorTabs />` to your `+page.svelte` to test its functionality in the main content area.
+
+**9. Testing TASK_AUI_003:**
+    *   Action:
+        1.  Start Phoenix backend (with Agent storing `last_llm_prompt_data` and WebSocket handler for `request_llm_context_window`).
+        2.  Start Svelte UI.
+        3.  Temporarily add `<InspectorTabs />` to your `+page.svelte` if `AppInspectorPanel` is not yet ready.
+    *   Expected Behavior:
+        *   **History Viewer Tab:**
+            *   Displays all items from `$chatStore.messagesAndEvents` in a readable, chronological format.
+            *   Updates automatically as new messages/events arrive.
+        *   **LLM Context Tab:**
+            *   Initially shows "No LLM context available...".
+            *   Clicking "Refresh":
+                *   Sends `request_llm_context_window` to backend.
+                *   Shows "Loading LLM context...".
+                *   When `LLM_CONTEXT_WINDOW_DATA` arrives, displays the system prompt and messages that were (or would be) sent to the main agent LLM.
+                *   Shows the timestamp of when that context was captured.
+        *   Switching between tabs works.
+        *   Styling is consistent with the dark neumorphic/glassmorphic theme.
+
+This task provides crucial debugging and introspection capabilities, much like the original Agent Zero.
+
+Let me know when you're ready for TASK_AUI_004, where we'll build the actual right sidebar panel!

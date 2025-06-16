@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" data-name="Layer 2" viewBox="0 0 16.62 18.76">
+  <defs>
+    <!-- Quantum key glow -->
+    <filter id="keyGlow">
+      <feGaussianBlur stdDeviation="0.3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Cryptographic gradient -->
+    <linearGradient id="cryptoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0099ff;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0066cc;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#003366;stop-opacity:0.7" />
+    </linearGradient>
+    
+    <!-- Security lock gradient -->
+    <radialGradient id="lockCore" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#0088ff;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#0044aa;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#002255;stop-opacity:0.6" />
+    </radialGradient>
+    
+    <!-- Key pattern -->
+    <pattern id="keyMatrix" patternUnits="userSpaceOnUse" width="2" height="2">
+      <rect width="2" height="2" fill="#001122"/>
+      <circle cx="1" cy="1" r="0.3" fill="#0088ff" opacity="0.5"/>
+      <text x="1" y="1.3" font-family="monospace" font-size="0.6" fill="#00aaff" text-anchor="middle" opacity="0.4">🔐</text>
+    </pattern>
+    
+    <!-- Encryption flow -->
+    <pattern id="dataEncryption" patternUnits="userSpaceOnUse" width="3" height="3">
+      <circle cx="1.5" cy="1.5" r="0.3" fill="#0088ff" opacity="0.4"/>
+      <line x1="0" y1="1.5" x2="3" y2="1.5" stroke="#0066cc" stroke-width="0.2" opacity="0.5"/>
+      <line x1="1.5" y1="0" x2="1.5" y2="3" stroke="#0066cc" stroke-width="0.2" opacity="0.5"/>
+    </pattern>
+  </defs>
+  
+  <!-- Background encryption mesh -->
+  <rect width="16.62" height="18.76" fill="url(#dataEncryption)" opacity="0.1"/>
+  
+  <!-- Main API key structure with enhanced security -->
+  <g filter="url(#keyGlow)" data-name="Layer 1">
+    <!-- Key blade with quantum encryption -->
+    <path d="M1.65 10.73H6.1c.12 0 .21-.1.21-.21s-.1-.21-.21-.21H1.65c-.12 0-.21.1-.21.21s.1.21.21.21" 
+          fill="url(#cryptoGradient)" 
+          stroke="#0088ff" 
+          stroke-width="0.3">
+      <animate attributeName="fill-opacity" values="0.7;1;0.7" dur="2s" repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Enhanced document/certificate -->
+    <path d="M12.48 18.68l-8.65.08c-.44 0-.78-.09-1.01-.29-.24-.21-.36-.52-.35-.94V15.2c0-.84 0-1.68-.02-2.3 0-.12.09-.21.21-.22.12 0 .21.09.22.21 0 .62.01 1.46.02 2.3v2.33c0 .28.07.49.21.61.15.13.39.19.72.19 2.89 0 5.78-.07 8.66-.08h2.91q.42-.015.6-.21c.12-.13.18-.32.18-.58l-.17-12.94-2.66.04c-.43 0-.77-.1-1.01-.29-.22-.18-.36-.43-.42-.76a.3.3 0 0 1-.02-.09V.43H3.65c-.23.03-.44.12-.58.26-.13.12-.21.3-.22.51-.03.91-.04 1.91-.05 2.93-.01 1.21 0 2.44 0 3.54 0 .12-.09.21-.21.21s-.21-.09-.21-.21V4.12c0-1.02.03-2.03.05-2.94 0-.34.14-.61.34-.81.22-.2.52-.33.85-.37h8.51c.06 0 .12.03.16.07l4.09 4.07s.06.1.06.16l.17 13.14c0 .38-.1.68-.3.89s-.5.32-.89.34h-2.95Z" 
+          fill="url(#keyMatrix)" 
+          stroke="#0088ff" 
+          stroke-width="0.5" 
+          opacity="0.9">
+      <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Digital seal/stamp -->
+    <path d="M15.72 4.09L12.35.73v2.6c.02.27.11.46.27.59.17.13.41.2.74.2l2.36-.03Z" 
+          fill="url(#lockCore)" 
+          stroke="#00aaff" 
+          stroke-width="0.4">
+      <animate attributeName="fill" values="url(#lockCore);#0088ff;url(#lockCore)" dur="4s" repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Quantum key hole/lock mechanism -->
+    <circle cx="10.41" cy="10.3" r="1.5" 
+            fill="url(#lockCore)" 
+            stroke="#00ccff" 
+            stroke-width="0.6">
+      <animate attributeName="r" values="1.5;1.7;1.5" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Inner lock core -->
+    <circle cx="10.41" cy="10.3" r="0.8" 
+            fill="#0088ff" 
+            stroke="#00ffff" 
+            stroke-width="0.3">
+      <animate attributeName="fill" values="#0088ff;#00aaff;#0088ff" dur="2.5s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Security key teeth -->
+    <g opacity="0.9">
+      <path d="M7.53 11.36H1.61l-1.11-.89 1.12-.97h5.75a3.17 3.17 0 0 1 0 1.86Z" 
+            fill="url(#cryptoGradient)" 
+            stroke="#0066cc" 
+            stroke-width="0.4">
+        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="1.5s" repeatCount="indefinite"/>
+      </path>
+      
+      <!-- Key teeth notches -->
+      <rect x="4" y="9.7" width="0.3" height="0.5" fill="#00aaff">
+        <animate attributeName="fill" values="#00aaff;#00ffff;#00aaff" dur="2s" repeatCount="indefinite"/>
+      </rect>
+      <rect x="5" y="9.5" width="0.3" height="0.7" fill="#0088ff">
+        <animate attributeName="fill" values="#0088ff;#00aaff;#0088ff" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+      </rect>
+      <rect x="6" y="9.8" width="0.3" height="0.4" fill="#00aaff">
+        <animate attributeName="fill" values="#00aaff;#00ffff;#00aaff" dur="2s" repeatCount="indefinite" begin="1s"/>
+      </rect>
+    </g>
+    
+    <!-- Enhanced lock state indicators -->
+    <g opacity="0.8">
+      <text x="10.41" y="9.8" font-family="monospace" font-size="0.4" fill="#00ffff" text-anchor="middle">🔒</text>
+      <text x="10.41" y="10.9" font-family="monospace" font-size="0.3" fill="#00aaff" text-anchor="middle">API</text>
+    </g>
+    
+    <!-- Cryptographic elements around the lock -->
+    <g opacity="0.6">
+      <text x="8.5" y="8.5" font-family="monospace" font-size="0.4" fill="#0088ff">256</text>
+      <text x="12.5" y="8.5" font-family="monospace" font-size="0.4" fill="#00aaff">AES</text>
+      <text x="8.5" y="12.5" font-family="monospace" font-size="0.4" fill="#0066cc">RSA</text>
+      <text x="12.5" y="12.5" font-family="monospace" font-size="0.4" fill="#0088ff">JWT</text>
+    </g>
+    
+    <!-- Lock mechanism components -->
+    <g>
+      <!-- Outer ring -->
+      <circle cx="10.41" cy="10.3" r="2.75" 
+              fill="none" 
+              stroke="url(#cryptoGradient)" 
+              stroke-width="0.4" 
+              opacity="0.7">
+        <animateTransform attributeName="transform" type="rotate" values="0 10.41 10.3;360 10.41 10.3" dur="15s" repeatCount="indefinite"/>
+      </circle>
+      
+      <!-- Inner rotating mechanism -->
+      <circle cx="10.41" cy="10.3" r="1.1" 
+              fill="none" 
+              stroke="#00aaff" 
+              stroke-width="0.2" 
+              opacity="0.8">
+        <animateTransform attributeName="transform" type="rotate" values="360 10.41 10.3;0 10.41 10.3" dur="8s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+    
+    <!-- Data streams flowing from key to lock -->
+    <g opacity="0.5">
+      <line x1="7.5" y1="10.3" x2="8.9" y2="10.3" 
+            stroke="url(#cryptoGradient)" 
+            stroke-width="0.8">
+        <animate attributeName="stroke-opacity" values="0.3;1;0.3" dur="1.2s" repeatCount="indefinite"/>
+      </line>
+      
+      <!-- Data particles -->
+      <circle r="0.2" fill="#00aaff">
+        <animateMotion dur="2s" repeatCount="indefinite" path="M7.5,10.3 L8.9,10.3"/>
+        <animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+  </g>
+  
+  <!-- Floating security particles -->
+  <g opacity="0.4">
+    <circle cx="2" cy="3" r="0.2" fill="#0088ff">
+      <animate attributeName="cy" values="3;1;3" dur="4s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="14" cy="16" r="0.2" fill="#00aaff">
+      <animate attributeName="cy" values="16;14;16" dur="3.5s" repeatCount="indefinite" begin="1s"/>
+    </circle>
+    <circle cx="1" cy="12" r="0.2" fill="#0066cc">
+      <animate attributeName="cy" values="12;10;12" dur="4.2s" repeatCount="indefinite" begin="2s"/>
+    </circle>
+  </g>
+  
+  <!-- Binary security code backdrop -->
+  <g opacity="0.3">
+    <text x="1" y="16" font-family="monospace" font-size="0.5" fill="#0088ff">01100001 01110000 01101001</text>
+    <text x="2" y="17.5" font-family="monospace" font-size="0.5" fill="#00aaff">01101011 01100101 01111001</text>
+  </g>
+</svg>

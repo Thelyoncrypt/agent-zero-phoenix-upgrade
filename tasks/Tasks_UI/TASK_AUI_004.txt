@@ -1,0 +1,321 @@
+## TASK_AUI_004: Svelte UI - Right Sidebar / "Inspector" Panel Structure
+
+**Goal:**
+1.  Create a new Svelte component `src/lib/components/layout/AppInspectorPanel.svelte`.
+2.  This panel should be designed as a right-hand sidebar, initially fixed-width but with the groundwork for collapsibility later.
+3.  Integrate `InspectorTabs.svelte` (from TASK_AUI_003) into this panel as its primary content.
+4.  Modify the main application layout (`src/routes/+layout.svelte` or `App.svelte`) to include this right sidebar, adjusting the main chat content area to accommodate it.
+
+**Prerequisites:**
+*   TASK_AUI_001 completed: Main layout structure (header, left sidebar placeholder, main content area) exists.
+*   TASK_AUI_003 completed: `InspectorTabs.svelte` component is created and functional.
+
+**Detailed Steps:**
+
+**1. Create `src/lib/components/layout/AppInspectorPanel.svelte`:**
+    *   Action: This component will house the inspector tools.
+        ```html
+<!-- src/lib/components/layout/AppInspectorPanel.svelte -->
+        <script>
+            import InspectorTabs from '../inspector/InspectorTabs.svelte'; // Adjust path if needed
+            
+            export let isOpen = true; // For future collapsibility
+            // Placeholder for a toggle button/icon if needed for collapsibility
+            // const toggleIconPath = "M4 6h16M4 12h16M4 18h16"; // Hamburger example
+        </script>
+
+        {#if isOpen}
+        <aside class="app-inspector-panel card-base neumorphic neumorphic-extruded">
+            <div class="panel-header-inspector">
+                <h5>INSPECTOR</h5>
+                <!-- Optional: Toggle button for collapsibility -->
+                <!-- <Button on:click={() => isOpen = !isOpen} customClass="toggle-inspector-btn">
+                    <Icon path={toggleIconPath} size="18" />
+                </Button> -->
+            </div>
+            <div class="panel-content-inspector">
+                <InspectorTabs />
+            </div>
+        </aside>
+        {/if}
+
+        <style>
+            .app-inspector-panel {
+                width: 350px; /* Adjust width as desired */
+                height: 100%; /* Fill vertical space in its flex container */
+                display: flex;
+                flex-direction: column;
+                flex-shrink: 0; /* Prevent from shrinking */
+                padding: 0; /* Override Card base padding for full control */
+                background-color: var(--bg-dark-primary);
+                border-left: 1px solid var(--neumorphic-shadow-dark); /* Separator from main content */
+                /* Neumorphic raised effect */
+                box-shadow: 
+                    -3px 0px 8px -2px var(--neumorphic-shadow-dark), /* Left shadow */
+                    -1px 0px 3px -1px var(--neumorphic-shadow-light); /* Slight inner highlight from right */
+            }
+
+            .panel-header-inspector {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px 15px; /* Consistent with AppSidebar */
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+
+            .panel-header-inspector h5 {
+                margin: 0;
+                color: var(--accent-green-secondary);
+                font-size: 0.75em;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+            }
+            
+            /* Style for toggle button if added later */
+            /* .toggle-inspector-btn { ... } */
+
+            .panel-content-inspector {
+                flex-grow: 1; /* Allow content (InspectorTabs) to fill space */
+                overflow: hidden; /* Important: InspectorTabs will handle its own internal scrolling */
+                display: flex; /* To make InspectorTabs (which is also flex column) fill height */
+                flex-direction: column;
+            }
+        </style>
+```
+    *   Verify: Component created. It wraps `InspectorTabs.svelte`.
+
+**2. Modify Root Layout (`src/routes/+layout.svelte` or `App.svelte`):**
+    *   Action: Adjust the main layout to include the new `AppInspectorPanel` on the right. The `main-wrapper` will now have three children: `AppSidebar` (left), `main-content-area` (center), `AppInspectorPanel` (right).
+        ```html
+<!-- src/routes/+layout.svelte (or App.svelte) -->
+        <script>
+            import AppHeader from '$lib/components/layout/AppHeader.svelte';
+            import AppSidebar from '$lib/components/layout/AppSidebar.svelte';
+            import AppInspectorPanel from '$lib/components/layout/AppInspectorPanel.svelte'; // NEW IMPORT
+            import '$lib/styles/global.css';
+            // ... (onMount logic for socketStore and chatStore remains)
+        </script>
+
+        <div class="app-container">
+            <AppHeader />
+            <div class="main-wrapper">
+                <AppSidebar /> {/* isOpen prop can be added for collapsibility */}
+                
+                <main class="main-content-area">
+                    <slot /> <!-- Page content (+page.svelte) goes here -->
+                </main>
+
+                <AppInspectorPanel /> {/* ADDED: Right sidebar - isOpen prop for collapsibility */}
+            </div>
+        </div>
+
+        <style>
+            /* ... (:global(body) and .app-container styles remain the same) ... */
+            .app-container {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+                max-height: 100vh; 
+            }
+
+            .main-wrapper {
+                display: flex;
+                flex-grow: 1; 
+                overflow: hidden; 
+            }
+
+            /* AppSidebar styles are in its own component or global */
+            /* AppInspectorPanel styles are in its own component */
+
+            .main-content-area {
+                flex-grow: 1; /* This is the central column, it will take available space */
+                display: flex; 
+                flex-direction: column;
+                overflow: hidden; /* Important for its child (.chat-layout-phoenix) to manage its own scroll */
+                background-color: var(--bg-dark-primary); /* Ensure it has the base background */
+            }
+        </style>
+```
+    *   **Note on `+page.svelte`'s `.chat-layout-phoenix`:**
+        *   The styles for `.chat-layout-phoenix` inside `+page.svelte` should ensure it fills the `main-content-area`. It's already `display: flex; flex-direction: column; flex-grow: 1; height: 100%; overflow: hidden;`. This should work correctly within the new three-column `main-wrapper`.
+    *   Verify: Root layout updated to include the three main vertical sections.
+
+**3. Testing TASK_AUI_004:**
+    *   Action:
+        1.  Ensure your Phoenix backend is running (though it's not directly interacted with in this UI-only layout task).
+        2.  Run Svelte dev server (`npm run dev`).
+        3.  Open the app in browser.
+    *   Expected Behavior:
+        *   The UI now has three main vertical sections below the header:
+            *   **Left Sidebar:** Showing "Chat History Panel" placeholder (or actual chat list if Task_AUI_002 was also integrated). Neumorphic styling.
+            *   **Center Main Content Area:** This is where your chat interface (`ChatLayout` from `+page.svelte`) resides. It should adapt its width to the space between the two sidebars.
+            *   **Right Inspector Panel:** Showing "INSPECTOR" header and containing the `InspectorTabs` component (History Viewer & LLM Context Viewer). Neumorphic styling.
+        *   The `InspectorTabs` component should be functional within the right panel.
+        *   The overall layout should be stable, and scrolling within the `chat-messages-container` or the content of `InspectorTabs` should work independently without scrolling the entire page.
+        *   The dark theme and neumorphic/glassmorphic elements should look cohesive.
+
+This task establishes the full three-column layout common in many productivity applications and similar to the original Agent Zero's multi-panel design.
+
+Next, in TASK_AUI_005, we'll populate the Right Inspector Panel further with the File Browser. Ready to proceed when you are!## TASK_AUI_004: Svelte UI - Right Sidebar / "Inspector" Panel Structure
+
+**Goal:**
+1.  Create a new Svelte component `src/lib/components/layout/AppInspectorPanel.svelte`.
+2.  This panel should be designed as a right-hand sidebar, initially fixed-width but with the groundwork for collapsibility later.
+3.  Integrate `InspectorTabs.svelte` (from TASK_AUI_003) into this panel as its primary content.
+4.  Modify the main application layout (`src/routes/+layout.svelte` or `App.svelte`) to include this right sidebar, adjusting the main chat content area to accommodate it.
+
+**Prerequisites:**
+*   TASK_AUI_001 completed: Main layout structure (header, left sidebar placeholder, main content area) exists.
+*   TASK_AUI_003 completed: `InspectorTabs.svelte` component is created and functional.
+
+**Detailed Steps:**
+
+**1. Create `src/lib/components/layout/AppInspectorPanel.svelte`:**
+    *   Action: This component will house the inspector tools.
+        ```html
+        <!-- src/lib/components/layout/AppInspectorPanel.svelte -->
+        <script>
+            import InspectorTabs from '../inspector/InspectorTabs.svelte'; // Adjust path if needed
+            
+            export let isOpen = true; // For future collapsibility
+            // Placeholder for a toggle button/icon if needed for collapsibility
+            // const toggleIconPath = "M4 6h16M4 12h16M4 18h16"; // Hamburger example
+        </script>
+
+        {#if isOpen}
+        <aside class="app-inspector-panel card-base neumorphic neumorphic-extruded">
+            <div class="panel-header-inspector">
+                <h5>INSPECTOR</h5>
+                <!-- Optional: Toggle button for collapsibility -->
+                <!-- <Button on:click={() => isOpen = !isOpen} customClass="toggle-inspector-btn">
+                    <Icon path={toggleIconPath} size="18" />
+                </Button> -->
+            </div>
+            <div class="panel-content-inspector">
+                <InspectorTabs />
+            </div>
+        </aside>
+        {/if}
+
+        <style>
+            .app-inspector-panel {
+                width: 350px; /* Adjust width as desired */
+                height: 100%; /* Fill vertical space in its flex container */
+                display: flex;
+                flex-direction: column;
+                flex-shrink: 0; /* Prevent from shrinking */
+                padding: 0; /* Override Card base padding for full control */
+                background-color: var(--bg-dark-primary);
+                border-left: 1px solid var(--neumorphic-shadow-dark); /* Separator from main content */
+                /* Neumorphic raised effect */
+                box-shadow: 
+                    -3px 0px 8px -2px var(--neumorphic-shadow-dark), /* Left shadow */
+                    -1px 0px 3px -1px var(--neumorphic-shadow-light); /* Slight inner highlight from right */
+            }
+
+            .panel-header-inspector {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px 15px; /* Consistent with AppSidebar */
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+
+            .panel-header-inspector h5 {
+                margin: 0;
+                color: var(--accent-green-secondary);
+                font-size: 0.75em;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+            }
+            
+            /* Style for toggle button if added later */
+            /* .toggle-inspector-btn { ... } */
+
+            .panel-content-inspector {
+                flex-grow: 1; /* Allow content (InspectorTabs) to fill space */
+                overflow: hidden; /* Important: InspectorTabs will handle its own internal scrolling */
+                display: flex; /* To make InspectorTabs (which is also flex column) fill height */
+                flex-direction: column;
+            }
+        </style>
+        ```
+    *   Verify: Component created. It wraps `InspectorTabs.svelte`.
+
+**2. Modify Root Layout (`src/routes/+layout.svelte` or `App.svelte`):**
+    *   Action: Adjust the main layout to include the new `AppInspectorPanel` on the right. The `main-wrapper` will now have three children: `AppSidebar` (left), `main-content-area` (center), `AppInspectorPanel` (right).
+        ```html
+        <!-- src/routes/+layout.svelte (or App.svelte) -->
+        <script>
+            import AppHeader from '$lib/components/layout/AppHeader.svelte';
+            import AppSidebar from '$lib/components/layout/AppSidebar.svelte';
+            import AppInspectorPanel from '$lib/components/layout/AppInspectorPanel.svelte'; // NEW IMPORT
+            import '$lib/styles/global.css';
+            // ... (onMount logic for socketStore and chatStore remains)
+        </script>
+
+        <div class="app-container">
+            <AppHeader />
+            <div class="main-wrapper">
+                <AppSidebar /> {/* isOpen prop can be added for collapsibility */}
+                
+                <main class="main-content-area">
+                    <slot /> <!-- Page content (+page.svelte) goes here -->
+                </main>
+
+                <AppInspectorPanel /> {/* ADDED: Right sidebar - isOpen prop for collapsibility */}
+            </div>
+        </div>
+
+        <style>
+            /* ... (:global(body) and .app-container styles remain the same) ... */
+            .app-container {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+                max-height: 100vh; 
+            }
+
+            .main-wrapper {
+                display: flex;
+                flex-grow: 1; 
+                overflow: hidden; 
+            }
+
+            /* AppSidebar styles are in its own component or global */
+            /* AppInspectorPanel styles are in its own component */
+
+            .main-content-area {
+                flex-grow: 1; /* This is the central column, it will take available space */
+                display: flex; 
+                flex-direction: column;
+                overflow: hidden; /* Important for its child (.chat-layout-phoenix) to manage its own scroll */
+                background-color: var(--bg-dark-primary); /* Ensure it has the base background */
+            }
+        </style>
+        ```
+    *   **Note on `+page.svelte`'s `.chat-layout-phoenix`:**
+        *   The styles for `.chat-layout-phoenix` inside `+page.svelte` should ensure it fills the `main-content-area`. It's already `display: flex; flex-direction: column; flex-grow: 1; height: 100%; overflow: hidden;`. This should work correctly within the new three-column `main-wrapper`.
+    *   Verify: Root layout updated to include the three main vertical sections.
+
+**3. Testing TASK_AUI_004:**
+    *   Action:
+        1.  Ensure your Phoenix backend is running (though it's not directly interacted with in this UI-only layout task).
+        2.  Run Svelte dev server (`npm run dev`).
+        3.  Open the app in browser.
+    *   Expected Behavior:
+        *   The UI now has three main vertical sections below the header:
+            *   **Left Sidebar:** Showing "Chat History Panel" placeholder (or actual chat list if Task_AUI_002 was also integrated). Neumorphic styling.
+            *   **Center Main Content Area:** This is where your chat interface (`ChatLayout` from `+page.svelte`) resides. It should adapt its width to the space between the two sidebars.
+            *   **Right Inspector Panel:** Showing "INSPECTOR" header and containing the `InspectorTabs` component (History Viewer & LLM Context Viewer). Neumorphic styling.
+        *   The `InspectorTabs` component should be functional within the right panel.
+        *   The overall layout should be stable, and scrolling within the `chat-messages-container` or the content of `InspectorTabs` should work independently without scrolling the entire page.
+        *   The dark theme and neumorphic/glassmorphic elements should look cohesive.
+
+This task establishes the full three-column layout common in many productivity applications and similar to the original Agent Zero's multi-panel design.
+
+Next, in TASK_AUI_005, we'll populate the Right Inspector Panel further with the File Browser. Ready to proceed when you are!

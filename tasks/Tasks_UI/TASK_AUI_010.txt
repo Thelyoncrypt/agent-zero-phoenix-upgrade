@@ -1,0 +1,550 @@
+## TASK_AUI_010: Phoenix Backend & Svelte UI - Test & Refine `HybridMemoryTool` LLM Re-ranking and Synthesis
+
+**Goal:**
+1.  **Thoroughly Test:** Rigorously test the `HybridMemoryTool`'s advanced functionality (implemented in the revised Task 067 / original Task 076) focusing on the quality and correctness of the LLM-based re-ranking and synthesis.
+2.  **Refine Prompts:** Adjust `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md` and the user message constructed in `HybridMemoryTool._prepare_context_for_synthesis_llm` based on test results to improve:
+    *   Relevance of selected chunks.
+    *   Coherence and accuracy of the `synthesized_context`.
+    *   Correctness of the JSON output structure from the LLM.
+3.  **Improve UI Display:** Enhance how the `HybridMemoryTool`'s structured output (the JSON from the synthesis LLM) is presented in the Svelte UI, likely within `ToolCallCard.svelte` or a dedicated display component for this rich result.
+4.  **Error Handling:** Ensure robust error handling for the synthesis LLM call (e.g., malformed JSON response, API errors).
+
+**Prerequisites:**
+*   Task 067 (Revised - Advanced) / Original Task 076 completed: `HybridMemoryTool` has the LLM re-ranking and synthesis logic implemented.
+*   `KnowledgeAgentTool` and `MemoryAgentTool` (with Mem0) are functional and can provide diverse context items.
+*   A capable LLM (e.g., GPT-4, Claude 3 Sonnet/Opus) is configured for the `HybridMemoryTool`'s synthesis step.
+*   Svelte UI can display `TOOL_RESULT` events.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend - Testing and Prompt Refinement:**
+
+**1. Create Diverse Test Scenarios for `HybridMemoryTool`:**
+    *   Action: Design test cases that feed a variety of inputs to `HybridMemoryTool`:
+        *   Queries where relevant info is mostly in RAG, mostly in Mem0, or spread across both.
+        *   Queries with conflicting information between RAG and Mem0.
+        *   Queries where only a few of the initially retrieved items are truly relevant.
+        *   Queries that are very broad or very specific.
+        *   Scenarios with more items retrieved initially than `top_n_for_synthesis`.
+    *   Manually invoke `HybridMemoryTool` (e.g., via a test script that calls the agent, or directly if possible) with these scenarios.
+
+**2. Analyze LLM Inputs and Outputs for Synthesis:**
+    *   Action: For each test scenario:
+        *   Log the exact string passed to the synthesis LLM (output of `_prepare_context_for_synthesis_llm`).
+        *   Log the raw JSON string response from the synthesis LLM.
+        *   Evaluate:
+            *   Did the LLM correctly parse the input items?
+            *   Are the `ranked_and_selected_chunks` truly the most relevant? Is `llm_relevance_score` and `reason_for_selection` sensible?
+            *   Is the `synthesized_context` accurate, coherent, and based *only* on the selected chunks?
+            *   Is the `overall_confidence_in_context` score appropriate?
+            *   Did the LLM adhere to the JSON output format strictly?
+    *   Verify: Identify patterns of success and failure.
+
+**3. Refine `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md`:**
+    *   Action: Based on analysis from step 2, iterate on the system prompt:
+        *   **Clarity:** Make instructions for the LLM even clearer regarding selection criteria, synthesis, and JSON structure.
+        *   **Constraints:** Add or reinforce constraints (e.g., "Synthesize *only* from the chunks you select and have listed in `ranked_and_selected_chunks`.").
+        *   **Examples (Few-shot):** If the LLM struggles with the JSON format or selection logic, consider adding 1-2 concise examples (few-shot prompts) directly within the system prompt. This can significantly improve adherence.
+        *   **Item Formatting:** Ensure the way items are presented to the LLM in `_prepare_context_for_synthesis_llm` is optimal for its understanding (e.g., clear delimiters, consistent metadata).
+    *   Verify: Prompt updated iteratively.
+
+**4. Enhance Error Handling in `HybridMemoryTool._call_synthesis_llm`:**
+    *   Action:
+        *   Add more specific parsing for the expected JSON structure. If keys are missing, provide a more informative error.
+        *   Implement retries for the synthesis LLM call if it fails due to transient issues (e.g., rate limits, temporary API errors), similar to `EmbeddingGenerator`.
+        *   If the LLM returns malformed JSON after retries, consider a fallback (e.g., return the top N raw chunks without synthesis, or a simpler concatenation, along with an error message).
+        ```python
+# In python/tools/hybrid_memory_tool.py - _call_synthesis_llm
+        # ...
+        # After LLM call and getting `content`:
+        # try:
+        #     synthesis_result = json.loads(content)
+        #     # Validate crucial keys
+        #     if not all(k in synthesis_result for k in ["ranked_and_selected_chunks", "synthesized_context"]):
+        #         raise ValueError("LLM response missing required keys.")
+        #     return synthesis_result
+        # except (json.JSONDecodeError, ValueError) as e:
+        #     error_msg = f"HybridMemory: Synthesis LLM returned invalid or incomplete JSON: {e}. Raw: {content[:500]}"
+        #     print(error_msg)
+        #     # Fallback strategy: Could try to extract just the text, or return raw items.
+        #     # For now, just return error.
+        #     return {"error": error_msg, "raw_llm_output": content, "user_query": original_query} # Add original query for context
+        # ...
+```
+    *   Verify: Error handling is more robust.
+
+**II. Svelte UI Changes for Displaying Hybrid Memory Results:**
+
+**5. Enhance `src/lib/components/chat/EventDisplays/ToolCallCard.svelte` for Hybrid Memory:**
+    *   Action: The `TOOL_RESULT` from `HybridMemoryTool` now contains a rich JSON object. `ToolCallCard` needs to present this effectively.
+        ```html
+<!-- src/lib/components/chat/EventDisplays/ToolCallCard.svelte -->
+        <script>
+            // ... (existing script) ...
+            import MarkdownRenderer from '../../shared/MarkdownRenderer.svelte'; // Ensure this is imported
+
+            // ... formatDataForDisplay can still be used for args ...
+
+            function isHybridMemoryResult(toolName, resultData) {
+                return toolName === 'hybrid_memory_query' && resultData && typeof resultData === 'object' && 'synthesized_context' in resultData;
+            }
+        </script>
+
+        <!-- ... (existing template structure for .tool-call-card-main) ... -->
+        {#if toolCall.status !== 'running'}
+            <div class="tool-section result-error-section">
+                <div class="section-title-bar">
+                    <span class="section-title">
+                        {#if toolCall.status === 'success' && isHybridMemoryResult(toolCall.tool_name, toolCall.result)}
+                            Synthesized Context:
+                        {:else if toolCall.status === 'success'}
+                            Result:
+                        {:else}
+                            Error Output:
+                        {/if}
+                    </span>
+                    <!-- Copy button might copy the synthesized_context or the whole JSON -->
+                    {#if toolCall.status === 'success' && toolCall.result}
+                         <button 
+                            class="copy-code-button-tool" 
+                            on:click={(e) => copyToClipboard(
+                                isHybridMemoryResult(toolCall.tool_name, toolCall.result) ? 
+                                toolCall.result.synthesized_context : formatDataForDisplay(toolCall.result, ''), 
+                                e.currentTarget
+                            )}
+                         >
+                            <Icon path="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" size="14" /> Copy
+                        </button>
+                    {/if}
+                </div>
+
+                {#if toolCall.status === 'success'}
+                    {#if isHybridMemoryResult(toolCall.tool_name, toolCall.result)}
+                        <div class="hybrid-memory-result">
+                            <div class="synthesized-context">
+                                <MarkdownRenderer source={toolCall.result.synthesized_context || "No synthesis provided."} />
+                            </div>
+                            {#if toolCall.result.overall_confidence_in_context !== undefined}
+                                <p class="confidence-score">
+                                    Overall Confidence: <span>{(toolCall.result.overall_confidence_in_context * 100).toFixed(0)}%</span>
+                                </p>
+                            {/if}
+                            {#if toolCall.result.ranked_and_selected_chunks && toolCall.result.ranked_and_selected_chunks.length > 0}
+                                <details class="selected-chunks-details">
+                                    <summary>View {toolCall.result.ranked_and_selected_chunks.length} Selected Source Snippets</summary>
+                                    <ul>
+                                        {#each toolCall.result.ranked_and_selected_chunks as chunk (chunk.original_id || chunk.content.slice(0,10))}
+                                            <li class="source-chunk-item">
+                                                <div class="chunk-header">
+                                                    <strong>Source:</strong> {chunk.source_type || 'Unknown'} 
+                                                    (ID: {String(chunk.original_id || 'N/A').slice(0,20)})
+                                                    <strong>Relevance:</strong> {(chunk.llm_relevance_score * 100).toFixed(0)}%
+                                                </div>
+                                                <p class="chunk-reason"><em>Reason: {chunk.reason_for_selection || 'N/A'}</em></p>
+                                                <div class="chunk-content-preview">
+                                                     <MarkdownRenderer source={chunk.content.length > 300 ? chunk.content.slice(0, 300) + '...' : chunk.content} />
+                                                </div>
+                                            </li>
+                                        {/each}
+                                    </ul>
+                                </details>
+                            {/if}
+                        </div>
+                    {:else if typeof toolCall.result === 'string' && (toolCall.result.includes('
+```') || toolCall.result.includes('\n') || toolCall.result.length > 200) }
+                        <MarkdownRenderer source={toolCall.result} />
+                    {:else}
+                        <pre><code class="language-json result-success-bg">{formatDataForDisplay(toolCall.result, 'No result data.')}</code></pre>
+                    {/if}
+                {:else if toolCall.error_message}
+                    <!-- ... existing error display ... -->
+                {/if}
+            </div>
+        {/if}
+        <!-- ... (timestamp footer) ... -->
+        <style>
+            /* ... (existing styles) ... */
+            .hybrid-memory-result { margin-top: 8px; }
+            .synthesized-context {
+                padding: 10px;
+                background-color: var(--neumorphic-shadow-dark); /* Slightly different from code blocks */
+                border-radius: 6px;
+                margin-bottom: 10px;
+                border: 1px solid var(--neumorphic-shadow-light);
+            }
+            .synthesized-context :global(p:first-child) { margin-top: 0; }
+            .synthesized-context :global(p:last-child) { margin-bottom: 0; }
+
+            .confidence-score {
+                font-size: 0.8em;
+                color: var(--text-secondary);
+                text-align: right;
+                margin: 5px 0 10px;
+            }
+            .confidence-score span {
+                font-weight: bold;
+                color: var(--accent-green-primary);
+            }
+
+            .selected-chunks-details summary {
+                cursor: pointer;
+                font-size: 0.85em;
+                font-weight: 500;
+                color: var(--text-secondary);
+                padding: 5px;
+                background-color: var(--neumorphic-shadow-dark);
+                border-radius: 4px;
+                margin-bottom: 5px;
+            }
+            .selected-chunks-details summary:hover {
+                color: var(--accent-green-primary);
+            }
+            .selected-chunks-details[open] summary {
+                margin-bottom: 10px;
+            }
+            .selected-chunks-details ul {
+                list-style: none;
+                padding-left: 10px; /* Indent chunk items */
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            .selected-chunks-details ul::-webkit-scrollbar { width: 4px; }
+            .selected-chunks-details ul::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); }
+            
+            .source-chunk-item {
+                margin-bottom: 12px;
+                padding: 8px;
+                border-radius: 4px;
+                background-color: rgba(0,0,0,0.1); /* Slightly inset background for chunks */
+                border-left: 3px solid var(--accent-green-secondary);
+            }
+            .chunk-header {
+                font-size: 0.75em;
+                color: var(--text-secondary);
+                margin-bottom: 4px;
+            }
+            .chunk-header strong {
+                color: var(--text-primary);
+            }
+            .chunk-reason {
+                font-size: 0.75em;
+                font-style: italic;
+                color: var(--text-secondary);
+                margin: 2px 0 5px 0;
+            }
+            .chunk-content-preview {
+                font-size: 0.8em;
+                max-height: 100px; /* Limit preview height */
+                overflow: hidden;
+                position: relative;
+            }
+            .chunk-content-preview:after { /* Fade out effect if content overflows */
+                content: '';
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                height: 20px;
+                background: linear-gradient(to bottom, transparent, var(--bg-dark-primary));
+            }
+        </style>
+        ```
+    *   **Key Changes:**
+        *   Added `isHybridMemoryResult` helper.
+        *   Conditionally renders a specific block for hybrid memory results.
+        *   Displays `synthesized_context` (using `MarkdownRenderer`).
+        *   Displays `overall_confidence_in_context`.
+        *   Uses a `<details>` element to show/hide the `ranked_and_selected_chunks`. Each chunk shows its source, score, reason, and a snippet of content.
+    *   Verify: Hybrid memory results are displayed clearly and informatively.
+
+**6. Testing TASK_AUI_010:**
+    *   Action:
+        1.  Run Phoenix backend with all the `HybridMemoryTool` enhancements.
+        2.  Run Svelte UI.
+        3.  Invoke the `hybrid_memory_query` tool through an agent interaction that requires both RAG and Mem0 lookup.
+    *   Expected Behavior:
+        *   The `ToolCallCard` in the Svelte UI for `hybrid_memory_query` should display:
+            *   The final `synthesized_context` rendered as Markdown.
+            *   The `overall_confidence_in_context` score.
+            *   A collapsible section listing the `ranked_and_selected_chunks`, each with its source, relevance score, reason, and content preview.
+        *   The quality of the `synthesized_context` should be high and directly answer the query based on the selected chunks.
+        *   The `ranked_and_selected_chunks` should appear logically chosen and relevant.
+        *   Test various queries to see how the re-ranking and synthesis adapt.
+
+This task makes the `HybridMemoryTool` a truly intelligent component of Phoenix, providing highly relevant and well-structured information to the main agent.
+
+Let me know your results and when you're ready for the next task!## TASK_AUI_010: Phoenix Backend & Svelte UI - Test & Refine `HybridMemoryTool` LLM Re-ranking and Synthesis
+
+**Goal:**
+1.  **Thoroughly Test:** Rigorously test the `HybridMemoryTool`'s advanced functionality (implemented in the revised Task 067 / original Task 076) focusing on the quality and correctness of the LLM-based re-ranking and synthesis.
+2.  **Refine Prompts:** Adjust `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md` and the user message constructed in `HybridMemoryTool._prepare_context_for_synthesis_llm` based on test results to improve:
+    *   Relevance of selected chunks.
+    *   Coherence and accuracy of the `synthesized_context`.
+    *   Correctness of the JSON output structure from the LLM.
+3.  **Improve UI Display:** Enhance how the `HybridMemoryTool`'s structured output (the JSON from the synthesis LLM) is presented in the Svelte UI, likely within `ToolCallCard.svelte` or a dedicated display component for this rich result.
+4.  **Error Handling:** Ensure robust error handling for the synthesis LLM call (e.g., malformed JSON response, API errors).
+
+**Prerequisites:**
+*   Task 067 (Revised - Advanced) / Original Task 076 completed: `HybridMemoryTool` has the LLM re-ranking and synthesis logic implemented.
+*   `KnowledgeAgentTool` and `MemoryAgentTool` (with Mem0) are functional and can provide diverse context items.
+*   A capable LLM (e.g., GPT-4, Claude 3 Sonnet/Opus) is configured for the `HybridMemoryTool`'s synthesis step.
+*   Svelte UI can display `TOOL_RESULT` events.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend - Testing and Prompt Refinement:**
+
+**1. Create Diverse Test Scenarios for `HybridMemoryTool`:**
+    *   Action: Design test cases that feed a variety of inputs to `HybridMemoryTool`:
+        *   Queries where relevant info is mostly in RAG, mostly in Mem0, or spread across both.
+        *   Queries with conflicting information between RAG and Mem0.
+        *   Queries where only a few of the initially retrieved items are truly relevant.
+        *   Queries that are very broad or very specific.
+        *   Scenarios with more items retrieved initially than `top_n_for_synthesis`.
+    *   Manually invoke `HybridMemoryTool` (e.g., via a test script that calls the agent, or directly if possible) with these scenarios.
+
+**2. Analyze LLM Inputs and Outputs for Synthesis:**
+    *   Action: For each test scenario:
+        *   Log the exact string passed to the synthesis LLM (output of `_prepare_context_for_synthesis_llm`).
+        *   Log the raw JSON string response from the synthesis LLM.
+        *   Evaluate:
+            *   Did the LLM correctly parse the input items?
+            *   Are the `ranked_and_selected_chunks` truly the most relevant? Is `llm_relevance_score` and `reason_for_selection` sensible?
+            *   Is the `synthesized_context` accurate, coherent, and based *only* on the selected chunks?
+            *   Is the `overall_confidence_in_context` score appropriate?
+            *   Did the LLM adhere to the JSON output format strictly?
+    *   Verify: Identify patterns of success and failure.
+
+**3. Refine `prompts/default/tool.hybrid_memory.rerank_synthesize.system.md`:**
+    *   Action: Based on analysis from step 2, iterate on the system prompt:
+        *   **Clarity:** Make instructions for the LLM even clearer regarding selection criteria, synthesis, and JSON structure.
+        *   **Constraints:** Add or reinforce constraints (e.g., "Synthesize *only* from the chunks you select and have listed in `ranked_and_selected_chunks`.").
+        *   **Examples (Few-shot):** If the LLM struggles with the JSON format or selection logic, consider adding 1-2 concise examples (few-shot prompts) directly within the system prompt. This can significantly improve adherence.
+        *   **Item Formatting:** Ensure the way items are presented to the LLM in `_prepare_context_for_synthesis_llm` is optimal for its understanding (e.g., clear delimiters, consistent metadata).
+    *   Verify: Prompt updated iteratively.
+
+**4. Enhance Error Handling in `HybridMemoryTool._call_synthesis_llm`:**
+    *   Action:
+        *   Add more specific parsing for the expected JSON structure. If keys are missing, provide a more informative error.
+        *   Implement retries for the synthesis LLM call if it fails due to transient issues (e.g., rate limits, temporary API errors), similar to `EmbeddingGenerator`.
+        *   If the LLM returns malformed JSON after retries, consider a fallback (e.g., return the top N raw chunks without synthesis, or a simpler concatenation, along with an error message).
+        ```python
+        # In python/tools/hybrid_memory_tool.py - _call_synthesis_llm
+        # ...
+        # After LLM call and getting `content`:
+        # try:
+        #     synthesis_result = json.loads(content)
+        #     # Validate crucial keys
+        #     if not all(k in synthesis_result for k in ["ranked_and_selected_chunks", "synthesized_context"]):
+        #         raise ValueError("LLM response missing required keys.")
+        #     return synthesis_result
+        # except (json.JSONDecodeError, ValueError) as e:
+        #     error_msg = f"HybridMemory: Synthesis LLM returned invalid or incomplete JSON: {e}. Raw: {content[:500]}"
+        #     print(error_msg)
+        #     # Fallback strategy: Could try to extract just the text, or return raw items.
+        #     # For now, just return error.
+        #     return {"error": error_msg, "raw_llm_output": content, "user_query": original_query} # Add original query for context
+        # ...
+        ```
+    *   Verify: Error handling is more robust.
+
+**II. Svelte UI Changes for Displaying Hybrid Memory Results:**
+
+**5. Enhance `src/lib/components/chat/EventDisplays/ToolCallCard.svelte` for Hybrid Memory:**
+    *   Action: The `TOOL_RESULT` from `HybridMemoryTool` now contains a rich JSON object. `ToolCallCard` needs to present this effectively.
+        ```html
+        <!-- src/lib/components/chat/EventDisplays/ToolCallCard.svelte -->
+        <script>
+            // ... (existing script) ...
+            import MarkdownRenderer from '../../shared/MarkdownRenderer.svelte'; // Ensure this is imported
+
+            // ... formatDataForDisplay can still be used for args ...
+
+            function isHybridMemoryResult(toolName, resultData) {
+                return toolName === 'hybrid_memory_query' && resultData && typeof resultData === 'object' && 'synthesized_context' in resultData;
+            }
+        </script>
+
+        <!-- ... (existing template structure for .tool-call-card-main) ... -->
+        {#if toolCall.status !== 'running'}
+            <div class="tool-section result-error-section">
+                <div class="section-title-bar">
+                    <span class="section-title">
+                        {#if toolCall.status === 'success' && isHybridMemoryResult(toolCall.tool_name, toolCall.result)}
+                            Synthesized Context:
+                        {:else if toolCall.status === 'success'}
+                            Result:
+                        {:else}
+                            Error Output:
+                        {/if}
+                    </span>
+                    <!-- Copy button might copy the synthesized_context or the whole JSON -->
+                    {#if toolCall.status === 'success' && toolCall.result}
+                         <button 
+                            class="copy-code-button-tool" 
+                            on:click={(e) => copyToClipboard(
+                                isHybridMemoryResult(toolCall.tool_name, toolCall.result) ? 
+                                toolCall.result.synthesized_context : formatDataForDisplay(toolCall.result, ''), 
+                                e.currentTarget
+                            )}
+                         >
+                            <Icon path="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" size="14" /> Copy
+                        </button>
+                    {/if}
+                </div>
+
+                {#if toolCall.status === 'success'}
+                    {#if isHybridMemoryResult(toolCall.tool_name, toolCall.result)}
+                        <div class="hybrid-memory-result">
+                            <div class="synthesized-context">
+                                <MarkdownRenderer source={toolCall.result.synthesized_context || "No synthesis provided."} />
+                            </div>
+                            {#if toolCall.result.overall_confidence_in_context !== undefined}
+                                <p class="confidence-score">
+                                    Overall Confidence: <span>{(toolCall.result.overall_confidence_in_context * 100).toFixed(0)}%</span>
+                                </p>
+                            {/if}
+                            {#if toolCall.result.ranked_and_selected_chunks && toolCall.result.ranked_and_selected_chunks.length > 0}
+                                <details class="selected-chunks-details">
+                                    <summary>View {toolCall.result.ranked_and_selected_chunks.length} Selected Source Snippets</summary>
+                                    <ul>
+                                        {#each toolCall.result.ranked_and_selected_chunks as chunk (chunk.original_id || chunk.content.slice(0,10))}
+                                            <li class="source-chunk-item">
+                                                <div class="chunk-header">
+                                                    <strong>Source:</strong> {chunk.source_type || 'Unknown'} 
+                                                    (ID: {String(chunk.original_id || 'N/A').slice(0,20)})
+                                                    <strong>Relevance:</strong> {(chunk.llm_relevance_score * 100).toFixed(0)}%
+                                                </div>
+                                                <p class="chunk-reason"><em>Reason: {chunk.reason_for_selection || 'N/A'}</em></p>
+                                                <div class="chunk-content-preview">
+                                                     <MarkdownRenderer source={chunk.content.length > 300 ? chunk.content.slice(0, 300) + '...' : chunk.content} />
+                                                </div>
+                                            </li>
+                                        {/each}
+                                    </ul>
+                                </details>
+                            {/if}
+                        </div>
+                    {:else if typeof toolCall.result === 'string' && (toolCall.result.includes('```') || toolCall.result.includes('\n') || toolCall.result.length > 200) }
+                        <MarkdownRenderer source={toolCall.result} />
+                    {:else}
+                        <pre><code class="language-json result-success-bg">{formatDataForDisplay(toolCall.result, 'No result data.')}</code></pre>
+                    {/if}
+                {:else if toolCall.error_message}
+                    <!-- ... existing error display ... -->
+                {/if}
+            </div>
+        {/if}
+        <!-- ... (timestamp footer) ... -->
+        <style>
+            /* ... (existing styles) ... */
+            .hybrid-memory-result { margin-top: 8px; }
+            .synthesized-context {
+                padding: 10px;
+                background-color: var(--neumorphic-shadow-dark); /* Slightly different from code blocks */
+                border-radius: 6px;
+                margin-bottom: 10px;
+                border: 1px solid var(--neumorphic-shadow-light);
+            }
+            .synthesized-context :global(p:first-child) { margin-top: 0; }
+            .synthesized-context :global(p:last-child) { margin-bottom: 0; }
+
+            .confidence-score {
+                font-size: 0.8em;
+                color: var(--text-secondary);
+                text-align: right;
+                margin: 5px 0 10px;
+            }
+            .confidence-score span {
+                font-weight: bold;
+                color: var(--accent-green-primary);
+            }
+
+            .selected-chunks-details summary {
+                cursor: pointer;
+                font-size: 0.85em;
+                font-weight: 500;
+                color: var(--text-secondary);
+                padding: 5px;
+                background-color: var(--neumorphic-shadow-dark);
+                border-radius: 4px;
+                margin-bottom: 5px;
+            }
+            .selected-chunks-details summary:hover {
+                color: var(--accent-green-primary);
+            }
+            .selected-chunks-details[open] summary {
+                margin-bottom: 10px;
+            }
+            .selected-chunks-details ul {
+                list-style: none;
+                padding-left: 10px; /* Indent chunk items */
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            .selected-chunks-details ul::-webkit-scrollbar { width: 4px; }
+            .selected-chunks-details ul::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); }
+            
+            .source-chunk-item {
+                margin-bottom: 12px;
+                padding: 8px;
+                border-radius: 4px;
+                background-color: rgba(0,0,0,0.1); /* Slightly inset background for chunks */
+                border-left: 3px solid var(--accent-green-secondary);
+            }
+            .chunk-header {
+                font-size: 0.75em;
+                color: var(--text-secondary);
+                margin-bottom: 4px;
+            }
+            .chunk-header strong {
+                color: var(--text-primary);
+            }
+            .chunk-reason {
+                font-size: 0.75em;
+                font-style: italic;
+                color: var(--text-secondary);
+                margin: 2px 0 5px 0;
+            }
+            .chunk-content-preview {
+                font-size: 0.8em;
+                max-height: 100px; /* Limit preview height */
+                overflow: hidden;
+                position: relative;
+            }
+            .chunk-content-preview:after { /* Fade out effect if content overflows */
+                content: '';
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                height: 20px;
+                background: linear-gradient(to bottom, transparent, var(--bg-dark-primary));
+            }
+        </style>
+        ```
+    *   **Key Changes:**
+        *   Added `isHybridMemoryResult` helper.
+        *   Conditionally renders a specific block for hybrid memory results.
+        *   Displays `synthesized_context` (using `MarkdownRenderer`).
+        *   Displays `overall_confidence_in_context`.
+        *   Uses a `<details>` element to show/hide the `ranked_and_selected_chunks`. Each chunk shows its source, score, reason, and a snippet of content.
+    *   Verify: Hybrid memory results are displayed clearly and informatively.
+
+**6. Testing TASK_AUI_010:**
+    *   Action:
+        1.  Run Phoenix backend with all the `HybridMemoryTool` enhancements.
+        2.  Run Svelte UI.
+        3.  Invoke the `hybrid_memory_query` tool through an agent interaction that requires both RAG and Mem0 lookup.
+    *   Expected Behavior:
+        *   The `ToolCallCard` in the Svelte UI for `hybrid_memory_query` should display:
+            *   The final `synthesized_context` rendered as Markdown.
+            *   The `overall_confidence_in_context` score.
+            *   A collapsible section listing the `ranked_and_selected_chunks`, each with its source, relevance score, reason, and content preview.
+        *   The quality of the `synthesized_context` should be high and directly answer the query based on the selected chunks.
+        *   The `ranked_and_selected_chunks` should appear logically chosen and relevant.
+        *   Test various queries to see how the re-ranking and synthesis adapt.
+
+This task makes the `HybridMemoryTool` a truly intelligent component of Phoenix, providing highly relevant and well-structured information to the main agent.
+
+Let me know your results and when you're ready for the next task!

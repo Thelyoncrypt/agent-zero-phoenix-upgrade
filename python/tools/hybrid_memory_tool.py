@@ -202,10 +202,10 @@ class HybridMemoryTool(Tool):
         result_data = {
             "query": query,
             "synthesized_context": synthesized_context,
-            "selected_chunks": selected_chunks,
+            "ranked_and_selected_chunks": selected_chunks,  # Match UI expectation
             "total_chunks_found": len(all_chunks),
             "sources_searched": ["agent_zero_structured", "mem0_intelligent"],
-            "overall_confidence": overall_confidence
+            "overall_confidence_in_context": overall_confidence  # Match UI expectation
         }
 
         success_message = f"Found and synthesized information from {len(all_chunks)} total chunks across multiple memory sources."
@@ -247,19 +247,39 @@ Please re-rank these chunks, select the top {top_n} most relevant ones, and {'sy
             {"role": "user", "content": user_prompt}
         ]
 
-        response = await asyncio.to_thread(
-            self.llm_client.chat.completions.create,
-            model=self.llm_model,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=1500
-        )
+        # Retry logic for LLM call
+        max_retries = 3
+        retry_delay = 1
 
-        response_content = response.choices[0].message.content.strip()
+        for attempt in range(max_retries):
+            try:
+                response = await asyncio.to_thread(
+                    self.llm_client.chat.completions.create,
+                    model=self.llm_model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=1500
+                )
+                response_content = response.choices[0].message.content.strip()
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"HybridMemoryTool: LLM call attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"HybridMemoryTool: All {max_retries} LLM call attempts failed: {e}")
+                    raise
 
         try:
             # Parse JSON response
             llm_result = json.loads(response_content)
+
+            # Validate crucial keys
+            required_keys = ["ranked_and_selected_chunks", "synthesized_context"]
+            missing_keys = [key for key in required_keys if key not in llm_result]
+            if missing_keys:
+                raise ValueError(f"LLM response missing required keys: {missing_keys}")
 
             # Map back to original chunks with full content
             final_selected_chunks = []
@@ -276,7 +296,20 @@ Please re-rank these chunks, select the top {top_n} most relevant ones, and {'sy
             llm_result["ranked_and_selected_chunks"] = final_selected_chunks
             return llm_result
 
-        except json.JSONDecodeError as e:
-            logger.error(f"HybridMemoryTool: Failed to parse LLM JSON response: {e}")
-            logger.debug(f"LLM response content: {response_content}")
-            raise Exception(f"LLM returned invalid JSON: {str(e)}")
+        except (json.JSONDecodeError, ValueError) as e:
+            error_msg = f"HybridMemory: Synthesis LLM returned invalid or incomplete JSON: {e}. Raw: {response_content[:500]}"
+            logger.error(error_msg)
+
+            # Fallback strategy: return top N raw chunks without synthesis
+            logger.info("HybridMemoryTool: Falling back to simple score-based ranking due to LLM synthesis failure.")
+            sorted_chunks = sorted(chunks, key=lambda x: x.get("initial_score", 0), reverse=True)
+            fallback_chunks = sorted_chunks[:top_n]
+
+            return {
+                "ranked_and_selected_chunks": fallback_chunks,
+                "synthesized_context": f"LLM synthesis failed ({str(e)}). Here are the top {len(fallback_chunks)} chunks based on initial relevance scores.",
+                "overall_confidence_in_context": 0.3,
+                "error": error_msg,
+                "raw_llm_output": response_content,
+                "user_query": query
+            }

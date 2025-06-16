@@ -1,0 +1,567 @@
+## TASK_AUI_008: Svelte UI - Attachments Display in `MessageCard.svelte` (Visuals)
+
+**Goal:**
+1.  Modify `MessageCard.svelte` to display visual representations of file attachments associated with a message.
+2.  For image attachments (`image/*` types):
+    *   Display a small, clickable thumbnail directly in the message card.
+    *   Clicking the thumbnail should open a larger image preview (e.g., in a modal).
+3.  For non-image attachments:
+    *   Display a generic file icon (or type-specific icons if desired later) along with the filename.
+    *   (Optional for this task, future enhancement): Clicking could trigger a download if the backend supports serving these files.
+4.  Style the attachment display to be clean and integrated within the neumorphic/glassmorphic design of the message cards.
+
+**Prerequisites:**
+*   Task 068 completed: Svelte UI can select files, and their metadata (`name`, `type`, `size`, `id`) is included in the message payload sent to the backend and subsequently stored in `chatStore`'s `messagesAndEvents` items.
+*   `MessageCard.svelte` component exists.
+*   `ModalWrapper.svelte` exists for the image preview modal.
+*   `Icon.svelte` component exists.
+
+**Detailed Steps:**
+
+**1. Create `src/lib/components/modals/ImagePreviewModal.svelte`:**
+    *   Action: A simple modal to display a larger version of an image.
+        ```html
+<!-- src/lib/components/modals/ImagePreviewModal.svelte -->
+        <script>
+            import ModalWrapper from './ModalWrapper.svelte';
+            
+            export let isOpen = false;
+            export let imageUrl = '';
+            export let imageName = 'Image Preview';
+            export let onClose = () => { isOpen = false; }; // Default close action
+        </script>
+
+        <ModalWrapper bind:isOpen {title} {onClose}>
+            <div class="image-preview-container">
+                {#if imageUrl}
+                    <img src={imageUrl} alt={imageName} class="previewed-image"/>
+                {:else}
+                    <p>No image to display.</p>
+                {/if}
+            </div>
+        </ModalWrapper>
+
+        <style>
+            .image-preview-container {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 10px; /* Padding around the image within the modal body */
+            }
+            .previewed-image {
+                max-width: 100%;
+                max-height: 75vh; /* Limit image height within viewport */
+                border-radius: 8px; /* Optional: rounded corners for the image itself */
+                object-fit: contain;
+            }
+        </style>
+```
+    *   Verify: Component created.
+
+**2. Enhance `src/lib/components/chat/MessageCard.svelte` to Display Attachments:**
+    *   Action: Modify `MessageCard.svelte` to iterate through `message.attachments` and render them.
+        ```html
+<!-- src/lib/components/chat/MessageCard.svelte -->
+        <script>
+            import Card from '../shared/Card.svelte';
+            import MarkdownRenderer from '../shared/MarkdownRenderer.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import ImagePreviewModal from '../modals/ImagePreviewModal.svelte'; // NEW IMPORT
+            import { onDestroy } from 'svelte';
+
+            export let message = {
+                id: 'default-id',
+                role: 'assistant',
+                content: 'Default message content.',
+                timestamp: new Date(),
+                attachments: [] // Expects: [{ id, name, type, size, client_preview_url? }]
+            };
+
+            // ... (existing cardType, cardElevation logic) ...
+
+            let showImagePreviewModal = false;
+            let previewImageUrl = '';
+            let previewImageName = '';
+
+            // Store object URLs to revoke them later
+            let objectUrls = new Map();
+
+            function getClientPreviewUrl(attachment) {
+                // If the attachment object is the actual File object from input
+                if (attachment instanceof File && attachment.type.startsWith('image/')) {
+                    if (objectUrls.has(attachment.name + attachment.lastModified)) {
+                        return objectUrls.get(attachment.name + attachment.lastModified);
+                    }
+                    const url = URL.createObjectURL(attachment);
+                    objectUrls.set(attachment.name + attachment.lastModified, url);
+                    return url;
+                }
+                // If backend provides a temporary preview URL for already uploaded files
+                return attachment.client_preview_url || null;
+            }
+
+            function openImagePreview(attachment) {
+                const url = getClientPreviewUrl(attachment);
+                if (url) {
+                    previewImageUrl = url;
+                    previewImageName = attachment.name;
+                    showImagePreviewModal = true;
+                } else if (attachment.type.startsWith('image/') && attachment.url) { // If it's a URL from vision_load
+                    previewImageUrl = attachment.url;
+                    previewImageName = attachment.name || 'Image from URL';
+                    showImagePreviewModal = true;
+                }
+            }
+
+            function getFileIconPath(fileType) {
+                if (fileType.startsWith('image/')) return "M23 18l-9.5-9.5-5 5L1 10l9 9"; // Image icon
+                if (fileType === 'application/pdf') return "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h8m-8 4h8m-8 4h5m6-2v4h-4v-4h4z"; // PDF icon
+                if (fileType.startsWith('text/')) return "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h8m-8 4h8m-8 4h5"; // Text/doc icon
+                return "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"; // Generic file
+            }
+            
+            onDestroy(() => {
+                // Revoke object URLs to free up memory
+                objectUrls.forEach(url => URL.revokeObjectURL(url));
+            });
+        </script>
+
+        {#if showImagePreviewModal}
+            <ImagePreviewModal 
+                bind:isOpen={showImagePreviewModal} 
+                imageUrl={previewImageUrl} 
+                imageName={previewImageName}
+            />
+        {/if}
+
+        <div class="message-wrapper {message.role === 'user' ? 'role-user' : `role-${message.role}`}">
+            <Card type={cardType} elevation={cardElevation} customClass="message-card-inner">
+                {#if message.role !== 'user'}
+                    <div class="sender-role">{message.role.toUpperCase()}</div>
+                {/if}
+                
+                {#if message.content && message.content.trim() !== ""}
+                    <div class="content">
+                        {#if message.role === 'assistant'}
+                            <MarkdownRenderer source={message.content} />
+                        {:else}
+                            {message.content}
+                        {/if}
+                    </div>
+                {/if}
+
+                {#if message.attachments && message.attachments.length > 0}
+                    <div class="attachments-section" class:has-content={message.content && message.content.trim() !== ""}>
+                        {#each message.attachments as attachment (attachment.id || attachment.name)}
+                            <div class="attachment-item card-base neumorphic neumorphic-inset">
+                                {#if attachment.type.startsWith('image/')}
+                                    {@const previewSrc = getClientPreviewUrl(attachment) || attachment.url}
+                                    {#if previewSrc}
+                                    <!-- svelte-ignore a11y-click-events-have-key-events -->
+                                    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+                                    <figure class="attachment-thumbnail-wrapper" on:click={() => openImagePreview(attachment)} title="Click to enlarge: {attachment.name}">
+                                        <img src={previewSrc} alt={attachment.name} class="attachment-thumbnail-image" />
+                                        <figcaption class="attachment-name">{attachment.name}</figcaption>
+                                    </figure>
+                                    {:else}
+                                     <!-- Fallback for image if no preview URL -->
+                                     <Icon path={getFileIconPath(attachment.type)} size="24" customClass="file-type-icon"/>
+                                     <span class="attachment-name">{attachment.name}</span>
+                                    {/if}
+                                {:else}
+                                    <Icon path={getFileIconPath(attachment.type)} size="24" customClass="file-type-icon"/>
+                                    <span class="attachment-name">{attachment.name}</span>
+                                    <!-- <span class="attachment-size">({(attachment.size / 1024).toFixed(1)} KB)</span> -->
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+
+                <div class="timestamp">
+                    {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
+            </Card>
+        </div>
+
+        <style>
+            /* ... (existing .message-wrapper, .message-card-inner, .sender-role, .content, .timestamp styles) ... */
+            .attachments-section {
+                margin-top: 10px;
+                display: flex;
+                flex-wrap: wrap; /* Allow multiple attachments to wrap */
+                gap: 8px;
+            }
+            .attachments-section.has-content { /* Add border if there's text content above */
+                padding-top: 10px;
+                border-top: 1px solid var(--neumorphic-shadow-dark);
+            }
+
+            .attachment-item {
+                padding: 8px 10px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                border-radius: 8px; /* Neumorphic inset style from Card */
+                max-width: 200px; /* Limit width of individual attachment items */
+            }
+            .attachment-thumbnail-wrapper {
+                margin: 0;
+                padding: 0;
+                cursor: pointer;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 4px;
+            }
+            .attachment-thumbnail-image {
+                width: 60px; /* Thumbnail size */
+                height: 60px;
+                object-fit: cover;
+                border-radius: 6px; /* Rounded corners for thumbnail */
+                border: 1px solid var(--neumorphic-shadow-light);
+            }
+            .file-type-icon {
+                color: var(--text-secondary);
+                flex-shrink: 0;
+            }
+            .attachment-name {
+                font-size: 0.8em;
+                color: var(--text-secondary);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .attachment-size {
+                font-size: 0.7em;
+                color: var(--text-secondary);
+                opacity: 0.7;
+            }
+        </style>
+```
+    *   **Key Changes:**
+        *   Imports `ImagePreviewModal` and `Icon`.
+        *   Iterates over `message.attachments`.
+        *   If `attachment.type` starts with `image/`:
+            *   `getClientPreviewUrl`: Uses `URL.createObjectURL(file)` if the attachment is a `File` object (from client-side selection). This is important for showing previews *before* upload.
+            *   Manages and revokes these object URLs in `onDestroy`.
+            *   Displays an `<img>` thumbnail. Clicking it sets `showImagePreviewModal` to true.
+        *   For other file types, displays a generic icon (using `getFileIconPath`) and the filename.
+    *   Verify: Component updated.
+
+**3. Add `ImagePreviewModal` Instance to `+page.svelte` or `App.svelte`:**
+    *   Action: Place it at the root level of your app so it can overlay everything. It's controlled by `showImagePreviewModal` from `MessageCard`.
+        *(This step was implicitly covered if `MessageCard.svelte` is already instantiated in `+page.svelte` and the modal is correctly conditionally rendered within `MessageCard.svelte`'s own template based on its local state. No new global instance is needed if each `MessageCard` can manage its own preview modal state like this. The provided `MessageCard.svelte` example does this.)*
+    *   If you prefer a single global image preview modal:
+        *   Create a store `imagePreviewStore.js` with `isOpen`, `imageUrl`, `imageName`.
+        *   `MessageCard` calls a method on this store to open the preview.
+        *   `+page.svelte` renders `<ImagePreviewModal bind:isOpen={$imagePreviewStore.isOpen} ... />`.
+        *   **For this task, the per-MessageCard modal state is simpler.**
+
+**4. (Backend - No changes for this UI task)**
+    *   The backend already receives attachment metadata. Future tasks would handle actual file upload and serving image URLs if needed for attachments that are not client-side `File` objects.
+
+**5. Testing TASK_AUI_008:**
+    *   Action:
+        1.  Start Phoenix backend.
+        2.  Start Svelte UI.
+        3.  **Test Image Attachments:**
+            *   In the Svelte UI, use the "Attach file" button to select one or more image files (JPG, PNG).
+            *   The selected images should appear as thumbnails below the text input bar (as per Task 068).
+            *   Send a message with these image attachments.
+            *   **Expected:** The user's `MessageCard` should now display these image attachments as small clickable thumbnails.
+            *   Clicking a thumbnail should open the `ImagePreviewModal` showing a larger version of that image.
+            *   Closing the modal should work.
+        4.  **Test Non-Image Attachments:**
+            *   Attach a PDF or TXT file. Send a message.
+            *   **Expected:** The user's `MessageCard` should display a generic file icon (or specific PDF/TXT icon if you implemented `getFileIconPath` extensively) and the filename.
+        5.  Test with messages that have both text content and attachments.
+        6.  Test with messages that *only* have attachments and no text.
+    *   Verify: Attachments are displayed correctly within message cards. Image previews work.
+
+This task enhances the visual communication by making attachments much more prominent and interactive.
+
+Ready for TASK_AUI_009?## TASK_AUI_008: Svelte UI - Attachments Display in `MessageCard.svelte` (Visuals)
+
+**Goal:**
+1.  Modify `MessageCard.svelte` to display visual representations of file attachments associated with a message.
+2.  For image attachments (`image/*` types):
+    *   Display a small, clickable thumbnail directly in the message card.
+    *   Clicking the thumbnail should open a larger image preview (e.g., in a modal).
+3.  For non-image attachments:
+    *   Display a generic file icon (or type-specific icons if desired later) along with the filename.
+    *   (Optional for this task, future enhancement): Clicking could trigger a download if the backend supports serving these files.
+4.  Style the attachment display to be clean and integrated within the neumorphic/glassmorphic design of the message cards.
+
+**Prerequisites:**
+*   Task 068 completed: Svelte UI can select files, and their metadata (`name`, `type`, `size`, `id`) is included in the message payload sent to the backend and subsequently stored in `chatStore`'s `messagesAndEvents` items.
+*   `MessageCard.svelte` component exists.
+*   `ModalWrapper.svelte` exists for the image preview modal.
+*   `Icon.svelte` component exists.
+
+**Detailed Steps:**
+
+**1. Create `src/lib/components/modals/ImagePreviewModal.svelte`:**
+    *   Action: A simple modal to display a larger version of an image.
+        ```html
+        <!-- src/lib/components/modals/ImagePreviewModal.svelte -->
+        <script>
+            import ModalWrapper from './ModalWrapper.svelte';
+            
+            export let isOpen = false;
+            export let imageUrl = '';
+            export let imageName = 'Image Preview';
+            export let onClose = () => { isOpen = false; }; // Default close action
+        </script>
+
+        <ModalWrapper bind:isOpen {title} {onClose}>
+            <div class="image-preview-container">
+                {#if imageUrl}
+                    <img src={imageUrl} alt={imageName} class="previewed-image"/>
+                {:else}
+                    <p>No image to display.</p>
+                {/if}
+            </div>
+        </ModalWrapper>
+
+        <style>
+            .image-preview-container {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 10px; /* Padding around the image within the modal body */
+            }
+            .previewed-image {
+                max-width: 100%;
+                max-height: 75vh; /* Limit image height within viewport */
+                border-radius: 8px; /* Optional: rounded corners for the image itself */
+                object-fit: contain;
+            }
+        </style>
+        ```
+    *   Verify: Component created.
+
+**2. Enhance `src/lib/components/chat/MessageCard.svelte` to Display Attachments:**
+    *   Action: Modify `MessageCard.svelte` to iterate through `message.attachments` and render them.
+        ```html
+        <!-- src/lib/components/chat/MessageCard.svelte -->
+        <script>
+            import Card from '../shared/Card.svelte';
+            import MarkdownRenderer from '../shared/MarkdownRenderer.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import ImagePreviewModal from '../modals/ImagePreviewModal.svelte'; // NEW IMPORT
+            import { onDestroy } from 'svelte';
+
+            export let message = {
+                id: 'default-id',
+                role: 'assistant',
+                content: 'Default message content.',
+                timestamp: new Date(),
+                attachments: [] // Expects: [{ id, name, type, size, client_preview_url? }]
+            };
+
+            // ... (existing cardType, cardElevation logic) ...
+
+            let showImagePreviewModal = false;
+            let previewImageUrl = '';
+            let previewImageName = '';
+
+            // Store object URLs to revoke them later
+            let objectUrls = new Map();
+
+            function getClientPreviewUrl(attachment) {
+                // If the attachment object is the actual File object from input
+                if (attachment instanceof File && attachment.type.startsWith('image/')) {
+                    if (objectUrls.has(attachment.name + attachment.lastModified)) {
+                        return objectUrls.get(attachment.name + attachment.lastModified);
+                    }
+                    const url = URL.createObjectURL(attachment);
+                    objectUrls.set(attachment.name + attachment.lastModified, url);
+                    return url;
+                }
+                // If backend provides a temporary preview URL for already uploaded files
+                return attachment.client_preview_url || null;
+            }
+
+            function openImagePreview(attachment) {
+                const url = getClientPreviewUrl(attachment);
+                if (url) {
+                    previewImageUrl = url;
+                    previewImageName = attachment.name;
+                    showImagePreviewModal = true;
+                } else if (attachment.type.startsWith('image/') && attachment.url) { // If it's a URL from vision_load
+                    previewImageUrl = attachment.url;
+                    previewImageName = attachment.name || 'Image from URL';
+                    showImagePreviewModal = true;
+                }
+            }
+
+            function getFileIconPath(fileType) {
+                if (fileType.startsWith('image/')) return "M23 18l-9.5-9.5-5 5L1 10l9 9"; // Image icon
+                if (fileType === 'application/pdf') return "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h8m-8 4h8m-8 4h5m6-2v4h-4v-4h4z"; // PDF icon
+                if (fileType.startsWith('text/')) return "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h8m-8 4h8m-8 4h5"; // Text/doc icon
+                return "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"; // Generic file
+            }
+            
+            onDestroy(() => {
+                // Revoke object URLs to free up memory
+                objectUrls.forEach(url => URL.revokeObjectURL(url));
+            });
+        </script>
+
+        {#if showImagePreviewModal}
+            <ImagePreviewModal 
+                bind:isOpen={showImagePreviewModal} 
+                imageUrl={previewImageUrl} 
+                imageName={previewImageName}
+            />
+        {/if}
+
+        <div class="message-wrapper {message.role === 'user' ? 'role-user' : `role-${message.role}`}">
+            <Card type={cardType} elevation={cardElevation} customClass="message-card-inner">
+                {#if message.role !== 'user'}
+                    <div class="sender-role">{message.role.toUpperCase()}</div>
+                {/if}
+                
+                {#if message.content && message.content.trim() !== ""}
+                    <div class="content">
+                        {#if message.role === 'assistant'}
+                            <MarkdownRenderer source={message.content} />
+                        {:else}
+                            {message.content}
+                        {/if}
+                    </div>
+                {/if}
+
+                {#if message.attachments && message.attachments.length > 0}
+                    <div class="attachments-section" class:has-content={message.content && message.content.trim() !== ""}>
+                        {#each message.attachments as attachment (attachment.id || attachment.name)}
+                            <div class="attachment-item card-base neumorphic neumorphic-inset">
+                                {#if attachment.type.startsWith('image/')}
+                                    {@const previewSrc = getClientPreviewUrl(attachment) || attachment.url}
+                                    {#if previewSrc}
+                                    <!-- svelte-ignore a11y-click-events-have-key-events -->
+                                    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+                                    <figure class="attachment-thumbnail-wrapper" on:click={() => openImagePreview(attachment)} title="Click to enlarge: {attachment.name}">
+                                        <img src={previewSrc} alt={attachment.name} class="attachment-thumbnail-image" />
+                                        <figcaption class="attachment-name">{attachment.name}</figcaption>
+                                    </figure>
+                                    {:else}
+                                     <!-- Fallback for image if no preview URL -->
+                                     <Icon path={getFileIconPath(attachment.type)} size="24" customClass="file-type-icon"/>
+                                     <span class="attachment-name">{attachment.name}</span>
+                                    {/if}
+                                {:else}
+                                    <Icon path={getFileIconPath(attachment.type)} size="24" customClass="file-type-icon"/>
+                                    <span class="attachment-name">{attachment.name}</span>
+                                    <!-- <span class="attachment-size">({(attachment.size / 1024).toFixed(1)} KB)</span> -->
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+
+                <div class="timestamp">
+                    {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
+            </Card>
+        </div>
+
+        <style>
+            /* ... (existing .message-wrapper, .message-card-inner, .sender-role, .content, .timestamp styles) ... */
+            .attachments-section {
+                margin-top: 10px;
+                display: flex;
+                flex-wrap: wrap; /* Allow multiple attachments to wrap */
+                gap: 8px;
+            }
+            .attachments-section.has-content { /* Add border if there's text content above */
+                padding-top: 10px;
+                border-top: 1px solid var(--neumorphic-shadow-dark);
+            }
+
+            .attachment-item {
+                padding: 8px 10px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                border-radius: 8px; /* Neumorphic inset style from Card */
+                max-width: 200px; /* Limit width of individual attachment items */
+            }
+            .attachment-thumbnail-wrapper {
+                margin: 0;
+                padding: 0;
+                cursor: pointer;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 4px;
+            }
+            .attachment-thumbnail-image {
+                width: 60px; /* Thumbnail size */
+                height: 60px;
+                object-fit: cover;
+                border-radius: 6px; /* Rounded corners for thumbnail */
+                border: 1px solid var(--neumorphic-shadow-light);
+            }
+            .file-type-icon {
+                color: var(--text-secondary);
+                flex-shrink: 0;
+            }
+            .attachment-name {
+                font-size: 0.8em;
+                color: var(--text-secondary);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .attachment-size {
+                font-size: 0.7em;
+                color: var(--text-secondary);
+                opacity: 0.7;
+            }
+        </style>
+        ```
+    *   **Key Changes:**
+        *   Imports `ImagePreviewModal` and `Icon`.
+        *   Iterates over `message.attachments`.
+        *   If `attachment.type` starts with `image/`:
+            *   `getClientPreviewUrl`: Uses `URL.createObjectURL(file)` if the attachment is a `File` object (from client-side selection). This is important for showing previews *before* upload.
+            *   Manages and revokes these object URLs in `onDestroy`.
+            *   Displays an `<img>` thumbnail. Clicking it sets `showImagePreviewModal` to true.
+        *   For other file types, displays a generic icon (using `getFileIconPath`) and the filename.
+    *   Verify: Component updated.
+
+**3. Add `ImagePreviewModal` Instance to `+page.svelte` or `App.svelte`:**
+    *   Action: Place it at the root level of your app so it can overlay everything. It's controlled by `showImagePreviewModal` from `MessageCard`.
+        *(This step was implicitly covered if `MessageCard.svelte` is already instantiated in `+page.svelte` and the modal is correctly conditionally rendered within `MessageCard.svelte`'s own template based on its local state. No new global instance is needed if each `MessageCard` can manage its own preview modal state like this. The provided `MessageCard.svelte` example does this.)*
+    *   If you prefer a single global image preview modal:
+        *   Create a store `imagePreviewStore.js` with `isOpen`, `imageUrl`, `imageName`.
+        *   `MessageCard` calls a method on this store to open the preview.
+        *   `+page.svelte` renders `<ImagePreviewModal bind:isOpen={$imagePreviewStore.isOpen} ... />`.
+        *   **For this task, the per-MessageCard modal state is simpler.**
+
+**4. (Backend - No changes for this UI task)**
+    *   The backend already receives attachment metadata. Future tasks would handle actual file upload and serving image URLs if needed for attachments that are not client-side `File` objects.
+
+**5. Testing TASK_AUI_008:**
+    *   Action:
+        1.  Start Phoenix backend.
+        2.  Start Svelte UI.
+        3.  **Test Image Attachments:**
+            *   In the Svelte UI, use the "Attach file" button to select one or more image files (JPG, PNG).
+            *   The selected images should appear as thumbnails below the text input bar (as per Task 068).
+            *   Send a message with these image attachments.
+            *   **Expected:** The user's `MessageCard` should now display these image attachments as small clickable thumbnails.
+            *   Clicking a thumbnail should open the `ImagePreviewModal` showing a larger version of that image.
+            *   Closing the modal should work.
+        4.  **Test Non-Image Attachments:**
+            *   Attach a PDF or TXT file. Send a message.
+            *   **Expected:** The user's `MessageCard` should display a generic file icon (or specific PDF/TXT icon if you implemented `getFileIconPath` extensively) and the filename.
+        5.  Test with messages that have both text content and attachments.
+        6.  Test with messages that *only* have attachments and no text.
+    *   Verify: Attachments are displayed correctly within message cards. Image previews work.
+
+This task enhances the visual communication by making attachments much more prominent and interactive.
+
+Ready for TASK_AUI_009?

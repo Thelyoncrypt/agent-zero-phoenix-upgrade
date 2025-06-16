@@ -1,0 +1,98 @@
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Modern folder gradient -->
+    <linearGradient id="folderGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF88;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#00CC6A;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#009951;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Tab gradient -->
+    <linearGradient id="tabGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF88;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00CC6A;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Inner shadow for depth -->
+    <filter id="innerShadow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="1"/>
+      <feOffset dx="0" dy="2" result="offsetblur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.3"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- 3D effect -->
+    <filter id="folder3D">
+      <feDropShadow dx="2" dy="2" stdDeviation="2" flood-opacity="0.2"/>
+    </filter>
+    
+    <!-- Glow effect -->
+    <filter id="folderGlow">
+      <feGaussianBlur stdDeviation="1" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Main folder structure -->
+  <g filter="url(#folder3D)">
+    <!-- Folder back -->
+    <path d="M3 7V19C3 20.1046 3.89543 21 5 21H19C20.1046 21 21 20.1046 21 19V9C21 7.89543 20.1046 7 19 7H12L10 5C9.44772 4.44772 8.70228 4 8 4H5C3.89543 4 3 4.89543 3 6V7Z" 
+          fill="url(#folderGradient)" 
+          opacity="0.8"/>
+    
+    <!-- Folder tab -->
+    <path d="M3 6C3 4.89543 3.89543 4 5 4H8C8.55228 4 9.05228 4.22386 9.4 4.6L10.6 5.8C10.9477 6.17614 11.4477 6.4 12 6.4H19C20.1046 6.4 21 7.29543 21 8.4V9H3V6Z" 
+          fill="url(#tabGradient)"/>
+    
+    <!-- Inner depth line -->
+    <rect x="4" y="10" width="16" height="10" rx="1" 
+          fill="#000000" 
+          opacity="0.1" 
+          filter="url(#innerShadow)"/>
+  </g>
+  
+  <!-- Digital content visualization -->
+  <g opacity="0.7" filter="url(#folderGlow)">
+    <!-- File representations inside -->
+    <rect x="6" y="12" width="3" height="4" rx="0.5" fill="#FFFFFF" opacity="0.3">
+      <animate attributeName="opacity" values="0.3;0.6;0.3" dur="3s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="10" y="12" width="3" height="4" rx="0.5" fill="#FFFFFF" opacity="0.3">
+      <animate attributeName="opacity" values="0.3;0.6;0.3" dur="3s" begin="0.5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="14" y="12" width="3" height="4" rx="0.5" fill="#FFFFFF" opacity="0.3">
+      <animate attributeName="opacity" values="0.3;0.6;0.3" dur="3s" begin="1s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+  
+  <!-- Data flow lines -->
+  <g opacity="0.4">
+    <line x1="7.5" y1="17" x2="7.5" y2="19" stroke="#00FF88" stroke-width="0.5">
+      <animate attributeName="y1" values="17;14;17" dur="2s" repeatCount="indefinite"/>
+      <animate attributeName="y2" values="19;16;19" dur="2s" repeatCount="indefinite"/>
+    </line>
+    <line x1="11.5" y1="17" x2="11.5" y2="19" stroke="#00CC6A" stroke-width="0.5">
+      <animate attributeName="y1" values="17;14;17" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+      <animate attributeName="y2" values="19;16;19" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+    </line>
+    <line x1="15.5" y1="17" x2="15.5" y2="19" stroke="#009951" stroke-width="0.5">
+      <animate attributeName="y1" values="17;14;17" dur="2s" begin="1s" repeatCount="indefinite"/>
+      <animate attributeName="y2" values="19;16;19" dur="2s" begin="1s" repeatCount="indefinite"/>
+    </line>
+  </g>
+  
+  <!-- Highlight accent -->
+  <path d="M5 4H8C8.55228 4 9.05228 4.22386 9.4 4.6L10.6 5.8C10.9477 6.17614 11.4477 6.4 12 6.4H19C20.1046 6.4 21 7.29543 21 8.4V8.5" 
+        stroke="#FFFFFF" 
+        stroke-width="1" 
+        stroke-linecap="round" 
+        fill="none" 
+        opacity="0.3"/>
+</svg>

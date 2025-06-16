@@ -1,0 +1,902 @@
+## TASK_AUI_005: Svelte UI & Phoenix Backend - File Browser (Read--Only View of `work_dir`)**. This will populate a part of the Inspector Panel, allowing users to browseOnly)
+
+**Goal:**
+1.  **Phoenix Backend:**
+    *   Implement a new StreamProtocol message the agent's working directory.
+
+---
+
+**TASK_AUI_005: Svelte UI - File type `REQUEST_WORK_DIR_FILES` that the Svelte UI can send. Payload should include a `path` (relative Browser Component (Read-Only View of `work_dir`)**
+
+**(Please create a file named `task_ to a base `PHOENIX_AGENT_WORK_DIR`).
+    *   Create a Python helper function (e.AUI_005.txt` in your `tasks/Task_AUI_005/` directory and pasteg., in a new `python/helpers/file_system_manager.py`) to securely list directory contents ( the following content into it.)**
+
+```text
+## TASK_AUI_005: Svelte UI - File Browser Component (Read-Only View of `work_dir`)
+
+**Goal:**
+1.  **Phoenixfiles and folders) within the agent's `PHOENIX_AGENT_WORK_DIR`. It should return names Backend:**
+    *   Implement a StreamProtocol message handler for `request_work_dir_files`.
+    *   , types (file/folder), sizes, and last modified timestamps.
+    *   The WebSocket handler, upon receiving `REQUESTPayload from client: `{ "path": "/requested/path/within/work_dir", "threadId": "_WORK_DIR_FILES`, calls this helper and sends back a `WORK_DIR_FILES_DATA` event containing...", "userId": "..." }`.
+    *   Backend logic (Python helper, similar to original A0's ` the file/folder listing for the requested path.
+2.  **Svelte UI:**
+    *   Createfile_browser.py`):
+        *   Securely lists directory contents for the given path, ensuring it's `src/lib/components/filebrowser/FileBrowser.svelte`.
+    *   Create `src/lib within the Phoenix agent's designated `PHOENIX_AGENT_WORK_DIR`.
+        *   Prevents directory/components/filebrowser/FileItem.svelte` and `FolderItem.svelte`.
+    *   `FileBrowser.svelte` will manage the current path, request file listings from the backend via `socketStore`, and display items using `File traversal attacks (e.g., `../../`).
+        *   Returns a list of items: `[{name,Item` and `FolderItem`.
+    *   Clicking a folder will request a new listing for that folder's path. type: 'file' | 'directory', size?, last_modified?}]`.
+    *   Emits a `WORK_DIR_FILES_UPDATE` event back to the client with the file list and current path.
+2.  **
+    *   (Initially Read-Only): No upload, delete, or download functionality in this task.
+    *Svelte UI:**
+    *   Create a new store `src/lib/stores/fileBrowserStore.js   Integrate `FileBrowser.svelte` into `AppInspectorPanel.svelte` (e.g., as a` to manage file browser state (current path, file list, loading state).
+    *   Create Svelte components for the new tab).
+
+**Prerequisites:**
+*   TASK_AUI_004 completed: `AppInspectorPanel. file browser:
+        *   `src/lib/components/filebrowser/FileBrowser.svelte` (mainsvelte` is part of the layout.
+*   `socketStore.js` for WebSocket communication.
+*   Phoenix component).
+        *   `src/lib/components/filebrowser/FileItem.svelte`.
+        *    backend can handle new StreamProtocol message types and emit new events.
+*   `PHOENIX_AGENT_WORK_DIR``src/lib/components/filebrowser/FolderItem.svelte`.
+    *   `FileBrowser.svelte environment variable is set and points to an accessible directory in the Phoenix backend.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes` will:
+        *   Display current path.
+        *   Allow navigation up one level.
+        *   :**
+
+**1. Define New StreamProtocol Event/Message Types:**
+    *   Action: In `python/tools/streamList files and folders. Clicking a folder navigates into it.
+        *   Request file list from backend via `socket_protocol_tool.py` (or where `StreamEventType` is defined).
+```python
+        # In StreamStore` using `request_work_dir_files`.
+    *   Integrate `FileBrowser.svelte` intoEventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            REQUEST_WORK_DIR_FILES = `InspectorTabs.svelte` as a new tab.
+
+**Prerequisites:**
+*   TASK_AUI_0 "request_work_dir_files" # Client to Server
+            WORK_DIR_FILES_DATA = "work_dir04 completed: `AppInspectorPanel.svelte` and `InspectorTabs.svelte` are in place.
+*_files_data"     # Server to Client
+        ```
+*   Verify: Enum updated.
+
+**   Phoenix backend can handle new StreamProtocol message types and emit events.
+*   `PHOENIX_AGENT_2. Create `python/helpers/file_system_manager.py`:**
+    *   Action:
+WORK_DIR` is defined and accessible by the Phoenix Python process.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes:**
+```python
+        # python/helpers/file_system_manager.py
+        import os
+        from
+
+**1. Define New StreamProtocol Event/Message Types:**
+    *   Action: In `python/tools/stream datetime import datetime
+        from pathlib import Path
+        from typing import List, Dict, TypedDict, Literal
+
+        PHOENIX_AGENT_WORK_DIR = Path(os.getenv("PHOENIX_AGENT_WORK_DIR",_protocol_tool.py` (or `python/agent.py`).
+        ```python
+# In Stream "/app/work_dir"))
+
+        class FileSystemItem(TypedDict):
+            name: str
+            EventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            REQUEST_WORK_DIR_FILES =type: Literal["file", "folder"]
+            path: str  # Relative path from PHOENIX_AGENT "request_work_dir_files" # Client to Server
+            WORK_DIR_FILES_UPDATE = "work_dir_WORK_DIR
+            size: Optional[int] # In bytes, for files
+            last_modified:_files_update"   # Server to Client
+```
+    *   Verify: Enum updated.
+
+**2. Create `python/helpers/phoenix_file_browser.py`:**
+    *   Action: Implement Optional[str] # ISO format string
+            # children: Optional[List['FileSystemItem']] # For recursive listing, the secure file browsing logic.
+        ```python
+# python/helpers/phoenix_file_browser.py
+ not used in flat list
+
+        def list_directory_contents(relative_path: str = "") -> List[FileSystemItem]:        import os
+        from pathlib import Path
+        from datetime import datetime
+        from typing import List, Dict,
+            """
+            Lists files and folders within a given relative path inside PHOENIX_AGENT_WORK_DIR.
+             Union, TypedDict
+
+        # Ensure PHOENIX_AGENT_WORK_DIR is consistently defined (e.g.,Ensures path is within PHOENIX_AGENT_WORK_DIR to prevent directory traversal.
+            """
+            items: List[FileSystemItem] = []
+            try:
+                # Sanitize and resolve the path
+                base from a central config or env var)
+        # For this example, we'll re-fetch it, but_dir = PHOENIX_AGENT_WORK_DIR.resolve()
+                target_path_str = os. ideally, it's globally accessible.
+        PHOENIX_AGENT_WORK_DIR = Path(os.path.normpath(os.path.join(base_dir, relative_path))
+                target_pathgetenv("PHOENIX_AGENT_WORK_DIR", "/app/work_dir")).resolve()
+
+        class = Path(target_path_str).resolve()
+
+                # Security check: Ensure the resolved target_path is still FileBrowserItem(TypedDict):
+            name: str
+            type: Literal["file", "directory"]
+             within or equal to base_dir
+                if not str(target_path).startswith(str(base_dirpath: str # Full relative path from PHOENIX_AGENT_WORK_DIR
+            size: Optional[int])):
+                    print(f"FileSystemManager WARNING: Attempted path traversal: {relative_path}")
+                    #
+            last_modified: Optional[str] # ISO format
+
+        def list_directory_contents(requested_path_str: str) -> Dict[str, Union[str, List[FileBrowserItem], None]]:
+            """ Optionally return an error structure or an empty list with a "permission_denied" item
+                    return [{"name": "..
+            Lists contents of a directory within the PHOENIX_AGENT_WORK_DIR.
+            Ensures path (Access Denied)", "type": "folder", "path": "", "size": None, "last_modified": None is safe and within the allowed base directory.
+            """
+            try:
+                # Normalize and resolve the requested path relative}]
+
+
+                if not target_path.exists() or not target_path.is_dir():
+                    print(f"FileSystemManager WARNING: Path does not exist or is not a directory: {target_path}")
+                    return [] # Or to the base work directory
+                # Path() handles joining, '.' and '..' (partially, still need check an error indicator
+
+                for entry in target_path.iterdir():
+                    try:
+                        stat = entry.stat)
+                if requested_path_str.startswith('/'): # Treat as absolute from PHOENIX_AGENT_WORK_()
+                        item_relative_path = str(entry.relative_to(base_dir)).replace("\\", "/") # NormalizeDIR root
+                    requested_path_str = requested_path_str.lstrip('/')
+                
+                current_path = (PHOENIX_AGENT_WORK_DIR / requested_path_str).resolve()
+
+                # Security for web
+                        
+                        item = FileSystemItem(
+                            name=entry.name,
+                            type=" Check: Ensure the resolved path is still within PHOENIX_AGENT_WORK_DIR
+                if not str(current_pathfolder" if entry.is_dir() else "file",
+                            path=item_relative_path,
+                            ).startswith(str(PHOENIX_AGENT_WORK_DIR)):
+                    return {"error": "Access denied:size=stat.st_size if entry.is_file() else None,
+                            last_modified=datetime Path is outside the allowed working directory.", "path": requested_path_str, "items": []}
+
+                if not current.fromtimestamp(stat.st_mtime).isoformat()
+                        )
+                        items.append(item)
+_path.exists():
+                    return {"error": "Path does not exist.", "path": requested_path_str,                    except Exception as e:
+                        print(f"FileSystemManager WARNING: Could not stat file {entry}: {e}")
+                
+                # Sort: folders first, then by name
+                items.sort(key=lambda x: (x[" "items": []}
+                if not current_path.is_dir():
+                    return {"error": "type"] != "folder", x["name"].lower()))
+
+            except Exception as e:
+                print(f"Path is not a directory.", "path": requested_path_str, "items": []}
+
+                items: List[FileBrowserItem] = []
+                for entry in current_path.iterdir():
+                    try:
+                        itemFileSystemManager ERROR: Error listing directory '{relative_path}': {e}")
+                # Optionally return a special error item_type = "directory" if entry.is_dir() else "file"
+                        # Relative path from PHOENIX_
+            return items
+```
+    *   Verify: Helper module created. Includes security check.
+
+**3.AGENT_WORK_DIR for client-side navigation
+                        relative_path = str(entry.relative_to(PH Update WebSocket Handler (in `StreamProtocolTool` or `run_ui.py`):**
+    *   OENIX_AGENT_WORK_DIR))
+                        
+                        item_data: FileBrowserItem = {
+                            "Action: Handle `REQUEST_WORK_DIR_FILES`.
+        ```python
+# In python/tools/name": entry.name,
+                            "type": item_type,
+                            "path": relative_path, stream_protocol_tool.py or run_ui.py WebSocket message handler
+        from python.helpers.file_system_
+                            "size": entry.stat().st_size if item_type == "file" else None,
+                            "manager import list_directory_contents # NEW IMPORT
+        # ...
+        # elif message_type == StreamEventType.REQUESTlast_modified": datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
+                        }
+_WORK_DIR_FILES.value:
+        #     thread_id = payload.get("threadId") # Client                        items.append(item_data)
+                    except Exception as e: # Catch permission errors for individual files
+                        print( sends its current threadId for response routing
+        #     requested_path = payload.get("path", "") #f"FileBrowser: Error processing entry {entry.name}: {e}")
+                        items.append({
+                            "name Relative path
+            
+        #     if thread_id is not None: # Ensure thread_id is present
+": entry.name, "type": "error", "path": str(entry.relative_to(PHOENIX_AGENT        #         # agent_instance = self.agent # Or get agent associated with thread_id
+        #         # The_WORK_DIR)),
+                            "error_message": str(e)
+                        })
+
+
+                # Sort: file system is global to Phoenix, not per-agent context usually, but events are routed per thread.
+        #          directories first, then files, all alphabetically
+                items.sort(key=lambda x: (x["type"] == "file_items = list_directory_contents(requested_path)
+        #         await self.agent._emit_file", x["name"].lower()))
+                
+                # Path to return to client should be relative to PHOENIX_AGENT_WORK_DIR root
+                display_path = "/" + str(current_path.relative_to(PHstream_event( # Assuming self.agent is the correct agent instance for emitting
+        #             StreamEventType.WORKOENIX_AGENT_WORK_DIR)) if current_path != PHOENIX_AGENT_WORK_DIR else_DIR_FILES_DATA,
+        #             {"path": requested_path, "items": file_items},
+ "/"
+                if display_path == "/.": display_path = "/"
+
+
+                return {"path": display_path, "        #             specific_thread_id=thread_id
+        #         )
+        #     else:
+items": items, "error": None}
+
+            except Exception as e:
+                print(f"FileBrowser        #         # Handle error: missing thread_id
+        #         print("FileSystemManager ERROR: request_work: General error listing directory '{requested_path_str}': {e}")
+                return {"error": f"Error_dir_files missing threadId in payload")
+```
+    *   Verify: Handler added.
+
+**II. S listing directory: {str(e)}", "path": requested_path_str, "items": []}
+
+        velte UI Changes:**
+
+**4. Create `src/lib/stores/fileBrowserStore.js` (New Store):**```
+*   Verify: Helper module created.
+
+**3. Update WebSocket Handler (in `StreamProtocolTool` or `
+    *   Action:
+```javascript
+        // src/lib/stores/fileBrowserStore.js
+        run_ui.py`):**
+    *   Action: Handle `request_work_dir_files`import { writable } from 'svelte/store';
+        import { socketStore } from './socketStore';
+        import { chat message.
+        ```python
+# In python/tools/stream_protocol_tool.py or run_Store } from './chatStore'; // To get currentThreadId, currentUserId
+
+        const initialFileBrowserState = {ui.py WebSocket message handler
+        from python.helpers.phoenix_file_browser import list_directory_contents
+            currentPath: "", // Relative to PHOENIX_AGENT_WORK_DIR
+            items: [], // List of # NEW IMPORT
+        # ...
+        # elif message_type == StreamEventType.REQUEST_WORK_DIR_ { name, type, path, size, last_modified }
+            isLoading: false,
+            error: null,
+        };
+
+        const createFileBrowserStore = () => {
+            const { subscribe, update, set }FILES.value:
+        #     thread_id = payload.get("threadId") # Client sends its current tab's context
+        #     user_id = payload.get("userId") # For context
+        #     requested = writable({...initialFileBrowserState});
+
+            function requestFiles(path = "") {
+                const currentChatState_fs_path = payload.get("path", "/") # Default to root of work_dir
+
+        #     if thread = get(chatStore); // Helper to get current store values
+                if (!currentChatState.currentThreadId)_id: # We need a thread_id to know where to send the response
+        #         # Agent instance {
+                    console.warn("FileBrowserStore: No current thread ID to send request.");
+                    update(s => ({ might not be strictly necessary if file browser is system-level
+        #         # but good to have context if we want ...s, error: "Session not active.", isLoading: false }));
+                    return;
+                }
+
+                update(s to log this action via agent later
+        #         # agent_instance = self.agent # Or get agent associated => ({ ...s, isLoading: true, error: null, currentPath: path }));
+                socketStore.sendMessage({
+                    type: "REQUEST_WORK_DIR_FILES", // Matches StreamEventType.REQUEST_WORK_DIR_FILES.value with thread_id/user_id
+                
+        #         dir_listing_result = list_directory_contents
+                    payload: {
+                        path: path,
+                        threadId: currentChatState.currentThreadId, //(requested_fs_path)
+                
+        #         # Emit back to the specific client tab that requested it For routing response
+                        userId: currentChatState.currentUserId
+                    }
+                });
+            }
+
+            function set
+        #         # Assuming _emit_stream_event can target a specific_thread_id if it's differentFilesData(path, items) { // Called by socketStore/chatStore on WORK_DIR_FILES_DATA
+                
+        #         # from the agent's current processing context.
+        #         # If your StreamTransport handlesupdate(s => {
+                    if (s.currentPath === path) { // Ensure data is for the current request
+                        return { ...s, items: items || [], isLoading: false, error: null };
+                    } direct emission to thread_id, that's better.
+        #         # For now, let's assume the
+                    return s; // Data for a path we are no longer viewing
+                });
+            }
+            
+            function agent's _emit_stream_event is used with specific_thread_id.
+        #         target_agent_ setError(errorMessage) {
+                 update(s => ({ ...s, error: errorMessage, isLoading: false, items: []for_event = self.agent # Or get agent instance by thread_id
+        #         await target_agent_ }));
+            }
+
+            // Helper to get current store values without $:
+            function get(store) { let value; storefor_event._emit_stream_event(
+        #             StreamEventType.WORK_DIR_FILES_UPDATE,
+.subscribe(v => value = v)(); return value; }
+
+
+            return {
+                subscribe,
+                requestFiles,        #             dir_listing_result, # Contains "path", "items", "error"
+        #             
+                setFilesData,
+                setError,
+                navigateTo: (newPath) => { // Convenience for navigating foldersspecific_thread_id=thread_id 
+        #         )
+        #     else:
+        #         print
+                    requestFiles(newPath);
+                },
+                goUp: () => { // Navigate to parent directory
+                    ("FileBrowser ERROR: request_work_dir_files missing threadId in payload")
+```
+    *   Verifyconst s = get(fileBrowserStore);
+                    if (s.currentPath === "" || s.currentPath ===: Handler logic added.
+
+**II. Svelte UI Changes:**
+
+**4. Create `src/lib/stores/fileBrowserStore.js`:**
+    *   Action:
+        ```javascript
+// src/lib/stores ".") return;
+                    const parts = s.currentPath.split('/');
+                    parts.pop();
+                    requestFiles(/fileBrowserStore.js
+        import { writable } from 'svelte/store';
+        import { socketStoreparts.join('/'));
+                }
+            };
+        };
+
+        export const fileBrowserStore = createFileBrowserStore();
+ } from './socketStore';
+        import { chatStore } from './chatStore'; // To get currentThreadId,
+```
+    *   Modify `socketStore.js` `onMessage` (or `chatStore.handleStream currentUserId
+
+        const initialFileBrowserState = {
+            currentPath: "/", // Relative to PHOENIX_AGENT_Event`) to call `fileBrowserStore.setFilesData(parsedEvent.payload.path, parsedEvent.payload.items)` when a `WORK_DIR_FILES_DATA` event arrives.
+    *   Verify: Store created.
+
+**WORK_DIR root
+            items: [], // { name, type, path, size?, last_modified? }5. Create `src/lib/components/filebrowser/FileItem.svelte` and `FolderItem.svelte
+            isLoading: false,
+            error: null,
+        };
+
+        const createFileBrowserStore = () => {
+            `:**
+    *   Action:
+        ```html
+<!-- src/lib/components/filebrowser/const { subscribe, update, set } = writable({...initialFileBrowserState});
+
+            let currentThreadIdVal, currentUserIdValFileItem.svelte -->
+        <script>
+            import Icon from '../shared/Icon.svelte';
+            export;
+            chatStore.subscribe(s => {
+                currentThreadIdVal = s.currentThreadId;
+                 let item; // { name, type, path, size, last_modified }
+            const fileIconPath =currentUserIdVal = s.currentUserId;
+            });
+
+            async function fetchPath(path = "/") {
+                 "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0if (!currentThreadIdVal) {
+                    console.warn("FileBrowserStore: Cannot fetch files, no current thread ID 0 0 2-2V9zM13 2v7h7"; // File
+.");
+                    update(s => ({ ...s, error: "Session not fully initialized.", isLoading: false}));
+                    return;            
+            function formatSize(bytes) {
+                if (bytes === null || bytes === undefined) return '';
+                }
+                update(s => ({ ...s, isLoading: true, error: null, currentPath: path }));
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+
+                socketStore.sendMessage({
+                    type: "request_work_dir_files",
+                    payload: {                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = 
+                        path: path,
+                        threadId: currentThreadIdVal, // To route response correctly
+                        userId: Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math currentUserIdVal 
+                    }
+                });
+            }
+
+            function setDirectoryListing(data) { // Called.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+            }
+             by socketStore on WORK_DIR_FILES_UPDATE
+                if (data.error) {
+                    update(s => ({ ...s, items: [], error: data.error, isLoading: false, currentPath: data.pathfunction formatDate(isoString) {
+                 if (!isoString) return '';
+                 return new Date(isoString).toLocaleDateString(undefined, {month:'short', day:'numeric', year:'2-digit'});
+            }
+ || s.currentPath }));
+                } else {
+                    update(s => ({ 
+                        ...s, 
+                        items: data.items || [], 
+                        currentPath: data.path || "/", 
+                        isLoading: false,         </script>
+
+        <div class="fb-item fb-file">
+            <Icon path={fileIconPath} size="18" customClass="item-icon file" />
+            <span class="item-name"
+                        error: null 
+                    }));
+                }
+            }
+            
+            // Navigate up one directory title={item.name}>{item.name}</span>
+            <span class="item-size">{formatSize(item. level
+            function navigateUp() {
+                let currentPathVal;
+                subscribe(s => currentPathValsize)}</span>
+            <span class="item-modified">{formatDate(item.last_modified)}</span>
+ = s.currentPath)(); // get current value
+                if (currentPathVal === "/") return; // Already        </div>
+
+        <style>
+           /* Styles shared with FolderItem can go in FileBrowser.svelte <style global at root
+
+                let parentPath = currentPathVal.substring(0, currentPathVal.lastIndexOf('/'));
+                if (parentPath === "") parentPath = "/"; // Go to root
+                fetchPath(parentPath);
+            }
+
+
+> or a shared CSS */
+            .fb-item { /* Common styling */
+                display: flex;
+            return {
+                subscribe,
+                fetchPath,
+                setDirectoryListing, // To be called by socket                align-items: center;
+                padding: 6px 8px;
+                border-radius:Store/chatStore event handler
+                navigateUp,
+                refresh: () => {
+                    let currentPathVal;
+                     4px;
+                cursor: default; /* Files are not clickable for navigation */
+                gap: 8subscribe(s => currentPathVal = s.currentPath)();
+                    fetchPath(currentPathVal);
+px;
+                font-size: 0.85em;
+            }
+            .fb-item                }
+            };
+        };
+
+        export const fileBrowserStore = createFileBrowserStore();
+```
+    :hover { background-color: var(--neumorphic-shadow-dark); }
+            .item-icon {*   Modify `socketStore.js` `onMessage` (or central `chatStore.handleStreamEvent`) flex-shrink: 0; color: var(--text-secondary); }
+            .item-icon.file to call `fileBrowserStore.setDirectoryListing(parsedEvent.payload)` when a `WORK_DIR_FILES_UPDATE { color: var(--text-secondary); } /* Can differentiate icon colors */
+            .item-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text` event arrives.
+    *   Verify: Store created.
+
+**5. Create `src/lib/components/filebrowser/FileItem.svelte` and `FolderItem.svelte`:**
+    *   Action (FileItem):
+        ```
+-primary); }
+            .item-size, .item-modified { font-size: 0.9em; colorhtml
+        <!-- src/lib/components/filebrowser/FileItem.svelte -->
+        <script>
+: var(--text-secondary); flex-shrink: 0; min-width: 60px; text-align:            export let item; // { name, type, path, size, last_modified }
+            import Icon from right; }
+            .item-modified { min-width: 80px; }
+        </style>
+         '../shared/Icon.svelte';
+            // Example SVG paths for file icons (use your own or a library)
+```
+
+        ```html
+<!-- src/lib/components/filebrowser/FolderItem.svelte -->
+        <scriptconst fileIconPath = "M13 2H6a2 2 0 0 0->
+            import Icon from '../shared/Icon.svelte';
+            export let item; // { name, type, path2 2v16a2 2 0 0 0 2 2h12a2 2, ... }
+            export let onNavigate; // Function to call when folder is clicked: onNavigate(item.path)
+ 0 0 0 2-2V9z"; // Generic file
+            const imageIconPath = "            const folderIconPath = "M3 2h6l2 3h9a2 2 M23 18l-9.5-9.5-5 5L1 100 0 1 2 2v11a2 2 0 0 1-2 "; // Image
+            const textIconPath = "M14 2H6a2 2 0 2H3a2 2 0 0 1-2-2V4a2 2 0 00 0-2 2v16a2 2 0 0 0 2 2h1 1 2-2z"; // Folder
+        </script>
+
+        <div class="fb-item fb-folder2a2 2 0 0 0 2-2V8zM6 4h8" on:click={() => onNavigate(item.path)} on:keydown={(e) => e.key === 'Enter' && onNavigate(item.path)} role="button" tabindex="0" title="Open folder: {item.m-8 4h8m-8 4h5"; // Text/doc
+
+            function getFilename}">
+            <Icon path={folderIconPath} size="18" customClass="item-icon folder" />
+            <span class="item-name">{item.name}</span>
+            <span class="item-Icon(filename) {
+                const ext = filename.split('.').pop().toLowerCase();
+                if (['modified">{new Date(item.last_modified).toLocaleDateString(undefined, {month:'short', day:'numeric', yearpng', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) return imageIconPath;:'2-digit'})}</span>
+        </div>
+        
+        <style>
+            /* Import or repeat .
+                if (['txt', 'md', 'json', 'yaml', 'log', 'py', 'js', 'fb-item styles if not global */
+            .fb-item { display: flex; align-items: center; paddinghtml', 'css'].includes(ext)) return textIconPath;
+                return fileIconPath;
+            }
+: 6px 8px; border-radius: 4px; gap: 8px; font-size:             function formatSize(bytes) {
+                if (bytes === null || bytes === undefined) return '';
+                if0.85em;}
+            .fb-folder { cursor: pointer; }
+            .fb-folder (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(:hover { background-color: var(--neumorphic-shadow-dark); }
+            .item-icon { flex-shrink: 0; }
+            .item-icon.folder { color: var(--accent-greenMath.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+            }
+        </script>
+
+        <-secondary); } /* Different color for folder icons */
+            .item-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary);div class="browser-item file-item" title={`File: ${item.name}\nSize: ${format }
+            .item-modified { font-size: 0.9em; color: var(--text-Size(item.size)}\nModified: ${new Date(item.last_modified).toLocaleString()}`}>
+            <Iconsecondary); flex-shrink: 0; text-align: right; }
+        </style>
+```
+     path={getFileIcon(item.name)} size="18" customClass="item-icon" />
+            <span*   Verify: Components created.
+
+**6. Create `src/lib/components/filebrowser/FileBrowser.svelte class="item-name">{item.name}</span>
+            <span class="item-size">{formatSize(item.size`:**
+    *   Action:
+        ```html
+<!-- src/lib/components/filebrowser/)}</span>
+        </div>
+
+        <style>
+            .file-item { /* Styles shared with FolderItem canFileBrowser.svelte -->
+        <script>
+            import { onMount } from 'svelte';
+            import { fileBrowserStore } from '$lib/stores/fileBrowserStore';
+            import FileItem from './FileItem.svelte'; go in a common class or FileBrowser.svelte */
+                display: flex;
+                align-items: center
+            import FolderItem from './FolderItem.svelte';
+            import Icon from '../shared/Icon.svelte';;
+                padding: 6px 8px;
+                border-radius: 4px;
+                
+            import Button from '../shared/Button.svelte';
+
+            const upArrowIconPath = "M12 1cursor: default; /* Files are not clickable for navigation */
+                gap: 8px;
+                color: var(--text9V5M5 12l7-7 7 7";
+
+            onMount(() => {
+                -primary);
+            }
+            .file-item:hover {
+                background-color: var(--neumif ($fileBrowserStore.items.length === 0 && !$fileBrowserStore.isLoading && !$fileBrowserStore.errororphic-shadow-dark);
+            }
+            .item-icon { color: var(--text-secondary); flex) {
+                    fileBrowserStore.requestFiles(""); // Load root on mount
+                }
+            });
+        </script>-shrink: 0; }
+            .item-name { flex-grow: 1; white-space: nowrap
+
+        <div class="file-browser-container">
+            <div class="fb-header">
+                <Button; overflow: hidden; text-overflow: ellipsis; font-size: 0.9em;}
+            .item-size { font-size: 0.8em; color: var(--text-secondary); flex-shrink:  
+                    onClick={() => fileBrowserStore.goUp()} 
+                    disabled={$fileBrowserStore.currentPath0; }
+        </style>
+```
+    *   Action (FolderItem):
+        ```html
+<!-- src/lib/components/filebrowser/FolderItem.svelte -->
+        <script>
+             === "" || $fileBrowserStore.isLoading}
+                    customClass="fb-action-btn"
+                    title="Go to parent directory"
+                >
+                    <Icon path={upArrowIconPath} size="16" /> Upexport let item; // { name, type, path }
+            export let onNavigate; // (path) => {}
+                </Button>
+                <span class="current-path-display">Path: /{$fileBrowserStore.current
+            import Icon from '../shared/Icon.svelte';
+            const folderIconPath = "M22 19Path || 'work_dir'}</span>
+                 <Button 
+                    onClick={() => fileBrowserStore.requestFiles($a2 2 0 0 1-2 2H4a2 2 0 0fileBrowserStore.currentPath)} 
+                    disabled={$fileBrowserStore.isLoading}
+                    customClass="fb 1-2-2V5a2 2 0 0 1 2-2h5-action-btn"
+                    title="Refresh current directory"
+                >
+                    <Icon path="M23 4l2 3h9a2 2 0 0 1 2 2z";
+        </v6h-6M1 20v-6h6M3.51 9a9script>
+
+        <div class="browser-item folder-item" on:click={() => onNavigate(item 9 0 0 1 14.85-3.36L20.5 2.path)} on:keydown={(e) => e.key === 'Enter' && onNavigate(item.path)} roleM3.5 22a9 9 0 0 1 14.85-3.36L1 17" size="16" /> Refresh
+                </Button>
+            </div>="button" tabindex="0" title={`Folder: ${item.name}`}>
+            <Icon path={folderIconPath}
+
+            {#if $fileBrowserStore.isLoading}
+                <p class="fb-message">Loading files...</p>
+ size="18" customClass="item-icon folder-icon-color" />
+            <span class="item-name            {:else if $fileBrowserStore.error}
+                <p class="fb-message error">Error:">{item.name}</span>
+        </div>
+
+        <style>
+            .folder-item { /* Shared styles with File {$fileBrowserStore.error}</p>
+            {:else if $fileBrowserStore.items.length === 0Item can be in FileBrowser.svelte or a common class */
+                display: flex;
+                align-items}
+                <p class="fb-message">This folder is empty.</p>
+            {:else}
+: center;
+                padding: 6px 8px;
+                border-radius: 4px;                <div class="fb-list">
+                    {#each $fileBrowserStore.items as item (item.
+                cursor: pointer;
+                gap: 8px;
+                 color: var(--text-primary);path)}
+                        {#if item.type === 'folder'}
+                            <FolderItem {item} onNavigate={(
+            }
+            .folder-item:hover {
+                background-color: var(--neumorphic-shadow-light);
+            }
+             .folder-item:focus {
+                outline: 1px solid var(--path) => fileBrowserStore.navigateTo(path)} />
+                        {:else}
+                            <FileItem {item} />
+                        {/if}
+                    {/each}
+                </div>
+            {/if}
+        accent-green-secondary);
+            }
+            .item-icon { flex-shrink: 0; }
+</div>
+
+        <style>
+            .file-browser-container {
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                padding: 10px;
+            .folder-icon-color { color: var(--accent-green-primary); } /* Distinct color for folders */
+            .item-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow:                background-color: var(--bg-dark-primary); /* Neumorphic base */
+            }
+            .fb ellipsis; font-size: 0.9em; }
+        </style>
+```
+    *-header {
+                display: flex;
+                justify-content: space-between;
+                align-items   Verify: Components created.
+
+**6. Create `src/lib/components/filebrowser/FileBrowser.: center;
+                margin-bottom: 10px;
+                padding-bottom: 8px;
+                bordersvelte`:**
+    *   Action:
+        ```html
+<!-- src/lib/components/filebrowser-bottom: 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            }
+            .current-path-display {
+                font-size: 0.8em/FileBrowser.svelte -->
+        <script>
+            import { onMount } from 'svelte';
+            import { fileBrowserStore } from '$lib/stores/fileBrowserStore';
+            import FileItem from './FileItem.;
+                color: var(--text-secondary);
+                overflow: hidden;
+                text-overflow: ellipsissvelte';
+            import FolderItem from './FolderItem.svelte';
+            import Button from '../shared/Button.;
+                white-space: nowrap;
+                padding: 0 10px;
+                flex-svelte';
+            import Icon from '../shared/Icon.svelte';
+
+            const upIconPath = "M1grow: 1;
+                text-align: center;
+            }
+            .fb-action-btn {
+                2 19V5M5 12l7-7 7 7"; // Arrow up
+            const refreshfont-size: 0.8em;
+                padding: 5px 8px;
+                gap: 4px;
+            }
+            .fb-list {
+                flex-grow: 1;IconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36
+                overflow-y: auto;
+                border: 1px solid var(--neumorphic-shadow-dark);
+                border-radius: 6px;
+                background-color: var(--neumorphic-shadow-L20.5 2M3.5 22a9 9 0 0 1dark); /* Inset list area */
+                padding: 5px;
+                box-shadow: inset  14.85-3.36L1 17";
+
+
+            onMount(() => {
+                2px 2px 4px var(--neumorphic-shadow-dark), inset -2px -2px 4px var(--neumorphic-shadow-light);
+            }
+            .fb-list::-webkit-scrollbar {if ($fileBrowserStore.items.length === 0 && !$fileBrowserStore.isLoading && !$fileBrowserStore. width: 5px; }
+            .fb-list::-webkit-scrollbar-thumb { background-color:error) {
+                    fileBrowserStore.fetchPath("/"); // Fetch root on mount
+                }
+            });
+ var(--accent-green-secondary); border-radius: 3px; }
+            
+            .fb-        </script>
+
+        <div class="file-browser-container">
+            <div class="fb-header">
+                <Button 
+                    onClick={() => fileBrowserStore.navigateUp()} 
+                    disabled={$fileBrowserStore.message {
+                text-align: center;
+                color: var(--text-secondary);
+                font-currentPath === "/"}
+                    customClass="fb-action-btn"
+                    title="Go Up"
+                style: italic;
+                padding: 20px;
+            }
+            .fb-message.error { color: var(--error-color); }
+        </style>
+```
+    *   Verify: Component created>
+                    <Icon path={upIconPath} size="16" /> Up
+                </Button>
+                <span class="current-path" title={$fileBrowserStore.currentPath}>{$fileBrowserStore.currentPath}</span>.
+
+**7. Integrate `FileBrowser.svelte` into `InspectorTabs.svelte`:**
+    *   Action: Add a new tab for the File Browser.
+        ```html
+<!-- src/lib/components/inspector/InspectorTabs
+                <Button onClick={() => fileBrowserStore.refresh()} customClass="fb-action-btn" title="Refresh">
+                    <Icon path={refreshIconPath} size="16" />
+                </Button>
+.svelte -->
+        <script>
+            import HistoryViewer from './HistoryViewer.svelte';
+            import ContextWindowViewer from './ContextWindowViewer.svelte';
+            import FileBrowser from '../filebrowser/FileBrowser.svelte            </div>
+
+            <div class="fb-list-container">
+                {#if $fileBrowserStore.isLoading'; // NEW IMPORT
+
+            let activeTab = 'history'; // 'history', 'llm_context', or 'files'
+        </script>
+
+        <div class="inspector-tabs-container">
+            <div class="}
+                    <p class="fb-message">Loading files...</p>
+                {:else if $fileBrowserStore.error}
+                    <p class="fb-message error">Error: {$fileBrowserStore.error}</p>tabs-nav">
+                <button class:active={activeTab === 'history'} on:click={() => activeTab =
+                {:else if $fileBrowserStore.items.length === 0}
+                    <p class="fb-message 'history'}>History</button>
+                <button class:active={activeTab === 'llm_context'} on:click={() => activeTab = 'llm_context'}>LLM Context</button>
+                ">This directory is empty.</p>
+                {:else}
+                    {#each $fileBrowserStore.items as item (item<button class:active={activeTab === 'files'} on:click={() => activeTab = 'files'}>File.path)}
+                        {#if item.type === 'directory'}
+                            <FolderItem {item} onNavigate Browser</button> <!-- NEW TAB -->
+            </div>
+            <div class="tab-content">
+                {#if activeTab === 'history'}
+                    <HistoryViewer />
+                {:else if activeTab === 'llm_context'}={(path) => fileBrowserStore.fetchPath(path)} />
+                        {:else if item.type === 'file'}
+                            <FileItem {item} />
+                        {:else if item.type === 'error'}
+                             <div class="browser-item error-item" title={item.error_message}>
+                                <Icon path="
+                    <ContextWindowViewer />
+                {:else if activeTab === 'files'}
+                    <FileBrowser /> <!-- NEW CONTENT -->
+                {/if}
+            </div>
+        </div>
+        <!-- styles remain the same -->
+```M18 6L6 18M6 6l12 12" size="16" customClass="item-icon error-icon-color"/>
+                                <span class="item-name">{item.name}
+    *   Verify: Tab added, FileBrowser component rendered when tab is active.
+
+**8. Testing TASK_AUI_005:**
+    *   Action:
+        1.  Ensure Phoenix backend has `file (Error)</span>
+                            </div>
+                        {/if}
+                    {/each}
+                {/if}
+            </div>
+        </div>
+
+        <style>
+            .file-browser-container {
+                display:_system_manager.py` and the WebSocket handler for `REQUEST_WORK_DIR_FILES` and `WORK_DIR_FILES_DATA`.
+        2.  Ensure `PHOENIX_AGENT_WORK_DIR` is set flex;
+                flex-direction: column;
+                height: 100%; /* Fill parent (e.g., tab content area) */
+                background-color: var(--bg-dark-primary);
+                padding:  and has some sample files and folders in it for testing.
+        3.  Start Phoenix backend and Svelte UI.
+    10px;
+                box-sizing: border-box;
+            }
+            .fb-header {
+                display*   Expected Behavior:
+        *   In the Svelte UI, navigate to the Inspector Panel (right sidebar).: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+                padding-bottom: 8px;
+                border-bottom:
+        *   A "File Browser" tab should be present. Click it.
+        *   `FileBrowser.svelte` should load and display the contents of the root `PHOENIX_AGENT_WORK_DIR`.
+        *   Folders and files should be distinguishable by icon and style.
+        *   File sizes and last modified dates should be displayed. 1px solid var(--neumorphic-shadow-dark);
+                flex-shrink: 0;
+            
+        *   Clicking a folder should update the view to show that folder's contents, and the path display in}
+            .current-path {
+                font-family: monospace;
+                font-size: 0.85em;
+                color: var(--text-secondary);
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                flex-grow: 1;
+                margin: the `FileBrowser` header should update.
+        *   Clicking the "Up" button should navigate to the parent directory.
+        *   The "Refresh" button should reload the current directory listing.
+        *   Error messages should 0 10px;
+                padding: 4px 0;
+                border-bottom: 1 appear if a path is invalid or inaccessible.
+        *   Styling should be consistent with the neumorphic/glassmpx dotted transparent; /* For potential future breadcrumbs */
+            }
+            .fb-action-btn {
+                paddingorphic theme.
+
+This task provides a read-only view into the agent's working directory, which is very useful for debugging and: 5px 8px;
+                font-size: 0.8em;
+                gap: 4px;
+                background-color: var(--neumorphic-shadow-dark);
+            }
+            .fb-action understanding what files the agent is working with.
+
+Ready for TASK_AUI_006 (Actions Bar)?

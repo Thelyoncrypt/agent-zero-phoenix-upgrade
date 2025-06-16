@@ -1,0 +1,174 @@
+<svg id="agent-neo-logo-compact" viewBox="0 0 120 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Compact Glow effect -->
+    <filter id="compactGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Hover Pulse -->
+    <filter id="hoverPulse" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur">
+        <animate attributeName="stdDeviation" values="1.5;3;1.5" dur="2s" repeatCount="indefinite"/>
+      </feGaussianBlur>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Gradient for depth -->
+    <linearGradient id="neoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00C837;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Matrix rain gradient -->
+    <linearGradient id="rainGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:0" />
+      <stop offset="50%" style="stop-color:#00FF41;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#008F11;stop-opacity:0" />
+    </linearGradient>
+    
+    <!-- Mini circuit pattern -->
+    <pattern id="miniCircuit" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="5" cy="5" r="1" fill="#00FF41" opacity="0.3">
+        <animate attributeName="opacity" values="0.3;0.8;0.3" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <path d="M5,5 L15,5 M10,5 L10,15" stroke="#00FF41" stroke-width="0.3" fill="none" opacity="0.2"/>
+    </pattern>
+  </defs>
+  
+  <style>
+    @keyframes scan {
+      0%, 100% { transform: translateY(-5px); opacity: 0; }
+      50% { transform: translateY(45px); opacity: 0.5; }
+    }
+    
+    #agent-neo-logo-compact:hover #compact-rain .rain {
+      animation-duration: 0.8s !important;
+    }
+    
+    #agent-neo-logo-compact:hover #n-icon {
+      filter: url(#hoverPulse);
+    }
+    
+    #agent-neo-logo-compact:hover #circuit-bg {
+      opacity: 0.3 !important;
+    }
+    
+    .scan-line {
+      animation: scan 4s ease-in-out infinite;
+    }
+  </style>
+  
+  <!-- Circuit background -->
+  <rect id="circuit-bg" x="0" y="0" width="120" height="40" fill="url(#miniCircuit)" opacity="0" style="transition: opacity 0.3s ease"/>
+  
+  <!-- Matrix-style background pattern -->
+  <g id="compact-rain" opacity="0.15">
+    <!-- Animated rain columns -->
+    <text class="rain" x="0" y="0" font-family="monospace" font-size="6" fill="url(#rainGradient)">
+      <tspan x="0" dy="0">01</tspan>
+      <tspan x="0" dy="8">10</tspan>
+      <tspan x="0" dy="8">01</tspan>
+      <animate attributeName="y" values="-20;40;-20" dur="2s" repeatCount="indefinite"/>
+    </text>
+    <text class="rain" x="15" y="-10" font-family="monospace" font-size="6" fill="url(#rainGradient)">
+      <tspan x="15" dy="0">11</tspan>
+      <tspan x="15" dy="8">00</tspan>
+      <animate attributeName="y" values="-10;40;-10" dur="2.5s" repeatCount="indefinite"/>
+    </text>
+    <text class="rain" x="30" y="-5" font-family="monospace" font-size="6" fill="url(#rainGradient)">
+      <tspan x="30" dy="0">10</tspan>
+      <tspan x="30" dy="8">11</tspan>
+      <animate attributeName="y" values="-5;40;-5" dur="1.8s" repeatCount="indefinite"/>
+    </text>
+    <text class="rain" x="100" y="-15" font-family="monospace" font-size="6" fill="url(#rainGradient)">
+      <tspan x="100" dy="0">01</tspan>
+      <tspan x="100" dy="8">01</tspan>
+      <animate attributeName="y" values="-15;40;-15" dur="2.2s" repeatCount="indefinite"/>
+    </text>
+    <text class="rain" x="110" y="-8" font-family="monospace" font-size="6" fill="url(#rainGradient)">
+      <tspan x="110" dy="0">11</tspan>
+      <animate attributeName="y" values="-8;40;-8" dur="1.9s" repeatCount="indefinite"/>
+    </text>
+  </g>
+  
+  <g filter="url(#compactGlow)">
+    <!-- Stylized N icon with neural network visualization -->
+    <g id="n-icon" transform="translate(5, 5)">
+      <!-- Main N path -->
+      <path d="M 5 25 L 5 10 L 15 20 L 25 10 L 25 25" 
+            stroke="url(#neoGradient)" 
+            stroke-width="3" 
+            fill="none"
+            stroke-linecap="round"
+            stroke-linejoin="round">
+        <!-- Path draw animation on load -->
+        <animate attributeName="stroke-dasharray" values="0 100;100 0" dur="1.5s" fill="freeze"/>
+      </path>
+      
+      <!-- Neural nodes with connections -->
+      <g opacity="0">
+        <circle cx="5" cy="10" r="2.5" fill="url(#neoGradient)"/>
+        <circle cx="15" cy="20" r="3" fill="url(#neoGradient)"/>
+        <circle cx="25" cy="10" r="2.5" fill="url(#neoGradient)"/>
+        <circle cx="5" cy="25" r="2.5" fill="url(#neoGradient)"/>
+        <circle cx="25" cy="25" r="2.5" fill="url(#neoGradient)"/>
+        
+        <!-- Neural connections -->
+        <path d="M5,10 L15,20 M15,20 L25,10 M5,25 L15,20 M15,20 L25,25" 
+              stroke="#00FF41" stroke-width="0.5" opacity="0.3"/>
+        
+        <!-- Fade in animation -->
+        <animate attributeName="opacity" values="0;1" dur="0.5s" begin="1.5s" fill="freeze"/>
+      </g>
+    </g>
+    
+    <!-- NEO text with typewriter effect -->
+    <g id="neo-text">
+      <text x="40" y="25" 
+            font-family="Courier New, monospace" 
+            font-size="20" 
+            font-weight="bold" 
+            fill="url(#neoGradient)" 
+            letter-spacing="2">
+        NEO
+      </text>
+      <!-- Typewriter mask -->
+      <rect x="40" y="10" width="80" height="20" fill="#000000">
+        <animate attributeName="width" values="80;0" dur="1s" begin="0.5s" fill="freeze"/>
+      </rect>
+    </g>
+    
+    <!-- Matrix effect brackets -->
+    <g stroke="#00FF41" stroke-width="1" fill="none" opacity="0.6">
+      <path d="M 2 8 L 2 5 L 5 5"/>
+      <path d="M 2 32 L 2 35 L 5 35"/>
+      <path d="M 115 5 L 118 5 L 118 8"/>
+      <path d="M 115 35 L 118 35 L 118 32"/>
+    </g>
+  </g>
+  
+  <!-- Animated scan line -->
+  <line class="scan-line" x1="0" y1="20" x2="120" y2="20" stroke="#00FF41" stroke-width="0.5" opacity="0"/>
+  
+  <!-- Interactive overlay -->
+  <rect x="0" y="0" width="120" height="40" fill="transparent" style="cursor: pointer">
+    <!-- Click pulse effect -->
+    <animate id="clickPulse" attributeName="fill" values="transparent;rgba(0,255,65,0.1);transparent" dur="0.5s" begin="click" fill="freeze"/>
+  </rect>
+  
+  <!-- Mini glitch effect on idle -->
+  <animateTransform 
+    attributeName="transform" 
+    type="translate" 
+    values="0,0; 1,0; -1,0; 0,0" 
+    dur="0.1s" 
+    begin="0s;clickPulse.end+5s" 
+    fill="freeze"/>
+</svg>

@@ -1,0 +1,135 @@
+Here's a list of SVG icons that would be beneficial for the Svelte UI, categorized by their typical use, along with a prompt for generating each one. I'll aim for a consistent, modern, slightly techy/minimalist style that complements the neumorphic/glassmorphic dark theme with green accents.
+Branding:
+agent-neo-logo.svg
+Use: Prominently in the AppHeader.svelte, browser tab favicon.
+Prompt for SVG Generation:
+"Create a modern, abstract logo for an AI assistant named 'Agent Neo'. The design should be sleek and minimalist, suitable for a dark UI with green accents. It should subtly hint at intelligence, connection, or a neural network. The logo should primarily be a symbol/icon, perhaps incorporating an abstract 'N' or a stylized representation of a thinking process or data flow. Use a primary color that would look good as var(--accent-green-primary) (e.g., #00F5A0) against a dark background. The icon should be well-balanced and scalable, looking good at both small (16x16) and larger (64x64) sizes. Ensure it's a vector SVG with clean paths."
+agent-neo-favicon.svg
+Use: Browser tab icon. Could be a simplified version of agent-neo-logo.svg or just the main symbol.
+Prompt for SVG Generation:
+"Create a simplified favicon version of the 'Agent Neo' logo previously designed. It must be extremely clear and recognizable at very small sizes (16x16, 32x32). Focus on the most iconic element of the main logo. Use the same accent green (#00F5A0) on a transparent background (or a dark background if the logo itself has a shape that defines its bounds). SVG format."
+General UI & Actions:
+send-message.svg
+Use: Send button in MessageInputBar.svelte.
+Prompt for SVG Generation:
+"Design a modern 'send message' icon, like a stylized paper airplane or a sleek right-pointing arrow. It should be minimalist and fit a tech-themed UI. Line-art style, single color (will be controlled by CSS currentColor or var(--accent-green-primary)). SVG format, suitable for 20x20 or 24x24 display."
+(You used <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon> for Agent Zero - this is a good base)
+attach-file.svg
+Use: Attach file button in MessageInputBar.svelte.
+Prompt for SVG Generation:
+"Create a clean, modern 'attach file' icon, typically a paperclip. Line-art style, single color. SVG format, suitable for 20x20 display."
+(Original A0 had a good one: <path d="M21.44 11.05l-9.19 9.19a6.003 6.003 0 1 1-8.49-8.49l9.19-9.19a4.002 4.002 0 0 1 5.66 5.66l-9.2 9.19a2.001 2.001 0 1 1-2.83-2.83l8.49-8.48"/>)
+settings-cog.svg
+Use: Settings button in AppHeader.svelte.
+Prompt for SVG Generation:
+"Design a 'settings' icon, typically a cogwheel. Keep it minimalist and modern, line-art style. Single color. SVG format, suitable for 16x16 or 18x18 display."
+(Original A0 had a detailed cog: <path d="M19.14,12.94a2,2,0,0,0-1.41-.59h-.05l-.29-1a2,2,0,0,0-1.88-1.2H14.3a2,2,0,0,0-1.87,1.2l-.29,1h-.05a2,2,0,0,0-1.41.59L9.42,15.1a2,2,0,0,0,0,2.82l1.27,1.27a2,2,0,0,0,1.41.59h.05l.29,1a2,2,0,0,0,1.88,1.2h1.21a2,2,0,0,0,1.87-1.2l.29-1h.05a2,2,0,0,0,1.41-.59l1.27-1.27a2,2,0,0,0,0-2.82ZM12,16.41A2.42,2.42,0,1,1,14.41,14,2.42,2.42,0,0,1,12,16.41Z"/> - can be simplified)
+clear-chat.svg (or trash-can.svg)
+Use: Clear Chat button in AppHeader.svelte.
+Prompt for SVG Generation:
+"Create a 'clear' or 'delete' icon, typically a trash can. Modern, minimalist line-art style. Single color. SVG format, suitable for 16x16 display."
+(Original A0 path: <path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m-6 5v6m4-6v6"/>)
+new-chat.svg (or plus-icon.svg)
+Use: New Chat button in ChatHistoryPanel.svelte.
+Prompt for SVG Generation:
+"Design a 'new' or 'add' icon, typically a plus symbol (+). Clean, balanced line-art style. Single color. SVG format, suitable for 16x16 or 18x18 display."
+(Original A0 path: <path d="M12 5v14m-7-7h14"/>)
+copy-content.svg
+Use: Copy button for code blocks.
+Prompt for SVG Generation:
+"Create a 'copy' icon, typically two overlapping rectangles or a clipboard symbol. Minimalist line-art. Single color. SVG format, suitable for 14x14 or 16x16 display."
+(Original A0 copy icon in MarkdownRenderer was <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>)
+check-mark.svg
+Use: Indicating success, or "Copied!" state.
+Prompt for SVG Generation:
+"Design a simple check mark (tick) icon. Clean line-art. Single color. SVG format, suitable for 14x14 or 16x16 display."
+(Original A0 path: <polyline points="20 6 9 17 4 12"></polyline>)
+close-x.svg
+Use: Closing modals, removing file chips.
+Prompt for SVG Generation:
+"Create a 'close' or 'remove' icon, typically an 'X' symbol. Minimalist line-art. Single color. SVG format, suitable for 12x12 or 16x16 display."
+(Original A0 path: <line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>)
+Event & Status Indicators:
+thought-bubble.svg (or brain-icon.svg)
+Use: ThoughtBubble.svelte.
+Prompt for SVG Generation:
+"Design a 'thought' or 'thinking process' icon. Could be a stylized thought bubble, a simple brain outline, or abstract connected dots. Minimalist line-art. Single color. SVG format, suitable for 15x15 display."
+(Original A0 path: <path d="M9 19c-1.5 0-3-1-3-3.5S4.5 12 6 12c1.5-1 1.5-2 1.5-3.5A2.5 2.5 0 0 1 10 5c2.5 0 4 2.5 4 5s-1.5 3.5-4 3.5c-1.5.01-3 1-3 3.5S7.5 19 9 19Z"/>)
+tool-call-icon.svg (or cog-icon.svg - can reuse settings cog if simple enough)
+Use: ToolCallCard.svelte header.
+Prompt for SVG Generation:
+"Create an icon representing 'tool usage' or 'processing'. A simple cogwheel or a wrench/spanner. Minimalist line-art. Single color. SVG format, 18x18."
+(Original A0 cogIconPath for ToolCallCard was quite complex, a simpler one might be better)
+error-alert.svg (or warning-triangle.svg)
+Use: ErrorCard.svelte or error indicators.
+Prompt for SVG Generation:
+"Design an 'error' or 'alert' icon. Typically an exclamation mark within a triangle or circle. Clean line-art. Single color (will be colored red via CSS). SVG format, 16x16 or 18x18."
+(Original A0 path: <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4m0 4h.01"/>)
+play-icon.svg
+Use: Play button for audio (if we implement pause/play for TTS).
+Prompt for SVG Generation:
+"A simple 'play' icon (right-pointing triangle). Line-art. Single color. SVG, 16x16."
+(Original A0 path: <polygon points="5 3 19 12 5 21 5 3"/>)
+pause-icon.svg
+Use: Pause button for audio.
+Prompt for SVG Generation:
+"A simple 'pause' icon (two vertical bars). Line-art. Single color. SVG, 16x16."
+(Original A0 path: <rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect>)
+stop-icon.svg
+Use: Stop button for TTS audio.
+Prompt for SVG Generation:
+"A simple 'stop' icon (a filled square). Could be line-art square too. Single color. SVG, 16x16."
+(Original A0 path: <rect x="6" y="6" width="12" height="12"/>)
+File Browser Icons:
+folder-icon.svg
+Use: FolderItem.svelte.
+Prompt for SVG Generation:
+"A clean, modern 'folder' icon. Minimalist line-art. Single color. SVG, 18x18."
+(Original A0 path: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>)
+file-generic.svg
+Use: FileItem.svelte for unknown file types.
+Prompt for SVG Generation:
+"A generic 'file' icon (e.g., a document with a folded corner). Minimalist line-art. Single color. SVG, 18x18."
+(Original A0 path: <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/> <polyline points="13 2 13 9 20 9"/>)
+file-image.svg
+Use: FileItem.svelte for image files.
+Prompt for SVG Generation:
+"An 'image file' icon. Could be a generic file icon with a small landscape/picture symbol inside. Minimalist line-art. Single color. SVG, 18x18."
+(Original A0 had <path d="M23 18l-9.5-9.5-5 5L1 10l9 9"/> inside a file shape)
+file-text.svg (or file-document.svg)
+Use: FileItem.svelte for text, markdown, code files.
+Prompt for SVG Generation:
+"A 'text document' icon. Could be a generic file icon with lines of text symbol inside. Minimalist line-art. Single color. SVG, 18x18."
+(Original A0 had <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h8m-8 4h8m-8 4h5"/>)
+file-pdf.svg
+Use: FileItem.svelte for PDF files.
+Prompt for SVG Generation:
+"A 'PDF file' icon. Could be a generic file icon with "PDF" text or a stylized PDF symbol. Minimalist line-art. Single color. SVG, 18x18."
+arrow-up.svg
+Use: "Go Up" button in FileBrowser.svelte.
+Prompt for SVG Generation:
+"A simple 'up arrow' icon. Line-art. Single color. SVG, 16x16."
+(Original A0 path: <line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline>)
+refresh-icon.svg
+Use: "Refresh" button in FileBrowser.svelte and ContextWindowViewer.svelte.
+Prompt for SVG Generation:
+"A 'refresh' or 'reload' icon, typically a circular arrow. Minimalist line-art. Single color. SVG, 16x16."
+(Original A0 path: <polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/> - can be simplified to a single circular arrow)
+Agent Action Bar Icons (Task_AUI_006):
+nudge-agent.svg
+Use: Nudge button.
+Prompt for SVG Generation:
+"Design a 'nudge' or 'poke' icon. Could be a hand poking, or a sharp arrow indicating a gentle push or interruption. Minimalist line-art. Single color. SVG, 16x16."
+restart-agent.svg (can reuse refresh-icon.svg if appropriate)
+Use: Restart button.
+Prompt for SVG Generation:
+"A 'restart' icon, often similar to a refresh icon (circular arrow) or a power cycle symbol. Minimalist line-art. Single color. SVG, 16x16."
+General Tips for SVG Generation:
+ViewBox: Usually 0 0 24 24 is a good default for icons that will be scaled.
+Stroke Width: For line art, stroke-width="1.5" or stroke-width="2" is common for good visibility when scaled down.
+currentColor: Use stroke="currentColor" and fill="currentColor" (or fill="none" for line art) so CSS can control the color.
+Clean Paths: Minimize points, use simple shapes.
+No inline styles: Rely on CSS for sizing and coloring in the Svelte components.
+You can use an AI image generator with these prompts, or a vector graphics editor (like Inkscape, Adobe Illustrator, Figma) to create these. For very simple ones like arrows or plus signs, you can even write the SVG XML by hand.
+Once you have these SVGs (or a good subset to start with), you can integrate them into your Icon.svelte component or use them directly.
+This list should cover most of the UI needs based on the original Agent Zero and the new Phoenix features. Let me know when you're ready to move to the next implementation task after you've got some of these icons ready!

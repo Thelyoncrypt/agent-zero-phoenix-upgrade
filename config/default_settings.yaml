@@ -1,0 +1,58 @@
+# Default Settings for Agent Zero Phoenix
+# This file contains default configuration values that can be overridden by environment variables
+
+# API Keys - These should be set in .env file for security
+api_keys:
+  openai_api_key: "YOUR_OPENAI_API_KEY_FROM_ENV"
+  anthropic_api_key: "YOUR_ANTHROPIC_API_KEY_FROM_ENV"
+  perplexity_api_key: "YOUR_PERPLEXITY_API_KEY_FROM_ENV"
+  supabase_url: "YOUR_SUPABASE_URL_FROM_ENV"
+  supabase_key: "YOUR_SUPABASE_KEY_FROM_ENV"
+
+# Agent Core Configuration
+agent_core:
+  default_agent_name: "Phoenix"
+  max_iterations: 10
+  timeout_seconds: 300
+  enable_memory: true
+  enable_tools: true
+
+# Tool Configuration
+tools:
+  browser_agent:
+    headless: true
+    timeout: 30
+    viewport_width: 1920
+    viewport_height: 1080
+  
+  web_crawler:
+    max_pages: 10
+    timeout: 30
+    respect_robots_txt: true
+  
+  memory_agent:
+    provider: "mem0"
+    max_memories: 1000
+  
+  knowledge_agent:
+    max_results: 5
+    similarity_threshold: 0.7
+  
+  tts_agent:
+    provider: "chatterbox"
+    voice: "default"
+    speed: 1.0
+
+# UI Configuration
+ui:
+  theme: "dark"
+  accent_color: "#00F5A0"
+  enable_animations: true
+  auto_scroll: true
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  enable_file_logging: true
+  log_file: "logs/phoenix.log"
+  max_log_size_mb: 100

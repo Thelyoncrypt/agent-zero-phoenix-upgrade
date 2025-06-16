@@ -1,0 +1,62 @@
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Gradient for depth and modern look -->
+    <linearGradient id="sendGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF88;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00CC6A;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Shadow filter for 3D effect -->
+    <filter id="sendShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+      <feOffset dx="0.5" dy="0.5" result="offsetblur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.2"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Glow effect -->
+    <filter id="sendGlow">
+      <feGaussianBlur stdDeviation="1" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Paper airplane with enhanced design -->
+  <g filter="url(#sendShadow)">
+    <!-- Main airplane shape -->
+    <path d="M2.5 3L22 12L2.5 21L6 12L2.5 3Z" 
+          fill="url(#sendGradient)" 
+          stroke="none"
+          opacity="0.9"/>
+    
+    <!-- Inner detail line for depth -->
+    <path d="M2.5 3L22 12L6 12L2.5 3Z" 
+          fill="#00FF88" 
+          opacity="0.8"/>
+    
+    <!-- Highlight accent -->
+    <path d="M4 4.5L20 11.5L6.5 11.5L4 4.5Z" 
+          fill="#FFFFFF" 
+          opacity="0.2"/>
+  </g>
+  
+  <!-- Motion lines for dynamic effect -->
+  <g opacity="0.6" filter="url(#sendGlow)">
+    <line x1="1" y1="12" x2="5" y2="12" stroke="#00FF88" stroke-width="1.5" stroke-linecap="round">
+      <animate attributeName="opacity" values="0;0.8;0" dur="1.5s" repeatCount="indefinite"/>
+    </line>
+    <line x1="2" y1="9" x2="6" y2="9" stroke="#00CC6A" stroke-width="1" stroke-linecap="round">
+      <animate attributeName="opacity" values="0;0.6;0" dur="1.5s" begin="0.3s" repeatCount="indefinite"/>
+    </line>
+    <line x1="2" y1="15" x2="6" y2="15" stroke="#00CC6A" stroke-width="1" stroke-linecap="round">
+      <animate attributeName="opacity" values="0;0.6;0" dur="1.5s" begin="0.3s" repeatCount="indefinite"/>
+    </line>
+  </g>
+</svg>

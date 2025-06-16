@@ -1,0 +1,529 @@
+## TASK_AUI_009: Svelte UI & Phoenix Backend - Settings Modal Editing and Saving
+
+**Goal:**
+1.  **Phoenix Backend:**
+    *   Implement a new StreamProtocol message type `UPDATE_SETTINGS_REQUEST` that the Svelte UI can send. The payload will contain the modified settings data (a subset or the full settings object).
+    *   Modify `python/helpers/settings_manager.py`:
+        *   Add an `update_settings(new_settings_data: Dict[str, Any]) -> bool` method.
+        *   This method should perform a deep merge of the `new_settings_data` onto the current in-memory settings.
+        *   It should then save the *entire updated settings object* back to `config/default_settings.yaml`.
+            *   **Important Security Note:** When saving, it must be careful *not* to write out actual API key values if they were originally loaded from `.env`. It should either save placeholder strings (like "YOUR_X_KEY_FROM_ENV") for API key fields defined in `default_settings.yaml` or only save fields that were *not* part of the `api_keys` section or were not overridden by `.env`. For simplicity in this first pass, we might allow overwriting placeholders if the user explicitly changes them, but direct editing of actual secret values fetched from `.env` should be discouraged in the UI or handled very carefully. A safer approach is to have separate UI sections for "display-only" (env-sourced) and "editable" settings. For now, we'll assume editable fields are not the direct API key values themselves.
+        *   After saving, it should ensure that any subsequent call to `get_settings_manager().get_all_settings()` reflects the update. The `AgentConfig.load()` method already uses the `SettingsManager` singleton, so new agent instances or reloaded configs will pick up changes.
+    *   The WebSocket handler, upon receiving `UPDATE_SETTINGS_REQUEST`, calls `SettingsManager.update_settings()` and then responds with a `SETTINGS_UPDATED_CONFIRMATION` event (payload: `{success: true/false, message: str}`) or an `ERROR_EVENT`.
+2.  **Svelte UI:**
+    *   Enhance `src/lib/components/settings/SettingsView.svelte` to make simple setting values editable (e.g., using `<input type="text">`, `<input type="number">`, `<input type="checkbox">`). For complex objects/arrays, they can remain display-only for this task or allow raw JSON editing in a `<textarea>`.
+    *   Add "Save Settings" and "Reset Changes" (client-side reset to last fetched state) buttons to `SettingsView.svelte`.
+    *   The "Save Settings" button will send the (potentially modified) `localSettingsCopy` to the backend via `socketStore` using the `UPDATE_SETTINGS_REQUEST` message type.
+    *   Provide user feedback on save success (e.g., "Settings saved!", re-fetch and display) or failure.
+
+**Prerequisites:**
+*   Task 080 (original numbering, now effectively Task_AUI_007 for UI display) completed: `SettingsView.svelte` displays settings, and `SettingsManager.py` loads settings.
+*   `ModalWrapper.svelte` is used for the settings display.
+*   Phoenix backend can handle new StreamProtocol message types and has `SettingsManager`.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes:**
+
+**1. Define New StreamProtocol Event/Message Types:**
+    *   Action: In `python/tools/stream_protocol_tool.py` (or `python/agent.py`).
+        ```python
+# In StreamEventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            UPDATE_SETTINGS_REQUEST = "update_settings_request" # Client to Server
+            SETTINGS_UPDATED_CONFIRMATION = "settings_updated_confirmation" # Server to Client
+            # SETTINGS_DATA (from previous settings task) is Server to Client
+```
+    *   Verify: Enum updated.
+
+**2. Enhance `python/helpers/settings_manager.py` - `SettingsManager` Class:**
+    *   Action: Add `update_settings` method and refine saving logic to handle secrets.
+        ```python
+# python/helpers/settings_manager.py
+        import yaml
+        import os
+        import json # For deep copying
+        from typing import Dict, Any, Optional, List
+        from pathlib import Path
+        from dotenv import load_dotenv
+
+        CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
+        DEFAULT_SETTINGS_FILE = CONFIG_DIR / "default_settings.yaml"
+        # USER_SETTINGS_FILE_TEMPLATE = CONFIG_DIR / "user_{user_id}_settings.yaml" # For future
+
+        class SettingsManager:
+            _instance = None
+            _settings: Optional[Dict[str, Any]] = None
+            _default_yaml_structure: Optional[Dict[str, Any]] = None # To know original placeholders
+
+            def __new__(cls, *args, **kwargs): # Singleton
+                if not cls._instance:
+                    cls._instance = super(SettingsManager, cls).__new__(cls)
+                return cls._instance
+
+            def __init__(self):
+                if not hasattr(self, '_initialized'): # Ensure __init__ runs only once
+                    self._load_settings()
+                    self._initialized = True
+            
+            def _load_default_yaml_for_structure(self) -> Dict[str, Any]:
+                """Loads only the default YAML for its structure, without env overrides."""
+                if self._default_yaml_structure is None: # Cache it
+                    try:
+                        with open(DEFAULT_SETTINGS_FILE, 'r') as f:
+                            self._default_yaml_structure = yaml.safe_load(f) or {}
+                    except Exception as e:
+                        print(f"SettingsManager ERROR: Could not load default settings YAML for structure: {e}")
+                        self._default_yaml_structure = {}
+                return self._default_yaml_structure
+
+            def _load_settings(self):
+                # 1. Load defaults from YAML
+                default_settings = self._load_default_yaml_for_structure()
+
+                # 2. Override with environment variables
+                project_root = Path(__file__).resolve().parents[2]
+                dotenv_path = project_root / '.env'
+                if dotenv_path.exists(): load_dotenv(dotenv_path, override=True)
+                
+                env_overrides = self._get_env_overrides(default_settings)
+                merged_settings = self._deep_merge(default_settings, env_overrides)
+                self._settings = merged_settings
+                print("SettingsManager: Settings loaded and merged.")
+
+            def _get_env_overrides(self, defaults: Dict[str, Any]) -> Dict[str, Any]:
+                # ... (same as Task 080, ensuring it loads API keys and other critical env vars) ...
+                overrides = {}
+                api_keys_config_structure = defaults.get("api_keys", {}) # Structure from YAML
+                loaded_api_keys = {}
+                for key_name_in_yaml in api_keys_config_structure.keys():
+                    env_var_name = key_name_in_yaml.upper() 
+                    env_value = os.getenv(env_var_name)
+                    if env_value:
+                        loaded_api_keys[key_name_in_yaml] = env_value
+                if loaded_api_keys:
+                    overrides["api_keys"] = loaded_api_keys
+                
+                # Example for other overrides
+                if os.getenv("BROWSER_AGENT_HEADLESS"): # Matches .env variable
+                    headless_val = os.getenv("BROWSER_AGENT_HEADLESS", "true").lower() == 'true'
+                    overrides["tools"] = overrides.get("tools", {})
+                    overrides["tools"]["browser_agent"] = overrides["tools"].get("browser_agent", {})
+                    overrides["tools"]["browser_agent"]["headless"] = headless_val
+                
+                # Add other direct .env overrides here
+                return overrides
+
+
+            def _deep_merge(self, base: Dict, overrides: Dict) -> Dict: # Same as before
+                # ...
+                merged = base.copy()
+                for key, value in overrides.items():
+                    if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+                        merged[key] = self._deep_merge(merged[key], value)
+                    else:
+                        merged[key] = value
+                return merged
+
+            def _prepare_settings_for_saving(self, settings_to_save: Dict[str, Any]) -> Dict[str, Any]:
+                """Prepares settings for YAML, restoring placeholders for env-sourced API keys."""
+                savable_settings = json.loads(json.dumps(settings_to_save)) # Deep copy
+                
+                default_yaml_api_keys = self._load_default_yaml_for_structure().get("api_keys", {})
+                current_env_api_keys = self._get_env_overrides({}).get("api_keys", {}) # Get what's currently in .env
+
+                if "api_keys" in savable_settings:
+                    final_api_keys_to_save = {}
+                    for key_in_yaml, default_placeholder in default_yaml_api_keys.items():
+                        current_live_value = savable_settings["api_keys"].get(key_in_yaml)
+                        env_sourced_value = current_env_api_keys.get(key_in_yaml)
+
+                        if env_sourced_value and current_live_value == env_sourced_value:
+                            # Value matches .env, so save the placeholder from default_settings.yaml
+                            final_api_keys_to_save[key_in_yaml] = default_placeholder
+                        else:
+                            # Value was changed by user in UI, or wasn't from .env, or .env value changed since load.
+                            # Save the current value (user might be explicitly clearing or setting a non-env key).
+                            final_api_keys_to_save[key_in_yaml] = current_live_value
+                    savable_settings["api_keys"] = final_api_keys_to_save
+                return savable_settings
+
+            def update_settings(self, new_settings_data: Dict[str, Any]) -> bool:
+                if self._settings is None: self._load_settings()
+                
+                # Perform a deep merge of new data onto current settings
+                # This allows client to send only changed sections/values
+                self._settings = self._deep_merge(self._settings, new_settings_data)
+                
+                settings_to_persist = self._prepare_settings_for_saving(self._settings)
+                
+                try:
+                    with open(DEFAULT_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                        yaml.dump(settings_to_persist, f, indent=2, sort_keys=False, default_flow_style=False)
+                    print(f"SettingsManager: Settings updated and saved to {DEFAULT_SETTINGS_FILE}.")
+                    # No need to call _load_settings() again here, as _settings is already updated in memory.
+                    # New agent instances will pick up changes from file via AgentConfig.load().
+                    # Existing agent instances might need a reload_config() method if they cache config heavily.
+                    return True
+                except Exception as e:
+                    print(f"SettingsManager ERROR: Could not save updated settings to {DEFAULT_SETTINGS_FILE}: {e}")
+                    return False
+
+            def get_setting(self, key_path: str, default: Any = None) -> Any: # Same
+                # ...
+                if self._settings is None: self._load_settings()
+                keys = key_path.split('.')
+                val = self._settings
+                try:
+                    for key in keys: val = val[key]
+                    return val
+                except (KeyError, TypeError): return default
+
+
+            def get_all_settings(self) -> Dict[str, Any]: # Same
+                # ...
+                if self._settings is None: self._load_settings()
+                return self._settings.copy()
+
+
+            def get_displayable_settings(self) -> Dict[str, Any]: # Same as Task 080
+                # ...
+                if self._settings is None: self._load_settings()
+                displayable = json.loads(json.dumps(self._settings)) 
+                if "api_keys" in displayable:
+                    for key in displayable["api_keys"]:
+                        val = displayable["api_keys"][key]
+                        if val and isinstance(val, str) and len(val) > 4 :
+                            displayable["api_keys"][key] = f"****{val[-4:]}"
+                        elif val:
+                             displayable["api_keys"][key] = "****"
+                return displayable
+
+        def get_settings_manager() -> SettingsManager: # Same
+            # ...
+            return SettingsManager()
+```
+    *   **Key Changes:**
+        *   `_load_default_yaml_for_structure()`: Helper to get the original YAML structure, especially for API key placeholders.
+        *   `_prepare_settings_for_saving()`: New crucial method. Before saving to YAML, it checks API key values. If a current API key value matches what would be loaded from `.env`, it replaces it with the placeholder string from `default_settings.yaml`. This prevents accidentally writing live secrets from `.env` into the YAML file. User-modified values (even for API keys if they manually type one in) would be saved.
+        *   `update_settings()`: Takes `new_settings_data` (which could be a partial update), deep merges it into the current `self._settings`, then prepares it for saving using `_prepare_settings_for_saving`, and writes to `DEFAULT_SETTINGS_FILE`.
+    *   Verify: `SettingsManager` updated.
+
+**3. Update WebSocket Handler for `UPDATE_SETTINGS_REQUEST`:**
+    *   Action: In `StreamProtocolTool.py` or `run_ui.py`.
+        ```python
+# In python/tools/stream_protocol_tool.py or run_ui.py WebSocket message handler
+        from python.helpers.settings_manager import get_settings_manager # Ensure import
+        # ...
+        # elif message_type == StreamEventType.UPDATE_SETTINGS_REQUEST.value:
+        #     thread_id = payload.get("threadId") # For response routing
+        #     settings_data_to_update = payload.get("settings_data")
+            
+        #     if settings_data_to_update is None:
+        #         await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"message": "No settings data provided in update request."}, specific_thread_id=thread_id)
+        #     else:
+        #         manager = get_settings_manager()
+        #         success = manager.update_settings(settings_data_to_update) # This saves to file
+
+        #         if success:
+        #             # Agent instances get config on init. Active agents might need a reload mechanism if config is mutable during their lifecycle.
+        #             # For simplicity, we'll assume new settings apply to new sessions/restarted agents.
+        #             # Or, if self.agent is the relevant agent for this thread:
+        #             if hasattr(self.agent, 'reload_config_from_manager'): # A new method you might add to Agent
+        #                 self.agent.reload_config_from_manager()
+        #             elif self.agent: # Fallback: re-init its config object
+        #                  self.agent.config = self.agent.config.load()
+
+
+        #             await self.agent._emit_stream_event(
+        #                 StreamEventType.SETTINGS_UPDATED_CONFIRMATION,
+        #                 {"success": True, "message": "Settings updated successfully. Changes may require an agent restart or new session to take full effect."},
+        #                 specific_thread_id=thread_id
+        #             )
+        #             # Optionally, resend the full displayable (masked) settings
+        #             await self.agent._emit_stream_event(
+        #                 StreamEventType.SETTINGS_DATA,
+        #                 {"settings": manager.get_displayable_settings()},
+        #                 specific_thread_id=thread_id
+        #             )
+        #         else:
+        #             await self.agent._emit_stream_event(StreamEventType.ERROR_EVENT, {"message": "Failed to update settings on the server."}, specific_thread_id=thread_id)
+```
+    *   Verify: Handler added.
+
+**II. Svelte UI Changes:**
+
+**4. Enhance `src/lib/components/settings/SettingsView.svelte` for Editing:**
+    *   Action: Make simple value types editable.
+        ```html
+<!-- src/lib/components/settings/SettingsView.svelte -->
+        <script>
+            import { settingsStore } from '$lib/stores/settingsStore';
+            import { onMount, createEventDispatcher } from 'svelte';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import Card from '../shared/Card.svelte';
+
+            const dispatch = createEventDispatcher(); // For closing modal
+
+            let localSettingsCopy = {};
+            let originalSettingsSnapshot = {}; // For client-side reset
+            let isLoading = true; // Start true until first load
+            let saveStatus = ''; // '', 'saving', 'success', 'error'
+            let saveMessage = '';
+
+            settingsStore.subscribe(storeState => {
+                isLoading = !storeState.loaded && !storeState.error && Object.keys(storeState.data).length === 0;
+                if (storeState.loaded && !storeState.error) {
+                    if (Object.keys(localSettingsCopy).length === 0 || saveStatus === 'success') { // Initial load or after successful save
+                        localSettingsCopy = JSON.parse(JSON.stringify(storeState.data));
+                        originalSettingsSnapshot = JSON.parse(JSON.stringify(storeState.data)); // Snapshot for reset
+                        if (saveStatus === 'success') {
+                            setTimeout(() => saveStatus = '', 3000); // Clear success message
+                        }
+                    }
+                } else if (storeState.error && saveStatus !== 'saving') { // Don't overwrite if currently saving and an unrelated fetch error occurs
+                    saveStatus = 'error';
+                    saveMessage = storeState.error;
+                }
+            });
+
+            onMount(() => {
+                // Fetch settings if not already loaded or if there was an error previously
+                if (!$settingsStore.loaded || $settingsStore.error) {
+                    settingsStore.fetchSettings();
+                } else {
+                    // Already loaded, ensure localCopy is initialized
+                     localSettingsCopy = JSON.parse(JSON.stringify($settingsStore.data));
+                     originalSettingsSnapshot = JSON.parse(JSON.stringify($settingsStore.data));
+                     isLoading = false;
+                }
+            });
+
+            function handleInputChange(path, value, type) {
+                const keys = path.split('.');
+                let current = localSettingsCopy;
+                keys.forEach((key, index) => {
+                    if (index === keys.length - 1) {
+                        if (type === 'boolean') current[key] = Boolean(value);
+                        else if (type === 'number') current[key] = Number(value);
+                        else current[key] = value;
+                    } else {
+                        if (!current[key] || typeof current[key] !== 'object') current[key] = {};
+                        current = current[key];
+                    }
+                });
+                localSettingsCopy = { ...localSettingsCopy }; // Trigger Svelte reactivity
+                saveStatus = ''; // Clear previous save status on edit
+            }
+            
+            async function handleSaveSettings() {
+                saveStatus = 'saving';
+                saveMessage = '';
+                // Send only the changed parts for efficiency, or the whole object.
+                // For simplicity now, send the whole localSettingsCopy.
+                // The backend's deep_merge will handle applying updates.
+                // The backend also handles not saving .env API keys to YAML.
+                socketStore.sendMessage({
+                    type: "UPDATE_SETTINGS_REQUEST",
+                    payload: {
+                        settings_data: localSettingsCopy,
+                        threadId: $chatStore.currentThreadId, // For response routing
+                        userId: $chatStore.currentUserId
+                    }
+                });
+                // Listen for SETTINGS_UPDATED_CONFIRMATION or ERROR_EVENT in socketStore/chatStore
+                // For now, we assume socketStore will update settingsStore on confirmation,
+                // which will re-trigger the subscription and update localSettingsCopy.
+            }
+
+            // Client-side reset to last fetched/saved state
+            function resetLocalChanges() {
+                if (confirm("Discard your current changes and revert to the last saved settings?")) {
+                    localSettingsCopy = JSON.parse(JSON.stringify(originalSettingsSnapshot));
+                    saveStatus = '';
+                }
+            }
+
+            // Recursive rendering component
+            function getSettingItems(dataObject, parentPath = '') {
+                if (!dataObject || typeof dataObject !== 'object') return [];
+                return Object.entries(dataObject).map(([key, value]) => {
+                    const currentPath = parentPath ? `${parentPath}.${key}` : key;
+                    const type = typeof value;
+                    const isEditableSimple = (type === 'string' || type === 'number' || type === 'boolean');
+                    // Do not allow direct editing of API key values in this UI
+                    const isApiKeySection = parentPath === 'api_keys'; 
+                    // Tools can have complex objects, make them JSON editable for now
+                    const isComplexObject = type === 'object' && value !== null && !Array.isArray(value) && parentPath.startsWith('tools.');
+                    
+                    return { 
+                        key, value, path: currentPath, 
+                        isEditable: isEditableSimple && !isApiKeySection, 
+                        isBoolean: type === 'boolean',
+                        isNumber: type === 'number',
+                        isComplexObjectEditable: isComplexObject && !isApiKeySection,
+                        isApiKeyDisplay: isApiKeySection // For special display of API keys
+                    };
+                });
+            }
+        </script>
+
+        <div class="settings-view-content">
+            {#if isLoading}
+                <p class="loading-text">Loading settings...</p>
+            {:else if $settingsStore.error && Object.keys(localSettingsCopy).length === 0}
+                <p class="error-text">Initial settings load failed: {$settingsStore.error}</p>
+            {:else}
+                {#each Object.entries(localSettingsCopy) as [topKey, topValue] (topKey)}
+                    {#if topKey !== '_instance' && topKey !== '_settings'}
+                    <Card type="neumorphic" elevation="extruded" customClass="setting-category-card">
+                        <h4 class="category-title">{topKey.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</h4>
+                        <ul class="settings-group-list">
+                            {#each getSettingItems(topValue, topKey) as item (item.path)}
+                                <li class="setting-entry">
+                                    <label for={item.path} class="setting-key-label">{item.key.replace(/_/g, ' ')}:</label>
+                                    {#if item.isBoolean}
+                                        <input type="checkbox" id={item.path} checked={item.value} 
+                                               on:change={(e) => handleInputChange(item.path, e.currentTarget.checked, 'boolean')} 
+                                               class="neumorphic-checkbox" />
+                                    {:else if item.isEditable}
+                                        <input type={item.isNumber ? 'number' : 'text'} id={item.path} value={item.value} 
+                                               on:input={(e) => handleInputChange(item.path, e.currentTarget.value, item.isNumber ? 'number' : 'string')} 
+                                               class="neumorphic-input setting-value-input"/>
+                                    {:else if item.isComplexObjectEditable}
+                                        <textarea id={item.path} rows="3" class="neumorphic-input setting-value-json"
+                                                  on:change={(e) => {
+                                                      try { handleInputChange(item.path, JSON.parse(e.currentTarget.value), 'object'); } 
+                                                      catch(err) { console.warn('Invalid JSON for setting', item.path); /* Optionally show UI error */ }
+                                                  }}
+                                        >{JSON.stringify(item.value, null, 2)}</textarea>
+                                    {:else}
+                                        <span class="setting-value-text {item.isApiKeyDisplay ? 'api-key-value' : ''}">
+                                            {item.isApiKeyDisplay && item.value && String(item.value).includes('****') ? item.value : 
+                                             (typeof item.value === 'object' ? JSON.stringify(item.value) : String(item.value))}
+                                        </span>
+                                    {/if}
+                                </li>
+                            {/each}
+                        </ul>
+                    </Card>
+                    {/if}
+                {/each}
+                
+                <div class="settings-footer-actions">
+                    {#if saveStatus === 'saving'}
+                        <span class="status-message saving">Saving... <Icon path="M21 12a9 9 0 11-6.219-8.56" size="14"/></span>
+                    {:else if saveStatus === 'success'}
+                        <span class="status-message success">Settings Saved! <Icon path="M20 6L9 17l-5-5" size="14"/></span>
+                    {:else if saveStatus === 'error'}
+                        <span class="status-message error">Save Failed: {saveMessage || 'Unknown error'} <Icon path="M18 6L6 18M6 6l12 12" size="14"/></span>
+                    {/if}
+                    <Button onClick={resetLocalChanges} customClass="settings-action-button reset-button" disabled={saveStatus === 'saving'}>
+                        <Icon path="M3 9l3-3m0 0l3 3M6 6v10.5A2.5 2.5 0 008.5 19h7a2.5 2.5 0 002.5-2.5V6m-11 0a2.5 2.5 0 012.5-2.5h2.5a2.5 2.5 0 012.5 2.5m-5 0v10.5" size="16"/> Reset Changes
+                    </Button>
+                    <Button onClick={handleSaveSettings} customClass="settings-action-button save-button" disabled={saveStatus === 'saving'}>
+                        <Icon path={saveIconPath} size="16"/> Save Settings
+                    </Button>
+                </div>
+            {/if}
+        </div>
+        <style>
+            /* ... (Most styles from Task_AUI_007 for .settings-view-content, .setting-category-card, .category-title etc.) ... */
+            .setting-entry {
+                display: grid; /* Use grid for better alignment */
+                grid-template-columns: auto 1fr;
+                gap: 8px 12px;
+                align-items: center; /* Vertically align label and input */
+                 margin-bottom: 12px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark);
+            }
+             .setting-entry:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+
+            .setting-key-label {
+                color: var(--text-secondary);
+                font-size: 0.9em;
+                font-weight: 500;
+                text-transform: capitalize;
+                justify-self: start; /* Align label to the start */
+            }
+            .neumorphic-input, .neumorphic-checkbox, .setting-value-text, .setting-value-json {
+                /* Base styles are already good */
+                width: 100%; /* Make inputs take full width of their grid cell */
+                box-sizing: border-box;
+            }
+            .setting-value-json { max-height: 100px; font-size: 0.8em; }
+            .api-key-value { font-style: italic; color: var(--text-secondary); }
+            
+            .settings-footer-actions {
+                margin-top: 25px;
+                padding-top: 15px;
+                border-top: 1px solid var(--glass-border-color);
+                display: flex;
+                justify-content: flex-end;
+                align-items: center;
+                gap: 12px;
+            }
+            .settings-action-button { gap: 6px; font-size: 0.9em; }
+            .save-button { background-color: var(--accent-green-primary); color: var(--bg-dark-primary); font-weight: bold; }
+            .save-button:hover { background-color: var(--accent-green-secondary); }
+            .reset-button { background-color: var(--neumorphic-shadow-dark); color: var(--text-secondary); }
+            
+            .status-message { font-size: 0.85em; margin-right: auto; display: flex; align-items: center; gap: 5px;}
+            .status-message.saving { color: var(--accent-green-secondary); }
+            .status-message.success { color: var(--accent-green-primary); }
+            .status-message.error { color: var(--error-color); }
+        </style>
+```
+    *   **Key Changes:**
+        *   `localSettingsCopy` to hold editable data, initialized from `settingsStore`.
+        *   `originalSettingsSnapshot` to enable client-side "Reset Changes".
+        *   Input fields (`text`, `number`, `checkbox`, `textarea` for JSON) for editable settings.
+        *   `handleInputChange` updates `localSettingsCopy` reactively.
+        *   `handleSaveSettings` sends `localSettingsCopy` to backend.
+        *   `resetLocalChanges` reverts `localSettingsCopy` to `originalSettingsSnapshot`.
+        *   Display `saveStatus` messages.
+        *   API Key values are shown but not directly editable with input fields (they are `<span class="api-key-value">`).
+    *   Modify `socketStore` (or `chatStore.handleStreamEvent`) to listen for `SETTINGS_UPDATED_CONFIRMATION` and `ERROR_EVENT` related to settings update:
+        ```javascript
+// In socketStore or chatStore's event handler
+        // case 'SETTINGS_UPDATED_CONFIRMATION':
+        //     if (event.payload.success) {
+        //         settingsStore.fetchSettings(); // Re-fetch to get updated (and masked) settings
+        //         // Trigger a success status in SettingsView, perhaps via a settingsStore writable
+        //         settingsStore.update(s => ({...s, lastSaveStatus: 'success', lastSaveMessage: event.payload.message}));
+        //     } else {
+        //         settingsStore.update(s => ({...s, lastSaveStatus: 'error', lastSaveMessage: event.payload.message || "Failed to save."}));
+        //     }
+        //     break;
+        // An ERROR_EVENT from settings update should also update settingsStore.lastSaveStatus/Message
+```
+    *   Verify: Editable fields appear, save/reset buttons added.
+
+**5. Testing TASK_AUI_009:**
+    *   Action:
+        1.  Ensure Phoenix backend and Svelte UI are running.
+        2.  Open the Settings Modal.
+    *   Expected Behavior:
+        *   **Display:** Settings are displayed. Simple types (string, number, boolean for non-API keys) are in input fields/checkboxes. API key values are displayed as masked text (read-only). Complex objects under `tools` are in editable textareas as JSON.
+        *   **Editing:** Changing values in input fields updates the UI state.
+        *   **Reset Changes:** Clicking "Reset Changes" (after making some edits) reverts the fields in the UI to their state when the modal was opened or last successfully saved.
+        *   **Save Settings:**
+            *   Make a change (e.g., to `agent_core.default_agent_name` or a tool's `headless` boolean).
+            *   Click "Save Settings".
+            *   `UPDATE_SETTINGS_REQUEST` sent to backend with `localSettingsCopy`.
+            *   UI shows "Saving...".
+            *   Backend's `SettingsManager.update_settings` is called. `default_settings.yaml` is updated (verify API keys remain placeholders if they were from `.env`).
+            *   Backend sends `SETTINGS_UPDATED_CONFIRMATION` (success=true).
+            *   UI receives confirmation, `settingsStore` re-fetches. Modal shows "Settings Saved!" briefly. The displayed values reflect the saved state (and API keys remain masked).
+        *   **Save Error:**
+            *   Simulate an error during save on the backend (e.g., make `default_settings.yaml` read-only temporarily).
+            *   Click "Save Settings".
+            *   Backend sends `SETTINGS_UPDATED_CONFIRMATION` (success=false) or `ERROR_EVENT`.
+            *   UI shows "Save Failed: [error message]".
+
+This task makes the settings truly manageable from the UI, which is a big step for configurability. The careful handling of API keys during save is important.
+
+Ready for the next phase of tasks? We're getting close to feature parity in many areas!

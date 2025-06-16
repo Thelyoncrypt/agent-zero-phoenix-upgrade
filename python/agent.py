@@ -117,6 +117,13 @@ class AgentContext:
         # StreamTransport will be managed globally
         self.stream_transport: Optional[Any] = None
 
+        # Agent Actions support for TASK_AUI_006
+        self.is_paused: bool = False
+        self._resume_event: asyncio.Event = asyncio.Event()
+        self._resume_event.set()  # Start in resumed state
+        self.messages_and_events_history: List[Any] = []
+        self.current_tool_calls: Dict[str, Any] = {}
+
         AgentContext._instances[self.id] = self
         print(f"AgentContext created: id={self.id}, name='{self.name}', thread_id='{self.thread_id}', user_id='{self.user_id}'")
 
@@ -198,6 +205,38 @@ class AgentContext:
         """Get custom data from the context"""
         return self.custom_data.get(key, default)
 
+    def pause_processing(self):
+        """Pause agent processing."""
+        self.is_paused = True
+        self._resume_event.clear()
+        print(f"AgentContext {self.id}: Processing PAUSED.")
+
+    def resume_processing(self):
+        """Resume agent processing."""
+        self.is_paused = False
+        self._resume_event.set()
+        print(f"AgentContext {self.id}: Processing RESUMED.")
+
+    async def wait_if_paused(self):
+        """Wait if the agent is paused."""
+        if self.is_paused:
+            print(f"AgentContext {self.id}: Execution waiting due to PAUSED state...")
+            await self._resume_event.wait()
+            print(f"AgentContext {self.id}: Resumed execution after pause.")
+
+    def reset_for_restart(self):
+        """Reset context for agent restart."""
+        self.messages_and_events_history = []
+        self.current_tool_calls = {}
+        self.agent_state = {}
+        self.is_paused = False
+        self._resume_event.set()
+        # Clear any pending interventions
+        self.intervention_needed = False
+        self.intervention_prompt = None
+        self.halt_event.set()
+        print(f"AgentContext {self.id}: Context has been RESET for agent restart.")
+
 class Agent:
     """Enhanced Agent class with StreamProtocol support"""
     
@@ -210,10 +249,15 @@ class Agent:
         self.iteration_no = 0
         self.last_tool_was_response_tool = False
         self._stream_protocol_tool_instance = None
-        
+        # Store last LLM prompt data for context window viewing (TASK_AUI_003)
+        self.last_llm_prompt_data: Optional[Dict[str, Any]] = None
+
+        # Agent Actions support for TASK_AUI_006
+        self._is_nudged: asyncio.Event = asyncio.Event()
+
         # Auto-register available tools
         self._register_default_tools()
-        
+
         print(f"Agent initialized: {agent_name} (id: {agent_id}, context: {context.id})")
 
     def get_thread_id(self) -> Optional[str]:
@@ -228,6 +272,20 @@ class Agent:
     def get_user_id(self) -> Optional[str]:
         """Returns the current user ID from the context."""
         return self.context.user_id
+
+    def get_last_llm_prompt_for_display(self) -> Dict[str, Any]:
+        """
+        Formats the last LLM prompt for UI display.
+        Returns structured data for the frontend to format.
+        """
+        if not self.last_llm_prompt_data:
+            return {"error": "No LLM prompt has been recorded for this session yet."}
+
+        return {
+            "system_prompt": self.last_llm_prompt_data.get("system_prompt", ""),
+            "messages": self.last_llm_prompt_data.get("conversation_history", []),
+            "timestamp": self.last_llm_prompt_data.get("timestamp", "")
+        }
 
     def set_user_id(self, user_id: Optional[str]):
         """Sets the user ID in the context."""
@@ -420,6 +478,21 @@ class Agent:
         except Exception as e:
             print(f"Agent {self.agent_name}: Error emitting stream event {event_type}: {e}")
 
+    def nudge_agent(self):
+        """Sets the nudge event to interrupt/influence the agent's current processing loop."""
+        print(f"Agent {self.agent_id}: Nudge received.")
+        self._is_nudged.set()
+        # If agent is paused, nudging might also imply resuming it to process the nudge
+        if self.context.is_paused:
+            self.context.resume_processing()
+
+    def restart_agent_session(self):
+        """Resets the agent's context for the current thread."""
+        print(f"Agent {self.agent_id}: Restart request received.")
+        self.context.reset_for_restart()
+        # Clear nudge flag on restart
+        self._is_nudged.clear()
+
     async def _emit_progress_update(self, message: str, percentage: Optional[float] = None,
                                    current_step: Optional[int] = None, total_steps: Optional[int] = None):
         """Helper method for emitting progress updates with optional progress indicators."""
@@ -493,6 +566,21 @@ class Agent:
         This handles the agent's thought process and tool usage with full event streaming.
         """
         print(f"Agent {self.agent_name} entering monologue...")
+
+        # Check if paused before starting processing
+        await self.context.wait_if_paused()
+
+        # Check for nudge
+        if self._is_nudged.is_set():
+            self._is_nudged.clear()
+            await self._emit_stream_event(
+                StreamEventType.AGENT_NUDGED if STREAM_PROTOCOL_AVAILABLE else "agent_nudged",
+                {"message": "Agent nudged, re-evaluating..."}
+            )
+            await self._emit_stream_event(
+                StreamEventType.AGENT_THOUGHT if STREAM_PROTOCOL_AVAILABLE else "agent_thought",
+                {"thought": "I've been nudged. I will re-assess my current task or await new input."}
+            )
         self.iteration_no = 0
 
         # Emit initial progress and thought
@@ -717,7 +805,34 @@ class Agent:
     async def _get_response(self, prompt: str) -> Dict[str, Any]:
         """Get response from LLM - enhanced placeholder with structured response"""
         print(f"Agent {self.agent_name} getting LLM response for prompt: {prompt[:100]}...")
-        
+
+        # Store the prompt data for context window viewing (TASK_AUI_003)
+        from datetime import datetime
+
+        # Build the conversation history from agent's history
+        conversation_history = []
+        if hasattr(self, 'history') and self.history:
+            # Convert agent history to LLM message format
+            for msg in self.history.messages[-10:]:  # Last 10 messages for context
+                if hasattr(msg, 'role') and hasattr(msg, 'message'):
+                    conversation_history.append({
+                        "role": msg.role,
+                        "content": msg.message
+                    })
+
+        # Add current prompt as user message
+        conversation_history.append({
+            "role": "user",
+            "content": prompt
+        })
+
+        # Store the LLM prompt data
+        self.last_llm_prompt_data = {
+            "system_prompt": f"You are {self.agent_name}, an AI assistant. Process the user's request and respond appropriately.",
+            "conversation_history": conversation_history,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
         # Simulate a structured LLM response with thoughts and potential tool calls
         if "iteration 1" in prompt.lower():
             if "website" in prompt.lower() or "navigate" in prompt.lower() or "browser" in prompt.lower():

@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" data-name="Layer 2" viewBox="0 0 17.82 22.6">
+  <defs>
+    <!-- Neural network glow effect -->
+    <filter id="neuralGlow">
+      <feGaussianBlur stdDeviation="0.3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Matrix rain gradient -->
+    <linearGradient id="matrixGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ff88;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#00aa44;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#004422;stop-opacity:0.4" />
+    </linearGradient>
+    
+    <!-- Binary pattern -->
+    <pattern id="binaryPattern" patternUnits="userSpaceOnUse" width="1" height="1">
+      <rect width="1" height="1" fill="#001122"/>
+      <text x="0.5" y="0.8" font-family="monospace" font-size="0.6" fill="#00ff44" text-anchor="middle">1</text>
+    </pattern>
+    
+    <!-- Neural connection lines -->
+    <pattern id="neuralNet" patternUnits="userSpaceOnUse" width="3" height="3">
+      <circle cx="1.5" cy="1.5" r="0.2" fill="#00ff88" opacity="0.6"/>
+      <line x1="0" y1="1.5" x2="3" y2="1.5" stroke="#00aa44" stroke-width="0.1" opacity="0.4"/>
+      <line x1="1.5" y1="0" x2="1.5" y2="3" stroke="#00aa44" stroke-width="0.1" opacity="0.4"/>
+    </pattern>
+  </defs>
+  
+  <!-- Background neural network -->
+  <rect width="17.82" height="22.6" fill="url(#neuralNet)" opacity="0.1"/>
+  
+  <!-- Main agent structure with enhanced styling -->
+  <g filter="url(#neuralGlow)" data-name="Layer 1">
+    <!-- Agent head with binary texture -->
+    <path d="M12.33 7.81c-.34.32-.8.52-1.3.52H6.78c-.5 0-.96-.2-1.3-.52-.36-.34-.59-.83-.59-1.37V4.06c0-.48.18-.92.48-1.26.35-.39.85-.63 1.41-.63h4.25c.56 0 1.06.24 1.41.63.3.33.48.77.48 1.26v2.38c0 .54-.23 1.02-.59 1.37Z" 
+          fill="url(#binaryPattern)" 
+          stroke="#00ff88" 
+          stroke-miterlimit="10" 
+          stroke-width="0.8"/>
+    
+    <!-- Enhanced neural interface screen -->
+    <rect width="6.49" height="4.52" x="5.66" y="2.99" rx="1.39" ry="1.39" 
+          fill="url(#matrixGradient)" 
+          stroke="#00ff88" 
+          stroke-width="0.5"/>
+    
+    <!-- Digital rain inside screen -->
+    <g opacity="0.8">
+      <text x="7" y="4.5" font-family="monospace" font-size="0.4" fill="#00ff00">01010</text>
+      <text x="9" y="5.2" font-family="monospace" font-size="0.4" fill="#00aa44">11001</text>
+      <text x="10.5" y="4.8" font-family="monospace" font-size="0.4" fill="#004422">01101</text>
+    </g>
+    
+    <!-- Neural connection ports -->
+    <path d="M12.92 6.41h.35c.2 0 .36-.16.36-.36V4.46c0-.2-.16-.36-.36-.36h-.35" 
+          fill="none" 
+          stroke="#00ff88" 
+          stroke-width="0.6"/>
+    
+    <!-- Antenna with pulsing effect -->
+    <path d="M12.44 3.11V1.06" stroke="#00ff88" stroke-width="0.6"/>
+    <circle cx="12.44" cy="0.68" r="0.38" fill="#00ff88" stroke="#88ffaa" stroke-width="0.2">
+      <animate attributeName="r" values="0.38;0.5;0.38" dur="2s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="1;0.6;1" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Left antenna -->
+    <path d="M5.37 3.11V1.06" stroke="#00ff88" stroke-width="0.6"/>
+    <circle cx="5.37" cy="0.68" r="0.38" fill="#00ff88" stroke="#88ffaa" stroke-width="0.2">
+      <animate attributeName="r" values="0.38;0.5;0.38" dur="2s" repeatCount="indefinite" begin="1s"/>
+      <animate attributeName="opacity" values="1;0.6;1" dur="2s" repeatCount="indefinite" begin="1s"/>
+    </circle>
+    
+    <!-- Left neural port -->
+    <path d="M4.9 4.1h-.35c-.2 0-.36.16-.36.36v1.59c0 .2.16.36.36.36h.35" 
+          fill="none" 
+          stroke="#00ff88" 
+          stroke-width="0.6"/>
+    
+    <!-- Neural data flow lines -->
+    <path d="M12.16 7.77l.18.04 1.03.23c.37.08.63.41.63.78v.51" 
+          fill="none" 
+          stroke="#00aa44" 
+          stroke-width="0.5">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="1.5s" repeatCount="indefinite"/>
+    </path>
+    
+    <path d="M5.66 7.77l-.18.04-1.03.23c-.37.08-.63.41-.63.78v.51" 
+          fill="none" 
+          stroke="#00aa44" 
+          stroke-width="0.5">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="1.5s" repeatCount="indefinite" begin="0.7s"/>
+    </path>
+    
+    <!-- Enhanced body with neural network pattern -->
+    <path d="M7.09 19.96H3.51c-1.78 0-3.22-1.44-3.22-3.22v-4.06c0-1.78 1.44-3.22 3.22-3.22h10.78c1.78 0 3.22 1.44 3.22 3.22v4.06c0 1.78-1.44 3.22-3.22 3.22h-3.57" 
+          fill="url(#neuralNet)" 
+          stroke="#00ff88" 
+          stroke-width="0.7" 
+          opacity="0.9"/>
+    
+    <!-- Enhanced legs -->
+    <path d="M7.09 22.3v-2.34h3.63v2.34" 
+          fill="none" 
+          stroke="#00ff88" 
+          stroke-width="0.7"/>
+    <path d="M11.57 22.3H6.24" 
+          stroke="#00ff88" 
+          stroke-width="0.7"/>
+    
+    <!-- Enhanced core with pulsing neural activity -->
+    <circle cx="8.91" cy="14.72" r="0.92" 
+            fill="#00ff88" 
+            stroke="#88ffaa" 
+            stroke-width="0.3">
+      <animate attributeName="fill" values="#00ff88;#00aa44;#00ff88" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Binary digits around core -->
+    <g opacity="0.7">
+      <text x="7.5" y="13.5" font-family="monospace" font-size="0.3" fill="#00ff00">1</text>
+      <text x="10.3" y="13.5" font-family="monospace" font-size="0.3" fill="#00aa44">0</text>
+      <text x="7.5" y="16" font-family="monospace" font-size="0.3" fill="#004422">1</text>
+      <text x="10.3" y="16" font-family="monospace" font-size="0.3" fill="#00ff00">1</text>
+    </g>
+    
+    <!-- Enhanced gear mechanism with neural connections -->
+    <path d="M11.65 15.1v-.77l-.6-.06a2.3 2.3 0 0 0-.31-.76l.39-.47-.55-.55-.47.39c-.23-.15-.48-.26-.76-.31l-.06-.6h-.77l-.06.6a2.3 2.3 0 0 0-.76.31l-.47-.39-.55.55.39.47c-.15.23-.26.48-.31.76l-.6.06v.77l.6.06c.06.27.16.53.31.76l-.39.47.55.55.47-.39c.23.15.48.26.76.31l.06.6h.77l.06-.6c.27-.06.53-.16.76-.31l.47.39.55-.55-.39-.47c.15-.23.26-.48.31-.76z" 
+          fill="none" 
+          stroke="#00ff88" 
+          stroke-width="0.5">
+      <animateTransform attributeName="transform" type="rotate" values="0 8.91 14.72;360 8.91 14.72" dur="8s" repeatCount="indefinite"/>
+    </path>
+  </g>
+  
+  <!-- Floating neural particles -->
+  <g opacity="0.4">
+    <circle cx="2" cy="5" r="0.1" fill="#00ff88">
+      <animate attributeName="cy" values="5;3;5" dur="4s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="15" cy="8" r="0.1" fill="#00aa44">
+      <animate attributeName="cy" values="8;6;8" dur="3s" repeatCount="indefinite" begin="1s"/>
+    </circle>
+    <circle cx="3" cy="18" r="0.1" fill="#004422">
+      <animate attributeName="cy" values="18;16;18" dur="5s" repeatCount="indefinite" begin="2s"/>
+    </circle>
+  </g>
+</svg>

@@ -1,0 +1,751 @@
+## TASK_AUI_007: Svelte UI - Settings Modal Styling and Basic Interaction
+
+**Goal:**
+1.  Style `ModalWrapper.svelte` to have a distinct glassmorphic appearance for its main panel.
+2.  Style `SettingsView.svelte` content (section titles, key-value pairs) to be visually appealing and readable within the dark theme, using neumorphic elements for structure if appropriate (e.g., neumorphic cards for setting groups).
+3.  Ensure the settings modal (composed of `ModalWrapper` and `SettingsView`) is correctly triggered and dismissed.
+4.  The settings displayed are still read-only for this task. Editing settings will be a future task.
+
+**Prerequisites:**
+*   Task 080 (Backend & Basic Svelte Settings Display) completed: `SettingsView.svelte` can fetch and display settings. `ModalWrapper.svelte` exists.
+*   TASK_AUI_001 completed: `AppHeader.svelte` has a "Settings" button that can toggle a Svelte store variable to show/hide the modal.
+*   CSS custom properties for the theme are defined (Task 059).
+
+**Detailed Steps:**
+
+**1. Refine `src/lib/components/modals/ModalWrapper.svelte` Styling:**
+    *   Action: Ensure `ModalWrapper` uses the glassmorphic style for its main content panel.
+        ```html
+<!-- src/lib/components/modals/ModalWrapper.svelte -->
+        <script>
+            export let isOpen = false;
+            export let title = "Modal Title";
+            export let onClose = () => {};
+            import { quintOut } from 'svelte/easing'; // For smoother transitions
+            import { fly } from 'svelte/transition';
+        </script>
+
+        {#if isOpen}
+            <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+            <div 
+                class="modal-overlay" 
+                on:click={onClose}
+                transition:fly={{ y: -30, duration: 250, easing: quintOut }}
+            >
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
+                <div 
+                    class="modal-content-wrapper card-base glassmorphic" 
+                    on:click|stopPropagation 
+                    role="dialog" 
+                    aria-modal="true" 
+                    aria-labelledby="modal-title-id"
+                    transition:fly={{ y: 30, duration: 300, delay: 50, easing: quintOut }}
+                >
+                    <div class="modal-header-bar">
+                        <h3 id="modal-title-id" class="modal-title-text">{title}</h3>
+                        <button class="modal-close-button" on:click={onClose} aria-label="Close modal">
+                            × <!-- Or use an Icon component -->
+                        </button>
+                    </div>
+                    <div class="modal-body-content">
+                        <slot></slot>
+                    </div>
+                </div>
+            </div>
+        {/if}
+
+        <style>
+            .modal-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(10, 12, 14, 0.8); /* Darker overlay for better contrast */
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 1000;
+                backdrop-filter: blur(5px); /* More pronounced blur */
+                -webkit-backdrop-filter: blur(5px);
+            }
+
+            .modal-content-wrapper {
+                /* Glassmorphic styles are applied by .card-base.glassmorphic */
+                min-width: 400px;
+                max-width: 90vw; /* Responsive width */
+                width: 650px;   /* Default width for settings */
+                max-height: 85vh;
+                display: flex;
+                flex-direction: column;
+                border-radius: 14px; /* Slightly larger radius for glass */
+                padding: 0; /* Override card-base padding if it has one by default */
+                /* Ensure glassmorphic variables are applied if not inherited via .card-base */
+                background: var(--glass-bg, rgba(39, 43, 48, 0.75));
+                border: 1px solid var(--glass-border-color, rgba(0, 245, 160, 0.2));
+                box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25); /* Softer, more diffuse shadow for glass */
+            }
+
+            .modal-header-bar {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 20px; /* Adjusted padding */
+                border-bottom: 1px solid var(--glass-border-color); /* Use glass border color */
+                flex-shrink: 0;
+            }
+
+            .modal-title-text {
+                margin: 0;
+                font-size: 1.15em; /* Slightly larger title */
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+
+            .modal-close-button {
+                background: none;
+                border: none;
+                font-size: 2em; /* Larger close button */
+                font-weight: 300;
+                color: var(--text-secondary);
+                cursor: pointer;
+                line-height: 0.5;
+                padding: 5px;
+                transition: color 0.2s ease;
+            }
+            .modal-close-button:hover {
+                color: var(--accent-green-primary);
+            }
+
+            .modal-body-content {
+                padding: 20px 25px; /* More padding for content */
+                overflow-y: auto;
+                flex-grow: 1;
+            }
+            .modal-body-content::-webkit-scrollbar { width: 6px; }
+            .modal-body-content::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+        </style>
+```
+    *   Verify: Modal uses glassmorphic styling from `.card-base.glassmorphic` and has improved header/padding. Transitions added for smoother appearance/disappearance.
+
+**2. Refine `src/lib/components/settings/SettingsView.svelte` Styling:**
+    *   Action: Apply neumorphic/glassmorphic principles to the settings display itself.
+        ```html
+<!-- src/lib/components/settings/SettingsView.svelte -->
+        <script>
+            import { settingsStore } from '$lib/stores/settingsStore';
+            import { onMount } from 'svelte';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import Card from '../shared/Card.svelte'; // For neumorphic grouping
+
+            const refreshIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17";
+
+            onMount(() => {
+                if (!$settingsStore.loaded && $settingsStore.error === null) {
+                    settingsStore.fetchSettings();
+                }
+            });
+
+            // Recursive component to display nested settings objects
+            // No changes needed here from Task 080 for this part
+            function SettingItem({ path = '', value }) { /* ... as before ... */ }
+        </script>
+
+        <div class="settings-view-content">
+            {#if !$settingsStore.loaded && !$settingsStore.error}
+                <p class="loading-text">Loading settings...</p> <!-- Add Loader component here later -->
+            {:else if $settingsStore.error}
+                <p class="error-text">Error loading settings: {$settingsStore.error}</p>
+            {:else if Object.keys($settingsStore.data).length === 0}
+                <p class="info-text">No settings data available to display.</p>
+            {:else}
+                <div class="settings-categories">
+                    {#each Object.entries($settingsStore.data) as [topKey, topValue]}
+                        {#if topKey !== '_instance' && topKey !== '_settings'} <!-- Filter out internal store keys -->
+                        <Card type="neumorphic" elevation="extruded" customClass="setting-category-card">
+                            <h4 class="category-title">{topKey.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</h4>
+                            {#if typeof topValue === 'object' && topValue !== null && !Array.isArray(topValue)}
+                                <ul class="settings-group-list">
+                                    {#each Object.entries(topValue) as [key, val] (key)}
+                                        <li class="setting-entry">
+                                            <span class="setting-key-label">{key.replace(/_/g, ' ')}:</span>
+                                            {#if typeof val === 'object' && val !== null && !Array.isArray(val)}
+                                                <pre class="setting-value-object">{JSON.stringify(val, null, 2)}</pre>
+                                            {:else}
+                                                <span class="setting-value-text">{String(val)}</span>
+                                            {/if}
+                                        </li>
+                                    {/each}
+                                </ul>
+                            {:else if Array.isArray(topValue)}
+                                <div class="setting-entry">
+                                     <span class="setting-key-label">{topKey.replace(/_/g, ' ')}:</span>
+                                     <pre class="setting-value-object">{JSON.stringify(topValue, null, 2)}</pre>
+                                </div>
+                            {:else}
+                                 <div class="setting-entry">
+                                    <span class="setting-key-label">{topKey.replace(/_/g, ' ')}:</span>
+                                    <span class="setting-value-text">{String(topValue)}</span>
+                                 </div>
+                            {/if}
+                        </Card>
+                        {/if}
+                    {/each}
+                </div>
+            {/if}
+             <div class="settings-footer-actions">
+                <Button onClick={() => settingsStore.fetchSettings()} disabled={$settingsStore.isLoadingContext} customClass="refresh-settings-button">
+                    <Icon path={refreshIconPath} size="16" />
+                    {#if $settingsStore.isLoadingContext}Refreshing...{:else}Refresh Settings{/if}
+                </Button>
+            </div>
+        </div>
+
+        <style>
+            .settings-view-content {
+                /* No specific background, inherits from modal body */
+            }
+            .loading-text, .info-text, .error-text {
+                text-align: center;
+                padding: 20px;
+                color: var(--text-secondary);
+            }
+            .error-text { color: var(--error-color); }
+
+            .settings-categories {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); /* Responsive columns */
+                gap: 20px;
+            }
+
+            .setting-category-card {
+                /* Neumorphic styles from Card component */
+                padding: 15px 18px; /* Padding inside each category card */
+            }
+
+            .category-title {
+                color: var(--accent-green-primary);
+                margin-top: 0;
+                margin-bottom: 12px;
+                font-size: 1em;
+                font-weight: 600;
+                border-bottom: 1px solid var(--neumorphic-shadow-light);
+                padding-bottom: 8px;
+            }
+
+            .settings-group-list {
+                list-style: none;
+                padding-left: 0; /* Remove default ul padding */
+                margin: 0;
+            }
+
+            .setting-entry {
+                margin-bottom: 10px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark); /* Subtle separator for items */
+                display: flex;
+                flex-direction: column; /* Stack label and value */
+                gap: 4px;
+            }
+            .setting-entry:last-child {
+                border-bottom: none;
+                margin-bottom: 0;
+                padding-bottom: 0;
+            }
+
+            .setting-key-label {
+                color: var(--text-secondary);
+                font-size: 0.85em;
+                font-weight: 500;
+                text-transform: capitalize;
+            }
+
+            .setting-value-text {
+                color: var(--text-primary);
+                font-size: 0.9em;
+                word-break: break-all;
+                padding-left: 5px; /* Indent value slightly */
+            }
+
+            .setting-value-object {
+                background-color: var(--neumorphic-shadow-dark); /* Slightly different for pre blocks */
+                padding: 8px 10px;
+                border-radius: 6px;
+                font-size: 0.8em;
+                color: var(--text-secondary); /* Different color for JSON text */
+                white-space: pre-wrap;
+                word-break: break-all;
+                max-height: 150px;
+                overflow: auto;
+                border: 1px solid var(--bg-dark-primary); /* Match inner neumorphic feel */
+            }
+            .setting-value-object::-webkit-scrollbar { width: 4px; }
+            .setting-value-object::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); }
+
+            .settings-footer-actions {
+                margin-top: 25px;
+                padding-top: 15px;
+                border-top: 1px solid var(--glass-border-color);
+                display: flex;
+                justify-content: flex-end;
+            }
+            .refresh-settings-button {
+                gap: 6px;
+                font-size: 0.85em;
+                padding: 8px 12px;
+            }
+        </style>
+```
+    *   **Key Changes:**
+        *   Wraps categories of settings in `<Card type="neumorphic" elevation="extruded">`.
+        *   Improved styling for keys, values, and object/array display using `<pre>`.
+        *   Uses a responsive grid for top-level setting categories.
+    *   Verify: Component styling updated.
+
+**3. Ensure `AppHeader.svelte` (or wherever settings button is) correctly toggles the modal:**
+    *   Action: This was likely set up in Task_AUI_001 or Task 080. Verify the `showSettingsModal` Svelte store variable (or local component variable) is correctly bound to `ModalWrapper`'s `isOpen` prop and toggled by the Settings button.
+        ```html
+<!-- src/lib/components/layout/AppHeader.svelte (or relevant parent) -->
+        <script>
+            // ...
+            import ModalWrapper from '../modals/ModalWrapper.svelte';
+            import SettingsView from '../settings/SettingsView.svelte'; // Ensure path is correct
+            import { createEventDispatcher } from 'svelte'; // If actions are bubbled up
+
+            // Local state for modal visibility if AppHeader manages it
+            // Or, this could come from a global UI store if preferred
+            let showSettingsModal = false; 
+            
+            // Icon for settings button
+            const settingsIconPath = "M19.14,12.94a2,2,0,0,0-1.41-.59h-.05l-.29-1a2,2,0,0,0-1.88-1.2H14.3a2,2,0,0,0-1.87,1.2l-.29,1h-.05a2,2,0,0,0-1.41.59L9.42,15.1a2,2,0,0,0,0,2.82l1.27,1.27a2,2,0,0,0,1.41.59h.05l.29,1a2,2,0,0,0,1.88,1.2h1.21a2,2,0,0,0,1.87-1.2l.29-1h.05a2,2,0,0,0,1.41-.59l1.27-1.27a2,2,0,0,0,0-2.82ZM12,16.41A2.42,2.42,0,1,1,14.41,14,2.42,2.42,0,0,1,12,16.41Z";
+             const trashIconPath = "M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m-6 5v6m4-6v6"; // From Task 063
+
+            // Assuming handleClearChat is also defined here or passed as prop
+            function handleClearChat() {
+                if (confirm("Are you sure you want to clear the current chat?")) {
+                    chatStore.clearChat();
+                }
+            }
+        </script>
+        
+        <!-- This modal needs to be at a higher level in the DOM, typically in +layout.svelte or App.svelte directly -->
+        <!-- For now, if AppHeader is simple and doesn't have complex parents, this might work visually but is not ideal for stacking context. -->
+        <!-- It's better to control modal visibility via a store and place ModalWrapper in +layout.svelte -->
+        <ModalWrapper bind:isOpen={showSettingsModal} title="Phoenix Settings">
+            {#if showSettingsModal} <!-- Conditionally render SettingsView to trigger onMount -->
+                <SettingsView />
+            {/if}
+        </ModalWrapper>
+
+        <header class="app-header">
+            <!-- ... logo, chat name ... -->
+            <div class="header-actions">
+                 <!-- AgentActionsBar from Task_AUI_006 -->
+                 <!-- <AgentActionsBar /> --> 
+                <Button type="extruded" onClick={() => showSettingsModal = true} customClass="header-button">
+                    <Icon path={settingsIconPath} size="16" /> Settings
+                </Button>
+                <Button type="extruded" onClick={handleClearChat} customClass="header-button clear-chat-button">
+                    <Icon path={trashIconPath} size="16" /> Clear Chat
+                </Button>
+            </div>
+        </header>
+        <!-- ... -->
+```
+    *   **Better Approach for Modal:** Manage `showSettingsModal` in a global UI store (or `chatStore` if simple enough) and place `<ModalWrapper bind:isOpen={$uiStore.showSettingsModal} ...>` in your top-level layout (`+layout.svelte` or `App.svelte`). The button in `AppHeader.svelte` would then dispatch an action to this store. This avoids z-index issues. For this task, the simpler local state in `AppHeader` is acceptable if it works for you.
+    *   Verify: Modal toggling works.
+
+**4. Testing TASK_AUI_007:**
+    *   Action:
+        1.  Start Phoenix backend (it needs to serve the `/api/get_settings` or respond to `request_settings` WebSocket message).
+        2.  Start Svelte UI.
+        3.  Click the "Settings" button in the header.
+    *   Expected Behavior:
+        *   The `ModalWrapper` should appear with a glassmorphic background, centered on the screen.
+        *   Inside the modal, `SettingsView` should render.
+        *   Settings categories (e.g., "Agent Core," "Tools") should be displayed as distinct neumorphic cards.
+        *   Individual settings (key-value pairs) should be styled clearly. JSON objects/arrays under a setting should be pretty-printed in a `<pre>` block.
+        *   API keys in the "Api Keys" section should appear masked (e.g., "****st").
+        *   The overall look and feel should be consistent with the dark neumorphic/glassmorphic theme with green accents.
+        *   The modal should be dismissible by clicking the overlay or the close button.
+        *   The "Refresh Settings" button in the `SettingsView` should re-fetch and update the displayed settings.
+
+This task brings the settings display up to par with the application's visual theme. The next logical step for settings would be to enable editing, which will be a more involved task.
+
+Let me know when you're ready for TASK_AUI_008 (Visual Attachment Display)!## TASK_AUI_007: Svelte UI - Settings Modal Styling and Basic Interaction
+
+**Goal:**
+1.  Style `ModalWrapper.svelte` to have a distinct glassmorphic appearance for its main panel.
+2.  Style `SettingsView.svelte` content (section titles, key-value pairs) to be visually appealing and readable within the dark theme, using neumorphic elements for structure if appropriate (e.g., neumorphic cards for setting groups).
+3.  Ensure the settings modal (composed of `ModalWrapper` and `SettingsView`) is correctly triggered and dismissed.
+4.  The settings displayed are still read-only for this task. Editing settings will be a future task.
+
+**Prerequisites:**
+*   Task 080 (Backend & Basic Svelte Settings Display) completed: `SettingsView.svelte` can fetch and display settings. `ModalWrapper.svelte` exists.
+*   TASK_AUI_001 completed: `AppHeader.svelte` has a "Settings" button that can toggle a Svelte store variable to show/hide the modal.
+*   CSS custom properties for the theme are defined (Task 059).
+
+**Detailed Steps:**
+
+**1. Refine `src/lib/components/modals/ModalWrapper.svelte` Styling:**
+    *   Action: Ensure `ModalWrapper` uses the glassmorphic style for its main content panel.
+        ```html
+        <!-- src/lib/components/modals/ModalWrapper.svelte -->
+        <script>
+            export let isOpen = false;
+            export let title = "Modal Title";
+            export let onClose = () => {};
+            import { quintOut } from 'svelte/easing'; // For smoother transitions
+            import { fly } from 'svelte/transition';
+        </script>
+
+        {#if isOpen}
+            <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+            <div 
+                class="modal-overlay" 
+                on:click={onClose}
+                transition:fly={{ y: -30, duration: 250, easing: quintOut }}
+            >
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
+                <div 
+                    class="modal-content-wrapper card-base glassmorphic" 
+                    on:click|stopPropagation 
+                    role="dialog" 
+                    aria-modal="true" 
+                    aria-labelledby="modal-title-id"
+                    transition:fly={{ y: 30, duration: 300, delay: 50, easing: quintOut }}
+                >
+                    <div class="modal-header-bar">
+                        <h3 id="modal-title-id" class="modal-title-text">{title}</h3>
+                        <button class="modal-close-button" on:click={onClose} aria-label="Close modal">
+                            × <!-- Or use an Icon component -->
+                        </button>
+                    </div>
+                    <div class="modal-body-content">
+                        <slot></slot>
+                    </div>
+                </div>
+            </div>
+        {/if}
+
+        <style>
+            .modal-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(10, 12, 14, 0.8); /* Darker overlay for better contrast */
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 1000;
+                backdrop-filter: blur(5px); /* More pronounced blur */
+                -webkit-backdrop-filter: blur(5px);
+            }
+
+            .modal-content-wrapper {
+                /* Glassmorphic styles are applied by .card-base.glassmorphic */
+                min-width: 400px;
+                max-width: 90vw; /* Responsive width */
+                width: 650px;   /* Default width for settings */
+                max-height: 85vh;
+                display: flex;
+                flex-direction: column;
+                border-radius: 14px; /* Slightly larger radius for glass */
+                padding: 0; /* Override card-base padding if it has one by default */
+                /* Ensure glassmorphic variables are applied if not inherited via .card-base */
+                background: var(--glass-bg, rgba(39, 43, 48, 0.75));
+                border: 1px solid var(--glass-border-color, rgba(0, 245, 160, 0.2));
+                box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25); /* Softer, more diffuse shadow for glass */
+            }
+
+            .modal-header-bar {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 20px; /* Adjusted padding */
+                border-bottom: 1px solid var(--glass-border-color); /* Use glass border color */
+                flex-shrink: 0;
+            }
+
+            .modal-title-text {
+                margin: 0;
+                font-size: 1.15em; /* Slightly larger title */
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+
+            .modal-close-button {
+                background: none;
+                border: none;
+                font-size: 2em; /* Larger close button */
+                font-weight: 300;
+                color: var(--text-secondary);
+                cursor: pointer;
+                line-height: 0.5;
+                padding: 5px;
+                transition: color 0.2s ease;
+            }
+            .modal-close-button:hover {
+                color: var(--accent-green-primary);
+            }
+
+            .modal-body-content {
+                padding: 20px 25px; /* More padding for content */
+                overflow-y: auto;
+                flex-grow: 1;
+            }
+            .modal-body-content::-webkit-scrollbar { width: 6px; }
+            .modal-body-content::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); border-radius: 3px; }
+        </style>
+        ```
+    *   Verify: Modal uses glassmorphic styling from `.card-base.glassmorphic` and has improved header/padding. Transitions added for smoother appearance/disappearance.
+
+**2. Refine `src/lib/components/settings/SettingsView.svelte` Styling:**
+    *   Action: Apply neumorphic/glassmorphic principles to the settings display itself.
+        ```html
+        <!-- src/lib/components/settings/SettingsView.svelte -->
+        <script>
+            import { settingsStore } from '$lib/stores/settingsStore';
+            import { onMount } from 'svelte';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import Card from '../shared/Card.svelte'; // For neumorphic grouping
+
+            const refreshIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17";
+
+            onMount(() => {
+                if (!$settingsStore.loaded && $settingsStore.error === null) {
+                    settingsStore.fetchSettings();
+                }
+            });
+
+            // Recursive component to display nested settings objects
+            // No changes needed here from Task 080 for this part
+            function SettingItem({ path = '', value }) { /* ... as before ... */ }
+        </script>
+
+        <div class="settings-view-content">
+            {#if !$settingsStore.loaded && !$settingsStore.error}
+                <p class="loading-text">Loading settings...</p> <!-- Add Loader component here later -->
+            {:else if $settingsStore.error}
+                <p class="error-text">Error loading settings: {$settingsStore.error}</p>
+            {:else if Object.keys($settingsStore.data).length === 0}
+                <p class="info-text">No settings data available to display.</p>
+            {:else}
+                <div class="settings-categories">
+                    {#each Object.entries($settingsStore.data) as [topKey, topValue]}
+                        {#if topKey !== '_instance' && topKey !== '_settings'} <!-- Filter out internal store keys -->
+                        <Card type="neumorphic" elevation="extruded" customClass="setting-category-card">
+                            <h4 class="category-title">{topKey.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</h4>
+                            {#if typeof topValue === 'object' && topValue !== null && !Array.isArray(topValue)}
+                                <ul class="settings-group-list">
+                                    {#each Object.entries(topValue) as [key, val] (key)}
+                                        <li class="setting-entry">
+                                            <span class="setting-key-label">{key.replace(/_/g, ' ')}:</span>
+                                            {#if typeof val === 'object' && val !== null && !Array.isArray(val)}
+                                                <pre class="setting-value-object">{JSON.stringify(val, null, 2)}</pre>
+                                            {:else}
+                                                <span class="setting-value-text">{String(val)}</span>
+                                            {/if}
+                                        </li>
+                                    {/each}
+                                </ul>
+                            {:else if Array.isArray(topValue)}
+                                <div class="setting-entry">
+                                     <span class="setting-key-label">{topKey.replace(/_/g, ' ')}:</span>
+                                     <pre class="setting-value-object">{JSON.stringify(topValue, null, 2)}</pre>
+                                </div>
+                            {:else}
+                                 <div class="setting-entry">
+                                    <span class="setting-key-label">{topKey.replace(/_/g, ' ')}:</span>
+                                    <span class="setting-value-text">{String(topValue)}</span>
+                                 </div>
+                            {/if}
+                        </Card>
+                        {/if}
+                    {/each}
+                </div>
+            {/if}
+             <div class="settings-footer-actions">
+                <Button onClick={() => settingsStore.fetchSettings()} disabled={$settingsStore.isLoadingContext} customClass="refresh-settings-button">
+                    <Icon path={refreshIconPath} size="16" />
+                    {#if $settingsStore.isLoadingContext}Refreshing...{:else}Refresh Settings{/if}
+                </Button>
+            </div>
+        </div>
+
+        <style>
+            .settings-view-content {
+                /* No specific background, inherits from modal body */
+            }
+            .loading-text, .info-text, .error-text {
+                text-align: center;
+                padding: 20px;
+                color: var(--text-secondary);
+            }
+            .error-text { color: var(--error-color); }
+
+            .settings-categories {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); /* Responsive columns */
+                gap: 20px;
+            }
+
+            .setting-category-card {
+                /* Neumorphic styles from Card component */
+                padding: 15px 18px; /* Padding inside each category card */
+            }
+
+            .category-title {
+                color: var(--accent-green-primary);
+                margin-top: 0;
+                margin-bottom: 12px;
+                font-size: 1em;
+                font-weight: 600;
+                border-bottom: 1px solid var(--neumorphic-shadow-light);
+                padding-bottom: 8px;
+            }
+
+            .settings-group-list {
+                list-style: none;
+                padding-left: 0; /* Remove default ul padding */
+                margin: 0;
+            }
+
+            .setting-entry {
+                margin-bottom: 10px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid var(--neumorphic-shadow-dark); /* Subtle separator for items */
+                display: flex;
+                flex-direction: column; /* Stack label and value */
+                gap: 4px;
+            }
+            .setting-entry:last-child {
+                border-bottom: none;
+                margin-bottom: 0;
+                padding-bottom: 0;
+            }
+
+            .setting-key-label {
+                color: var(--text-secondary);
+                font-size: 0.85em;
+                font-weight: 500;
+                text-transform: capitalize;
+            }
+
+            .setting-value-text {
+                color: var(--text-primary);
+                font-size: 0.9em;
+                word-break: break-all;
+                padding-left: 5px; /* Indent value slightly */
+            }
+
+            .setting-value-object {
+                background-color: var(--neumorphic-shadow-dark); /* Slightly different for pre blocks */
+                padding: 8px 10px;
+                border-radius: 6px;
+                font-size: 0.8em;
+                color: var(--text-secondary); /* Different color for JSON text */
+                white-space: pre-wrap;
+                word-break: break-all;
+                max-height: 150px;
+                overflow: auto;
+                border: 1px solid var(--bg-dark-primary); /* Match inner neumorphic feel */
+            }
+            .setting-value-object::-webkit-scrollbar { width: 4px; }
+            .setting-value-object::-webkit-scrollbar-thumb { background-color: var(--accent-green-secondary); }
+
+            .settings-footer-actions {
+                margin-top: 25px;
+                padding-top: 15px;
+                border-top: 1px solid var(--glass-border-color);
+                display: flex;
+                justify-content: flex-end;
+            }
+            .refresh-settings-button {
+                gap: 6px;
+                font-size: 0.85em;
+                padding: 8px 12px;
+            }
+        </style>
+        ```
+    *   **Key Changes:**
+        *   Wraps categories of settings in `<Card type="neumorphic" elevation="extruded">`.
+        *   Improved styling for keys, values, and object/array display using `<pre>`.
+        *   Uses a responsive grid for top-level setting categories.
+    *   Verify: Component styling updated.
+
+**3. Ensure `AppHeader.svelte` (or wherever settings button is) correctly toggles the modal:**
+    *   Action: This was likely set up in Task_AUI_001 or Task 080. Verify the `showSettingsModal` Svelte store variable (or local component variable) is correctly bound to `ModalWrapper`'s `isOpen` prop and toggled by the Settings button.
+        ```html
+        <!-- src/lib/components/layout/AppHeader.svelte (or relevant parent) -->
+        <script>
+            // ...
+            import ModalWrapper from '../modals/ModalWrapper.svelte';
+            import SettingsView from '../settings/SettingsView.svelte'; // Ensure path is correct
+            import { createEventDispatcher } from 'svelte'; // If actions are bubbled up
+
+            // Local state for modal visibility if AppHeader manages it
+            // Or, this could come from a global UI store if preferred
+            let showSettingsModal = false; 
+            
+            // Icon for settings button
+            const settingsIconPath = "M19.14,12.94a2,2,0,0,0-1.41-.59h-.05l-.29-1a2,2,0,0,0-1.88-1.2H14.3a2,2,0,0,0-1.87,1.2l-.29,1h-.05a2,2,0,0,0-1.41.59L9.42,15.1a2,2,0,0,0,0,2.82l1.27,1.27a2,2,0,0,0,1.41.59h.05l.29,1a2,2,0,0,0,1.88,1.2h1.21a2,2,0,0,0,1.87-1.2l.29-1h.05a2,2,0,0,0,1.41-.59l1.27-1.27a2,2,0,0,0,0-2.82ZM12,16.41A2.42,2.42,0,1,1,14.41,14,2.42,2.42,0,0,1,12,16.41Z";
+             const trashIconPath = "M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m-6 5v6m4-6v6"; // From Task 063
+
+            // Assuming handleClearChat is also defined here or passed as prop
+            function handleClearChat() {
+                if (confirm("Are you sure you want to clear the current chat?")) {
+                    chatStore.clearChat();
+                }
+            }
+        </script>
+        
+        <!-- This modal needs to be at a higher level in the DOM, typically in +layout.svelte or App.svelte directly -->
+        <!-- For now, if AppHeader is simple and doesn't have complex parents, this might work visually but is not ideal for stacking context. -->
+        <!-- It's better to control modal visibility via a store and place ModalWrapper in +layout.svelte -->
+        <ModalWrapper bind:isOpen={showSettingsModal} title="Phoenix Settings">
+            {#if showSettingsModal} <!-- Conditionally render SettingsView to trigger onMount -->
+                <SettingsView />
+            {/if}
+        </ModalWrapper>
+
+        <header class="app-header">
+            <!-- ... logo, chat name ... -->
+            <div class="header-actions">
+                 <!-- AgentActionsBar from Task_AUI_006 -->
+                 <!-- <AgentActionsBar /> --> 
+                <Button type="extruded" onClick={() => showSettingsModal = true} customClass="header-button">
+                    <Icon path={settingsIconPath} size="16" /> Settings
+                </Button>
+                <Button type="extruded" onClick={handleClearChat} customClass="header-button clear-chat-button">
+                    <Icon path={trashIconPath} size="16" /> Clear Chat
+                </Button>
+            </div>
+        </header>
+        <!-- ... -->
+        ```
+    *   **Better Approach for Modal:** Manage `showSettingsModal` in a global UI store (or `chatStore` if simple enough) and place `<ModalWrapper bind:isOpen={$uiStore.showSettingsModal} ...>` in your top-level layout (`+layout.svelte` or `App.svelte`). The button in `AppHeader.svelte` would then dispatch an action to this store. This avoids z-index issues. For this task, the simpler local state in `AppHeader` is acceptable if it works for you.
+    *   Verify: Modal toggling works.
+
+**4. Testing TASK_AUI_007:**
+    *   Action:
+        1.  Start Phoenix backend (it needs to serve the `/api/get_settings` or respond to `request_settings` WebSocket message).
+        2.  Start Svelte UI.
+        3.  Click the "Settings" button in the header.
+    *   Expected Behavior:
+        *   The `ModalWrapper` should appear with a glassmorphic background, centered on the screen.
+        *   Inside the modal, `SettingsView` should render.
+        *   Settings categories (e.g., "Agent Core," "Tools") should be displayed as distinct neumorphic cards.
+        *   Individual settings (key-value pairs) should be styled clearly. JSON objects/arrays under a setting should be pretty-printed in a `<pre>` block.
+        *   API keys in the "Api Keys" section should appear masked (e.g., "****st").
+        *   The overall look and feel should be consistent with the dark neumorphic/glassmorphic theme with green accents.
+        *   The modal should be dismissible by clicking the overlay or the close button.
+        *   The "Refresh Settings" button in the `SettingsView` should re-fetch and update the displayed settings.
+
+This task brings the settings display up to par with the application's visual theme. The next logical step for settings would be to enable editing, which will be a more involved task.
+
+Let me know when you're ready for TASK_AUI_008 (Visual Attachment Display)!

@@ -1,0 +1,27 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="neoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00F5A0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00C896;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Neural network-inspired logo with stylized N -->
+  <g stroke="url(#neoGradient)" stroke-width="2" fill="none">
+    <!-- Central N shape formed by connected nodes -->
+    <path d="M 20 44 L 20 20 L 32 32 L 44 20 L 44 44" stroke-width="3"/>
+    
+    <!-- Neural network nodes -->
+    <circle cx="20" cy="20" r="4" fill="url(#neoGradient)"/>
+    <circle cx="20" cy="44" r="4" fill="url(#neoGradient)"/>
+    <circle cx="32" cy="32" r="5" fill="url(#neoGradient)"/>
+    <circle cx="44" cy="20" r="4" fill="url(#neoGradient)"/>
+    <circle cx="44" cy="44" r="4" fill="url(#neoGradient)"/>
+    
+    <!-- Connection lines suggesting neural pathways -->
+    <path d="M 24 20 L 28 28 M 36 28 L 40 20" stroke-width="1.5" opacity="0.6"/>
+    <path d="M 24 44 L 28 36 M 36 36 L 40 44" stroke-width="1.5" opacity="0.6"/>
+    
+    <!-- Outer ring suggesting continuous learning -->
+    <circle cx="32" cy="32" r="28" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.4"/>
+  </g>
+</svg>

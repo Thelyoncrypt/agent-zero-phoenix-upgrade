@@ -1,0 +1,128 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Glowing effect filters -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="strongGlow">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feComposite in="coloredBlur" in2="SourceGraphic" operator="over"/>
+      <feGaussianBlur stdDeviation="3" result="coloredBlur2"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="coloredBlur2"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Gradient for depth -->
+    <linearGradient id="greenGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ff41;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#00cc33;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#008822;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Matrix rain pattern -->
+    <pattern id="matrixRain" x="0" y="0" width="40" height="80" patternUnits="userSpaceOnUse">
+      <rect width="40" height="80" fill="black"/>
+      <text x="5" y="10" fill="#00ff41" opacity="0.3" font-family="monospace" font-size="10">0</text>
+      <text x="5" y="25" fill="#00ff41" opacity="0.5" font-family="monospace" font-size="10">1</text>
+      <text x="5" y="40" fill="#00ff41" opacity="0.4" font-family="monospace" font-size="10">0</text>
+      <text x="5" y="55" fill="#00ff41" opacity="0.6" font-family="monospace" font-size="10">1</text>
+      <text x="5" y="70" fill="#00ff41" opacity="0.2" font-family="monospace" font-size="10">1</text>
+      
+      <text x="20" y="15" fill="#00ff41" opacity="0.4" font-family="monospace" font-size="10">1</text>
+      <text x="20" y="30" fill="#00ff41" opacity="0.3" font-family="monospace" font-size="10">0</text>
+      <text x="20" y="45" fill="#00ff41" opacity="0.5" font-family="monospace" font-size="10">1</text>
+      <text x="20" y="60" fill="#00ff41" opacity="0.2" font-family="monospace" font-size="10">0</text>
+      
+      <text x="30" y="20" fill="#00ff41" opacity="0.2" font-family="monospace" font-size="10">0</text>
+      <text x="30" y="35" fill="#00ff41" opacity="0.6" font-family="monospace" font-size="10">1</text>
+      <text x="30" y="50" fill="#00ff41" opacity="0.3" font-family="monospace" font-size="10">1</text>
+      <text x="30" y="65" fill="#00ff41" opacity="0.4" font-family="monospace" font-size="10">0</text>
+    </pattern>
+    
+    <!-- Animated gradient for scanning effect -->
+    <linearGradient id="scanline" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ff41;stop-opacity:0" />
+      <stop offset="50%" style="stop-color:#00ff41;stop-opacity:0.5" />
+      <stop offset="100%" style="stop-color:#00ff41;stop-opacity:0" />
+      <animate attributeName="y1" from="-100%" to="100%" dur="3s" repeatCount="indefinite" />
+      <animate attributeName="y2" from="0%" to="200%" dur="3s" repeatCount="indefinite" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Black background -->
+  <rect width="512" height="512" fill="#000000"/>
+  
+  <!-- Matrix rain background -->
+  <rect width="512" height="512" fill="url(#matrixRain)" opacity="0.15"/>
+  
+  <!-- Rounded square container with green border -->
+  <rect x="16" y="16" width="480" height="480" rx="80" ry="80" 
+        fill="none" stroke="#00ff41" stroke-width="2" opacity="0.5" filter="url(#glow)"/>
+  
+  <!-- Inner glow border -->
+  <rect x="24" y="24" width="464" height="464" rx="72" ry="72" 
+        fill="none" stroke="#00ff41" stroke-width="1" opacity="0.3"/>
+  
+  <!-- The "A" logo path with Matrix styling -->
+  <g transform="translate(256, 256)">
+    <!-- Outer glow layer -->
+    <path d="M 0,-140 L -100,140 L -60,140 L -40,80 L 40,80 L 60,140 L 100,140 L 0,-140 Z 
+             M -25,20 L 0,-60 L 25,20 Z" 
+          fill="#00ff41" opacity="0.2" filter="url(#strongGlow)" transform="scale(1.1)"/>
+    
+    <!-- Main "A" shape -->
+    <path d="M 0,-140 L -100,140 L -60,140 L -40,80 L 40,80 L 60,140 L 100,140 L 0,-140 Z 
+             M -25,20 L 0,-60 L 25,20 Z" 
+          fill="url(#greenGradient)" filter="url(#glow)"/>
+    
+    <!-- Inner highlight -->
+    <path d="M 0,-140 L -100,140 L -60,140 L -40,80 L 40,80 L 60,140 L 100,140 L 0,-140 Z 
+             M -25,20 L 0,-60 L 25,20 Z" 
+          fill="none" stroke="#00ff41" stroke-width="1" opacity="0.8"/>
+  </g>
+  
+  <!-- Scanning line effect -->
+  <rect x="16" y="16" width="480" height="480" rx="80" ry="80" 
+        fill="url(#scanline)" opacity="0.3"/>
+  
+  <!-- Corner accents -->
+  <g fill="#00ff41" opacity="0.6">
+    <!-- Top left -->
+    <circle cx="40" cy="40" r="3" filter="url(#glow)"/>
+    <rect x="35" y="39" width="20" height="2"/>
+    <rect x="39" y="35" width="2" height="20"/>
+    
+    <!-- Top right -->
+    <circle cx="472" cy="40" r="3" filter="url(#glow)"/>
+    <rect x="457" y="39" width="20" height="2"/>
+    <rect x="471" y="35" width="2" height="20"/>
+    
+    <!-- Bottom left -->
+    <circle cx="40" cy="472" r="3" filter="url(#glow)"/>
+    <rect x="35" y="471" width="20" height="2"/>
+    <rect x="39" y="457" width="2" height="20"/>
+    
+    <!-- Bottom right -->
+    <circle cx="472" cy="472" r="3" filter="url(#glow)"/>
+    <rect x="457" y="471" width="20" height="2"/>
+    <rect x="471" y="457" width="2" height="20"/>
+  </g>
+  
+  <!-- Random matrix characters around the logo -->
+  <g fill="#00ff41" font-family="monospace" font-size="12" opacity="0.3">
+    <text x="100" y="100">0110</text>
+    <text x="380" y="120">101</text>
+    <text x="150" y="400">1001</text>
+    <text x="350" y="380">0111</text>
+    <text x="80" y="250">110</text>
+    <text x="420" y="280">001</text>
+  </g>
+</svg>

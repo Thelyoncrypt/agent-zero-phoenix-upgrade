@@ -1,0 +1,95 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Compressed Green Binary Rain Pattern -->
+    <pattern id="compressedGreenRain" x="0" y="0" width="12" height="20" patternUnits="userSpaceOnUse">
+      <text x="1" y="5" font-family="Courier New, monospace" font-size="4.5" fill="#00FF41" opacity="0.9">1</text>
+      <text x="7" y="8" font-family="Courier New, monospace" font-size="4" fill="#33FF77" opacity="0.7">0</text>
+      <text x="3" y="12" font-family="Courier New, monospace" font-size="4.5" fill="#00FF41" opacity="0.8">1</text>
+      <text x="9" y="15" font-family="Courier New, monospace" font-size="3.5" fill="#55FF99" opacity="0.6">0</text>
+      <text x="5" y="19" font-family="Courier New, monospace" font-size="4.5" fill="#00FF41" opacity="0.85">1</text>
+      <animateTransform attributeName="transform" type="translate" values="0,0; 0,-20" dur="1.8s" repeatCount="indefinite"/>
+    </pattern>
+
+    <!-- Glow Filter for Green Rain -->
+    <filter id="matrixRainGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="2.5" result="coloredBlur"/>
+      <feOffset in="coloredBlur" dx="0" dy="0" result="offsetblur"/>
+      <feFlood flood-color="#00FF41" flood-opacity="0.75"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Very Dark Fill for 'A' Shape -->
+    <linearGradient id="darkAShapeFill">
+      <stop offset="0%" stop-color="#000A00"/>
+      <stop offset="100%" stop-color="#000300"/>
+    </linearGradient>
+
+    <!-- Animated Dark Stroke for 'A' Shape -->
+    <linearGradient id="animatedDarkStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#002000;stop-opacity:0.8">
+        <animate attributeName="stop-color" values="#002000;#003005;#001500;#002000" dur="4s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="50%" style="stop-color:#003005;stop-opacity:0.9">
+        <animate attributeName="stop-color" values="#003005;#001500;#002503;#003005" dur="4.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="100%" style="stop-color:#001500;stop-opacity:0.7">
+        <animate attributeName="stop-color" values="#001500;#002000;#003005;#001500" dur="3.5s" repeatCount="indefinite"/>
+      </stop>
+    </linearGradient>
+
+    <!-- Subtle Animated Edge Glow for Dark 'A' -->
+    <filter id="darkAEdgeGlow" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feOffset in="coloredBlur" dx="0" dy="0" result="offsetblur"/>
+      <feFlood flood-color="#002205" flood-opacity="0.6">
+         <animate attributeName="flood-opacity" values="0.6;0.9;0.6" dur="3s" repeatCount="indefinite"/>
+      </feFlood>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Dark Animated Circuitry Pattern for Background -->
+    <pattern id="darkCircuitryPattern" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 0 10 L 20 10 M 10 0 L 10 20" stroke="#001800" stroke-width="0.2" opacity="0.3">
+        <animate attributeName="opacity" values="0.1;0.4;0.1" dur="5s" repeatCount="indefinite"/>
+      </path>
+      <path d="M 5 5 L 15 15 M 15 5 L 5 15" stroke="#001000" stroke-width="0.15" opacity="0.2">
+         <animate attributeName="opacity" values="0.05;0.3;0.05" dur="6s" repeatCount="indefinite" begin="1s"/>
+      </path>
+      <circle cx="10" cy="10" r="0.5" fill="#002000" opacity="0.4">
+        <animate attributeName="opacity" values="0.2;0.5;0.2" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="0.5;0.8;0.5" dur="4s" repeatCount="indefinite"/>
+      </circle>
+    </pattern>
+
+    <!-- Clip Path for 'A' Shape -->
+    <clipPath id="aShapeClipPath">
+      <path d="M64 16 L96 112 H80 L68 80 H60 L48 112 H32 L64 16 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Overall Dark Background -->
+  <rect width="128" height="128" fill="#000800"/>
+
+  <!-- Subtle Animated Dark Circuitry Background Layer -->
+  <rect width="128" height="128" fill="url(#darkCircuitryPattern)" opacity="0.5"/>
+
+  <!-- The Dark 'A' Symbol -->
+  <path d="M64 16 L96 112 H80 L68 80 H60 L48 112 H32 L64 16 Z"
+        fill="url(#darkAShapeFill)"
+        stroke="url(#animatedDarkStroke)"
+        stroke-width="1.5"
+        filter="url(#darkAEdgeGlow)"/>
+
+  <!-- Green Binary Rain filling the 'A' shape -->
+  <g clip-path="url(#aShapeClipPath)">
+    <rect width="128" height="128" fill="url(#compressedGreenRain)" filter="url(#matrixRainGlow)"/>
+  </g>
+</svg>

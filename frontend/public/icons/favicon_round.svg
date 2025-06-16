@@ -1,0 +1,131 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Glowing effect filters -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="strongGlow">
+      <feGaussianBlur stdDeviation="5" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Gradient for metallic effect -->
+    <linearGradient id="metallic" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:1"/>
+      <stop offset="50%" style="stop-color:#39FF14;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#00C832;stop-opacity:1"/>
+    </linearGradient>
+    
+    <!-- Digital eye pattern -->
+    <radialGradient id="eye" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:1"/>
+      <stop offset="40%" style="stop-color:#00FF41;stop-opacity:0.8"/>
+      <stop offset="70%" style="stop-color:#000000;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#00FF41;stop-opacity:1"/>
+    </radialGradient>
+  </defs>
+  
+  <!-- Black circular background -->
+  <circle cx="100" cy="100" r="100" fill="#000000"/>
+  
+  <!-- Grid lines background -->
+  <g stroke="#00FF41" stroke-width="0.3" opacity="0.2">
+    <line x1="20" y1="50" x2="180" y2="50"/>
+    <line x1="20" y1="100" x2="180" y2="100"/>
+    <line x1="20" y1="150" x2="180" y2="150"/>
+    <line x1="50" y1="20" x2="50" y2="180"/>
+    <line x1="100" y1="20" x2="100" y2="180"/>
+    <line x1="150" y1="20" x2="150" y2="180"/>
+  </g>
+  
+  <!-- Matrix digital rain -->
+  <g font-family="monospace" fill="#00FF41" opacity="0.4">
+    <text x="30" y="40" font-size="10" transform="rotate(0 30 40)">
+      <animate attributeName="y" from="-20" to="220" dur="4s" repeatCount="indefinite"/>
+      10110
+    </text>
+    <text x="60" y="80" font-size="8" transform="rotate(0 60 80)">
+      <animate attributeName="y" from="-20" to="220" dur="5s" repeatCount="indefinite"/>
+      01101
+    </text>
+    <text x="90" y="30" font-size="9" transform="rotate(0 90 30)">
+      <animate attributeName="y" from="-20" to="220" dur="3.5s" repeatCount="indefinite"/>
+      11010
+    </text>
+    <text x="120" y="60" font-size="7" transform="rotate(0 120 60)">
+      <animate attributeName="y" from="-20" to="220" dur="4.5s" repeatCount="indefinite"/>
+      00111
+    </text>
+    <text x="150" y="100" font-size="10" transform="rotate(0 150 100)">
+      <animate attributeName="y" from="-20" to="220" dur="3s" repeatCount="indefinite"/>
+      10101
+    </text>
+    <text x="170" y="50" font-size="8" transform="rotate(0 170 50)">
+      <animate attributeName="y" from="-20" to="220" dur="5.5s" repeatCount="indefinite"/>
+      01010
+    </text>
+  </g>
+  
+  <!-- Digital eye/iris in center background -->
+  <g opacity="0.5">
+    <circle cx="100" cy="85" r="20" fill="url(#eye)" filter="url(#glow)"/>
+    <circle cx="100" cy="85" r="10" fill="none" stroke="#00FF41" stroke-width="1" opacity="0.8"/>
+    <circle cx="100" cy="85" r="5" fill="#00FF41"/>
+  </g>
+  
+  <!-- Main text: AGENT NEO -->
+  <g filter="url(#strongGlow)">
+    <!-- AGENT text -->
+    <text x="100" y="75" font-family="Arial Black, sans-serif" font-size="24" font-weight="900" 
+          text-anchor="middle" fill="url(#metallic)" letter-spacing="2">AGENT</text>
+    
+    <!-- NEO text -->
+    <text x="100" y="105" font-family="Arial Black, sans-serif" font-size="32" font-weight="900" 
+          text-anchor="middle" fill="url(#metallic)" letter-spacing="3">NEO</text>
+  </g>
+  
+  <!-- Matrix code border -->
+  <g fill="#00FF41" font-family="monospace" font-size="6" opacity="0.6">
+    <!-- Top border -->
+    <text x="40" y="15">01001</text>
+    <text x="80" y="15">10110</text>
+    <text x="120" y="15">11001</text>
+    <text x="160" y="15">01101</text>
+    
+    <!-- Bottom border -->
+    <text x="40" y="190">11010</text>
+    <text x="80" y="190">00111</text>
+    <text x="120" y="190">10101</text>
+    <text x="160" y="190">01010</text>
+  </g>
+  
+  <!-- Glowing border circle -->
+  <circle cx="100" cy="100" r="95" fill="none" stroke="#00FF41" stroke-width="2" opacity="0.8" filter="url(#glow)"/>
+  <circle cx="100" cy="100" r="98" fill="none" stroke="#00FF41" stroke-width="0.5" opacity="0.4"/>
+  
+  <!-- Digital glitch effect lines -->
+  <g stroke="#00FF41" stroke-width="1" opacity="0.3">
+    <line x1="20" y1="85" x2="40" y2="85">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/>
+    </line>
+    <line x1="160" y1="85" x2="180" y2="85">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="2.5s" repeatCount="indefinite"/>
+    </line>
+  </g>
+  
+  <!-- Lens flare accents -->
+  <circle cx="65" cy="55" r="2" fill="#00FF41" opacity="0.8">
+    <animate attributeName="opacity" values="0.4;1;0.4" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="135" cy="55" r="2" fill="#00FF41" opacity="0.8">
+    <animate attributeName="opacity" values="0.4;1;0.4" dur="3.5s" repeatCount="indefinite"/>
+  </circle>
+</svg>

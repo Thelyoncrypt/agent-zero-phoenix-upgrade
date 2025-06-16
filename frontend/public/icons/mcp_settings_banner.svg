@@ -1,0 +1,258 @@
+<svg width="1920" height="400" viewBox="0 0 1920 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="matrixGreen" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ff00;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#00ff88;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00ff00;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#000000;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#001a00;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#000000;stop-opacity:1" />
+    </linearGradient>
+    
+    <radialGradient id="glowGreen">
+      <stop offset="0%" style="stop-color:#00ff00;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00ff00;stop-opacity:0" />
+    </radialGradient>
+    
+    <!-- Filters -->
+    <filter id="neonGlow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="dataGlow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Circuit Pattern -->
+    <pattern id="circuitPattern" x="0" y="0" width="100" height="100" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="50" x2="100" y2="50" stroke="#00ff00" stroke-width="0.5" opacity="0.2"/>
+      <line x1="50" y1="0" x2="50" y2="100" stroke="#00ff00" stroke-width="0.5" opacity="0.2"/>
+      <circle cx="50" cy="50" r="3" fill="#00ff00" opacity="0.3"/>
+    </pattern>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1920" height="400" fill="url(#bgGradient)"/>
+  <rect width="1920" height="400" fill="url(#circuitPattern)" opacity="0.5"/>
+  
+  <!-- Matrix Rain Effect -->
+  <g id="matrixRain" opacity="0.3">
+    <text x="100" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="3s" repeatCount="indefinite"/>
+      01001110
+    </text>
+    <text x="300" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="4s" repeatCount="indefinite"/>
+      11100101
+    </text>
+    <text x="500" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="3.5s" repeatCount="indefinite"/>
+      10110010
+    </text>
+    <text x="700" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="2.5s" repeatCount="indefinite"/>
+      01101101
+    </text>
+    <text x="900" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="3.2s" repeatCount="indefinite"/>
+      11010110
+    </text>
+    <text x="1100" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="3.8s" repeatCount="indefinite"/>
+      10011101
+    </text>
+    <text x="1300" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="2.8s" repeatCount="indefinite"/>
+      01110100
+    </text>
+    <text x="1500" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="3.3s" repeatCount="indefinite"/>
+      11001011
+    </text>
+    <text x="1700" y="20" fill="#00ff00" font-family="monospace" font-size="12" opacity="0.5">
+      <animate attributeName="y" from="-100" to="500" dur="3.6s" repeatCount="indefinite"/>
+      10101110
+    </text>
+  </g>
+  
+  <!-- AGENT NEO Section -->
+  <g id="agentNeo" transform="translate(300, 200)">
+    <!-- Triangle with Eye -->
+    <g filter="url(#neonGlow)">
+      <!-- Triangle -->
+      <path d="M 0 -70 L -60 50 L 60 50 Z" fill="none" stroke="#00ff00" stroke-width="3"/>
+      
+      <!-- Eye Shape -->
+      <ellipse cx="0" cy="0" rx="40" ry="20" fill="#000000" stroke="#00ff00" stroke-width="2"/>
+      
+      <!-- Pupil -->
+      <circle cx="0" cy="0" r="8" fill="#00ff00">
+        <animate attributeName="cx" values="0;5;0;-5;0" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      
+      <!-- Eye Glow -->
+      <circle cx="0" cy="0" r="20" fill="url(#glowGreen)" opacity="0.5">
+        <animate attributeName="r" values="20;25;20" dur="2s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+    
+    <!-- AGENT NEO Text -->
+    <text x="0" y="100" text-anchor="middle" fill="#00ff00" font-family="Arial, sans-serif" font-size="36" font-weight="bold" letter-spacing="3" filter="url(#neonGlow)">
+      AGENT NEO
+    </text>
+  </g>
+  
+  <!-- Connection Lines -->
+  <g id="connections">
+    <!-- Left Connection -->
+    <line x1="450" y1="200" x2="700" y2="200" stroke="url(#matrixGreen)" stroke-width="3" opacity="0.8">
+      <animate attributeName="stroke-dasharray" values="0 100;100 0" dur="2s" repeatCount="indefinite"/>
+    </line>
+    
+    <!-- Data Flow Particles -->
+    <circle r="4" fill="#ffffff" filter="url(#dataGlow)">
+      <animateMotion dur="2s" repeatCount="indefinite">
+        <mpath href="#dataPath1"/>
+      </animateMotion>
+    </circle>
+    <path id="dataPath1" d="M 450 200 L 700 200" fill="none"/>
+    
+    <!-- Right Connection -->
+    <line x1="1220" y1="200" x2="1470" y2="200" stroke="url(#matrixGreen)" stroke-width="3" opacity="0.8">
+      <animate attributeName="stroke-dasharray" values="0 100;100 0" dur="2s" repeatCount="indefinite"/>
+    </line>
+    
+    <!-- Data Flow Particles -->
+    <circle r="4" fill="#ffffff" filter="url(#dataGlow)">
+      <animateMotion dur="2s" repeatCount="indefinite" begin="1s">
+        <mpath href="#dataPath2"/>
+      </animateMotion>
+    </circle>
+    <path id="dataPath2" d="M 1220 200 L 1470 200" fill="none"/>
+  </g>
+  
+  <!-- Central MCP Chip -->
+  <g id="mcpChip" transform="translate(960, 200)">
+    <rect x="-60" y="-60" width="120" height="120" rx="10" fill="#001a00" stroke="#00ff00" stroke-width="2" filter="url(#neonGlow)"/>
+    
+    <!-- Circuit Dots -->
+    <circle cx="-45" cy="-45" r="4" fill="#00ff00">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="1s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="45" cy="-45" r="4" fill="#00ff00">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="1s" begin="0.25s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="45" cy="45" r="4" fill="#00ff00">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="1s" begin="0.5s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="-45" cy="45" r="4" fill="#00ff00">
+      <animate attributeName="opacity" values="0.3;1;0.3" dur="1s" begin="0.75s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- MCP Text -->
+    <text x="0" y="8" text-anchor="middle" fill="#00ff00" font-family="Arial, sans-serif" font-size="24" font-weight="bold">MCP</text>
+  </g>
+  
+  <!-- LYONCRYPT Section with Cyber Lion -->
+  <g id="lyoncrypt" transform="translate(1600, 200)">
+    <!-- Cyber Lion Head -->
+    <g id="cyberLion" transform="translate(0, -80)" filter="url(#neonGlow)">
+      <!-- Lion Mane (Geometric) -->
+      <g stroke="#00ff00" stroke-width="2" fill="none">
+        <path d="M -40 -20 L -35 -35 L -20 -40 L 0 -45 L 20 -40 L 35 -35 L 40 -20"/>
+        <path d="M -45 0 L -40 -20 L -30 -10 L -20 -5 L 0 0 L 20 -5 L 30 -10 L 40 -20 L 45 0"/>
+        <path d="M -40 20 L -35 5 L -20 10 L 0 15 L 20 10 L 35 5 L 40 20"/>
+      </g>
+      
+      <!-- Lion Face (Geometric) -->
+      <g stroke="#00ff00" stroke-width="2.5" fill="none">
+        <!-- Head outline -->
+        <path d="M -25 -15 L -25 15 L -15 25 L 0 30 L 15 25 L 25 15 L 25 -15 L 15 -25 L 0 -30 L -15 -25 Z"/>
+        
+        <!-- Eyes -->
+        <circle cx="-10" cy="-5" r="5" fill="#00ff00">
+          <animate attributeName="opacity" values="1;0.3;1" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="10" cy="-5" r="5" fill="#00ff00">
+          <animate attributeName="opacity" values="1;0.3;1" dur="3s" begin="0.5s" repeatCount="indefinite"/>
+        </circle>
+        
+        <!-- Nose -->
+        <path d="M -5 5 L 0 10 L 5 5" fill="#00ff00"/>
+        
+        <!-- Mouth -->
+        <path d="M 0 10 L -10 15 M 0 10 L 10 15"/>
+      </g>
+      
+      <!-- Neural Network Connections -->
+      <g stroke="#00ff88" stroke-width="1" opacity="0.6">
+        <line x1="-10" y1="-5" x2="-20" y2="-20">
+          <animate attributeName="opacity" values="0.2;0.8;0.2" dur="2s" repeatCount="indefinite"/>
+        </line>
+        <line x1="10" y1="-5" x2="20" y2="-20">
+          <animate attributeName="opacity" values="0.2;0.8;0.2" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+        </line>
+        <line x1="0" y1="10" x2="0" y2="25">
+          <animate attributeName="opacity" values="0.2;0.8;0.2" dur="2s" begin="1s" repeatCount="indefinite"/>
+        </line>
+      </g>
+    </g>
+    
+    <!-- Rotating Circuit Ring -->
+    <g>
+      <animateTransform attributeName="transform" attributeType="XML" type="rotate" from="0 0 0" to="360 0 0" dur="10s" repeatCount="indefinite"/>
+      <circle cx="0" cy="0" r="70" fill="none" stroke="#00ff00" stroke-width="2" stroke-dasharray="10 5" opacity="0.5"/>
+      <circle cx="70" cy="0" r="4" fill="#00ff00"/>
+      <circle cx="-70" cy="0" r="4" fill="#00ff00"/>
+      <circle cx="0" cy="70" r="4" fill="#00ff00"/>
+      <circle cx="0" cy="-70" r="4" fill="#00ff00"/>
+    </g>
+    
+    <!-- LYONCRYPT Text -->
+    <text x="0" y="100" text-anchor="middle" fill="url(#matrixGreen)" font-family="Arial, sans-serif" font-size="42" font-weight="bold" letter-spacing="5" filter="url(#neonGlow)">
+      LYONCRYPT
+    </text>
+    
+    <!-- Subtitle -->
+    <text x="0" y="125" text-anchor="middle" fill="#00ff00" font-family="monospace" font-size="14" letter-spacing="2" opacity="0.8">
+      Neural Integration Protocol
+    </text>
+  </g>
+  
+  <!-- Floating Particles -->
+  <g id="particles">
+    <circle cx="100" cy="300" r="2" fill="#00ff00" opacity="0.6">
+      <animate attributeName="cy" values="400;-50" dur="10s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="100;150" dur="10s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="500" cy="350" r="2" fill="#00ff00" opacity="0.6">
+      <animate attributeName="cy" values="400;-50" dur="8s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="500;520" dur="8s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="900" cy="380" r="2" fill="#00ff00" opacity="0.6">
+      <animate attributeName="cy" values="400;-50" dur="12s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="900;950" dur="12s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="1300" cy="320" r="2" fill="#00ff00" opacity="0.6">
+      <animate attributeName="cy" values="400;-50" dur="9s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="1300;1350" dur="9s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="1700" cy="360" r="2" fill="#00ff00" opacity="0.6">
+      <animate attributeName="cy" values="400;-50" dur="11s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="1700;1750" dur="11s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+</svg>

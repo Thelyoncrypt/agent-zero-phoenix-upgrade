@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <!-- Neural terminal glow -->
+    <filter id="terminalGlow">
+      <feGaussianBlur stdDeviation="0.4" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Matrix terminal gradient -->
+    <linearGradient id="terminalMatrix" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#001100;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#003300;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#002200;stop-opacity:0.8" />
+    </linearGradient>
+    
+    <!-- Data stream gradient -->
+    <linearGradient id="dataFlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00ff00;stop-opacity:0.2" />
+      <stop offset="50%" style="stop-color:#00ff88;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00aa44;stop-opacity:0.2" />
+    </linearGradient>
+    
+    <!-- Live streaming gradient -->
+    <radialGradient id="liveStream" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#00ff00;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#00aa44;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#004400;stop-opacity:0.4" />
+    </radialGradient>
+    
+    <!-- Binary code pattern -->
+    <pattern id="binaryCode" patternUnits="userSpaceOnUse" width="2" height="1">
+      <rect width="2" height="1" fill="#001100"/>
+      <text x="1" y="0.8" font-family="monospace" font-size="0.6" fill="#00ff44" text-anchor="middle" opacity="0.6">1</text>
+    </pattern>
+  </defs>
+  
+  <!-- Background neural mesh -->
+  <rect width="24" height="24" fill="url(#binaryCode)" opacity="0.1"/>
+  
+  <!-- Main terminal structure with enhanced effects -->
+  <g filter="url(#terminalGlow)">
+    <!-- Terminal window with quantum edge -->
+    <rect x="2" y="3" width="20" height="18" rx="2" ry="2" 
+          fill="url(#terminalMatrix)" 
+          stroke="#00ff88" 
+          stroke-width="1.5">
+      <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
+    </rect>
+    
+    <!-- Terminal header with neural pattern -->
+    <rect x="2" y="3" width="20" height="4" rx="2" ry="2" 
+          fill="url(#binaryCode)" 
+          opacity="0.8">
+      <animate attributeName="opacity" values="0.8;0.9;0.8" dur="4s" repeatCount="indefinite"/>
+    </rect>
+    
+    <!-- Enhanced terminal control dots -->
+    <circle cx="5" cy="5" r="0.5" fill="#ff4444">
+      <animate attributeName="fill" values="#ff4444;#ff6666;#ff4444" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="7" cy="5" r="0.5" fill="#ffaa00">
+      <animate attributeName="fill" values="#ffaa00;#ffcc44;#ffaa00" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+    </circle>
+    <circle cx="9" cy="5" r="0.5" fill="#00ff00">
+      <animate attributeName="fill" values="#00ff00;#44ff44;#00ff00" dur="2s" repeatCount="indefinite" begin="1s"/>
+    </circle>
+    
+    <!-- Matrix-style command lines with flowing data -->
+    <g opacity="0.9">
+      <!-- Animated command prompt lines -->
+      <line x1="4" y1="9" x2="12" y2="9" 
+            stroke="url(#dataFlow)" 
+            stroke-width="1.2">
+        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="1.5s" repeatCount="indefinite"/>
+      </line>
+      
+      <line x1="4" y1="11" x2="16" y2="11" 
+            stroke="url(#dataFlow)" 
+            stroke-width="1.2">
+        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="1.8s" repeatCount="indefinite" begin="0.3s"/>
+      </line>
+      
+      <line x1="4" y1="13" x2="10" y2="13" 
+            stroke="url(#dataFlow)" 
+            stroke-width="1.2">
+        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="1.3s" repeatCount="indefinite" begin="0.6s"/>
+      </line>
+      
+      <line x1="4" y1="15" x2="14" y2="15" 
+            stroke="url(#dataFlow)" 
+            stroke-width="1.2">
+        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite" begin="0.9s"/>
+      </line>
+      
+      <!-- Additional terminal output lines -->
+      <line x1="4" y1="17" x2="8" y2="17" 
+            stroke="#00aa44" 
+            stroke-width="1" 
+            opacity="0.7">
+        <animate attributeName="stroke-opacity" values="0.3;0.7;0.3" dur="1.7s" repeatCount="indefinite" begin="1.2s"/>
+      </line>
+      
+      <line x1="4" y1="19" x2="11" y2="19" 
+            stroke="#00aa44" 
+            stroke-width="1" 
+            opacity="0.7">
+        <animate attributeName="stroke-opacity" values="0.3;0.7;0.3" dur="1.4s" repeatCount="indefinite" begin="1.5s"/>
+      </line>
+    </g>
+    
+    <!-- Binary data fragments -->
+    <g opacity="0.6">
+      <text x="13" y="10" font-family="monospace" font-size="0.8" fill="#00ff44">01</text>
+      <text x="17" y="12" font-family="monospace" font-size="0.8" fill="#00aa44">11</text>
+      <text x="11" y="14" font-family="monospace" font-size="0.8" fill="#004422">10</text>
+      <text x="15" y="16" font-family="monospace" font-size="0.8" fill="#00ff44">01</text>
+    </g>
+    
+    <!-- Enhanced streaming indicator with neural waves -->
+    <g opacity="0.9">
+      <!-- Primary wave -->
+      <path d="M16 17 L18 15 L20 17" 
+            fill="none" 
+            stroke="#00ff88" 
+            stroke-width="1.5" 
+            stroke-linecap="round" 
+            stroke-linejoin="round">
+        <animate attributeName="stroke-opacity" values="0.4;1;0.4" dur="1s" repeatCount="indefinite"/>
+        <animate attributeName="d" values="M16 17 L18 15 L20 17;M16 17 L18 14 L20 17;M16 17 L18 15 L20 17" dur="2s" repeatCount="indefinite"/>
+      </path>
+      
+      <!-- Secondary wave -->
+      <path d="M16 19 L19 16 L22 19" 
+            fill="none" 
+            stroke="#00aa44" 
+            stroke-width="1.2" 
+            stroke-linecap="round" 
+            stroke-linejoin="round" 
+            opacity="0.7">
+        <animate attributeName="stroke-opacity" values="0.2;0.7;0.2" dur="1.5s" repeatCount="indefinite" begin="0.5s"/>
+      </path>
+      
+      <!-- Data flow particles -->
+      <circle r="0.3" fill="#00ff88">
+        <animateMotion dur="3s" repeatCount="indefinite" path="M16,17 Q18,15 20,17"/>
+        <animate attributeName="opacity" values="0;1;0" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      
+      <circle r="0.3" fill="#00aa44">
+        <animateMotion dur="4s" repeatCount="indefinite" path="M16,19 Q19,16 22,19" begin="1s"/>
+        <animate attributeName="opacity" values="0;1;0" dur="4s" repeatCount="indefinite" begin="1s"/>
+      </circle>
+    </g>
+    
+    <!-- Enhanced live indicator with superintelligence pulse -->
+    <g>
+      <circle cx="19" cy="5" r="1.5" 
+              fill="url(#liveStream)">
+        <animate attributeName="r" values="1.5;2;1.5" dur="2s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.8;1;0.8" dur="1s" repeatCount="indefinite"/>
+      </circle>
+      
+      <!-- Pulsing ring around live indicator -->
+      <circle cx="19" cy="5" r="2" 
+              fill="none" 
+              stroke="#00ff00" 
+              stroke-width="0.3" 
+              opacity="0.6">
+        <animate attributeName="r" values="2;3;2" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.6;0.2;0.6" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      
+      <!-- Live text indicator -->
+      <text x="19" y="5.5" font-family="monospace" font-size="0.5" fill="#ffffff" text-anchor="middle" opacity="0.9">LIVE</text>
+    </g>
+    
+    <!-- Neural activity indicators -->
+    <g opacity="0.4">
+      <!-- Top neural nodes -->
+      <circle cx="3" cy="2" r="0.3" fill="#00ff88">
+        <animate attributeName="cy" values="2;1;2" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="21" cy="2" r="0.3" fill="#00aa44">
+        <animate attributeName="cy" values="2;1;2" dur="2.5s" repeatCount="indefinite" begin="1s"/>
+      </circle>
+      
+      <!-- Side neural nodes -->
+      <circle cx="1" cy="12" r="0.3" fill="#004422">
+        <animate attributeName="cx" values="1;0;1" dur="4s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="23" cy="12" r="0.3" fill="#00ff44">
+        <animate attributeName="cx" values="23;24;23" dur="3.5s" repeatCount="indefinite" begin="2s"/>
+      </circle>
+    </g>
+  </g>
+  
+  <!-- Floating data streams -->
+  <g opacity="0.3">
+    <text font-family="monospace" font-size="0.4" fill="#00ff44">
+      <textPath href="#streamPath">
+        011010011100101110100110011101001...
+        <animateMotion dur="10s" repeatCount="indefinite">
+          <mpath href="#streamPath"/>
+        </animateMotion>
+      </textPath>
+    </text>
+  </g>
+  
+  <!-- Hidden path for data stream animation -->
+  <defs>
+    <path id="streamPath" d="M0,12 Q12,8 24,12" stroke="none" fill="none"/>
+  </defs>
+</svg>

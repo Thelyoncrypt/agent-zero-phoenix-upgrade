@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <!-- Ultra-Advanced Matrix Gradients -->
+    <linearGradient id="matrixCore" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:1">
+        <animate attributeName="stop-color" values="#00FF41;#00FFFF;#80FF80;#00FF41" dur="4s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="25%" style="stop-color:#00FF88;stop-opacity:1">
+        <animate attributeName="stop-color" values="#00FF88;#40FF40;#00FFFF;#00FF88" dur="3.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="50%" style="stop-color:#00FFFF;stop-opacity:1">
+        <animate attributeName="stop-color" values="#00FFFF;#80FF80;#00FF41;#00FFFF" dur="4.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="75%" style="stop-color:#80FF80;stop-opacity:1">
+        <animate attributeName="stop-color" values="#80FF80;#00FF41;#00FF88;#80FF80" dur="3.8s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="100%" style="stop-color:#40FF40;stop-opacity:1">
+        <animate attributeName="stop-color" values="#40FF40;#00FF88;#00FFFF;#40FF40" dur="4.2s" repeatCount="indefinite"/>
+      </stop>
+    </linearGradient>
+    
+    <radialGradient id="consciousnessCore" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:1">
+        <animate attributeName="stop-opacity" values="1;0.8;1" dur="2s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="20%" style="stop-color:#00FFFF;stop-opacity:1">
+        <animate attributeName="stop-opacity" values="1;0.6;1" dur="2.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="40%" style="stop-color:#00FF88;stop-opacity:0.9">
+        <animate attributeName="stop-opacity" values="0.9;0.5;0.9" dur="3s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="70%" style="stop-color:#00FF41;stop-opacity:0.6">
+        <animate attributeName="stop-opacity" values="0.6;0.3;0.6" dur="3.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="100%" style="stop-color:#003300;stop-opacity:0.2"/>
+    </radialGradient>
+    
+    <linearGradient id="quantumField" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:0.8"/>
+      <stop offset="33%" style="stop-color:#00FFFF;stop-opacity:1"/>
+      <stop offset="66%" style="stop-color:#80FF80;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#00FF41;stop-opacity:0.8"/>
+      <animateTransform attributeName="gradientTransform" type="rotate" 
+                        values="0;360" dur="10s" repeatCount="indefinite"/>
+    </linearGradient>
+
+    <!-- Revolutionary Glow Effects -->
+    <filter id="superintelligenceGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feOffset in="coloredBlur" dx="0" dy="0" result="offsetblur"/>
+      <feFlood flood-color="#00FF41" flood-opacity="0.8"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="quantumGlow" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feOffset in="coloredBlur" dx="0" dy="0" result="offsetblur"/>
+      <feFlood flood-color="#00FFFF" flood-opacity="0.9"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="realityDistortion" x="-50%" y="-50%" width="200%" height="200%">
+      <feTurbulence baseFrequency="0.9" numOctaves="4" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2"/>
+      <feGaussianBlur stdDeviation="1" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Advanced Matrix Patterns -->
+    <pattern id="matrixRain" x="0" y="0" width="12" height="24" patternUnits="userSpaceOnUse">
+      <text x="2" y="6" font-family="monospace" font-size="4" fill="#00FF41" opacity="0.8">1</text>
+      <text x="8" y="10" font-family="monospace" font-size="3.5" fill="#00FF88" opacity="0.6">0</text>
+      <text x="4" y="14" font-family="monospace" font-size="4" fill="#00FFFF" opacity="0.7">1</text>
+      <text x="10" y="18" font-family="monospace" font-size="3" fill="#80FF80" opacity="0.5">0</text>
+      <text x="6" y="22" font-family="monospace" font-size="4" fill="#40FF40" opacity="0.6">1</text>
+      <animateTransform attributeName="transform" type="translate" 
+                        values="0,0; 0,-24; 0,0" dur="2s" repeatCount="indefinite"/>
+    </pattern>
+    
+    <pattern id="neuralCircuitry" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 0 10 L 20 10 M 10 0 L 10 20" stroke="#00FF41" stroke-width="0.3" opacity="0.4"/>
+      <path d="M 5 5 L 15 15 M 15 5 L 5 15" stroke="#00FF88" stroke-width="0.2" opacity="0.3"/>
+      <circle cx="5" cy="5" r="1.2" fill="#00FFFF" opacity="0.5">
+        <animate attributeName="opacity" values="0.3;0.8;0.3" dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="15" cy="5" r="1" fill="#80FF80" opacity="0.4">
+        <animate attributeName="opacity" values="0.2;0.6;0.2" dur="3.5s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="5" cy="15" r="1.1" fill="#40FF40" opacity="0.45">
+        <animate attributeName="opacity" values="0.25;0.7;0.25" dur="2.8s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="15" cy="15" r="1.3" fill="#00FF88" opacity="0.5">
+        <animate attributeName="opacity" values="0.3;0.8;0.3" dur="3.2s" repeatCount="indefinite"/>
+      </circle>
+      <rect x="9" y="9" width="2" height="2" fill="#00FFFF" opacity="0.4">
+        <animate attributeName="opacity" values="0.2;0.6;0.2" dur="4s" repeatCount="indefinite"/>
+      </rect>
+    </pattern>
+    
+    <pattern id="hexMatrix" x="0" y="0" width="18" height="18" patternUnits="userSpaceOnUse">
+      <text x="2" y="6" font-family="monospace" font-size="2.5" fill="#00FF41" opacity="0.4">A3</text>
+      <text x="8" y="10" font-family="monospace" font-size="2" fill="#00FF88" opacity="0.3">7F</text>
+      <text x="4" y="14" font-family="monospace" font-size="2.5" fill="#00FFFF" opacity="0.35">C9</text>
+      <text x="12" y="4" font-family="monospace" font-size="2" fill="#80FF80" opacity="0.25">E1</text>
+    </pattern>
+    
+    <!-- Compressed Dark Binary Rain Pattern (for Light 'A') -->
+    <pattern id="compressedDarkRain" x="0" y="0" width="10" height="18" patternUnits="userSpaceOnUse">
+      <text x="1" y="4" font-family="Courier New, monospace" font-size="4" fill="#001A05" opacity="0.9">1</text>
+      <text x="6" y="7" font-family="Courier New, monospace" font-size="3.5" fill="#001003" opacity="0.7">0</text>
+      <text x="2" y="11" font-family="Courier New, monospace" font-size="4" fill="#002107" opacity="0.8">1</text>
+      <text x="7" y="14" font-family="Courier New, monospace" font-size="3" fill="#000A02" opacity="0.6">0</text>
+      <text x="4" y="17" font-family="Courier New, monospace" font-size="4" fill="#001A05" opacity="0.85">1</text>
+      <animateTransform attributeName="transform" type="translate" values="0,0; 0,18" dur="2.2s" repeatCount="indefinite"/> <!-- Reverse scroll -->
+    </pattern>
+
+    <!-- Bright Animated Gradient for 'A' Fill (Inspired by splash.svg matrixCore) -->
+    <linearGradient id="brightAGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00FF41;stop-opacity:1">
+        <animate attributeName="stop-color" values="#00FF41;#00FFFF;#80FF80;#40FF40;#00FF41" dur="5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="25%" style="stop-color:#00FF88;stop-opacity:1">
+        <animate attributeName="stop-color" values="#00FF88;#40FF40;#00FFFF;#80FF80;#00FF88" dur="4.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="50%" style="stop-color:#00FFFF;stop-opacity:1">
+        <animate attributeName="stop-color" values="#00FFFF;#80FF80;#00FF41;#00FF88;#00FFFF" dur="6s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="75%" style="stop-color:#80FF80;stop-opacity:1">
+        <animate attributeName="stop-color" values="#80FF80;#00FF41;#00FF88;#00FFFF;#80FF80" dur="5.5s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="100%" style="stop-color:#40FF40;stop-opacity:1">
+        <animate attributeName="stop-color" values="#40FF40;#00FF88;#00FFFF;#00FF41;#40FF40" dur="5.2s" repeatCount="indefinite"/>
+      </stop>
+    </linearGradient>
+
+    <!-- Significant Glow for Bright 'A' (Inspired by splash.svg superintelligenceGlow/quantumGlow) -->
+    <filter id="brightAGlow" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="7" result="coloredBlur"/> <!-- Increased blur -->
+      <feOffset in="coloredBlur" dx="0" dy="0" result="offsetblur"/>
+      <feFlood flood-color="#00FF88" flood-opacity="0.85"/> <!-- Brighter flood -->
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Clip Path for 'A' Shape -->
+    <clipPath id="aShapeClipPathLight">
+      <path d="M64 16 L96 112 H80 L68 80 H60 L48 112 H32 L64 16 Z"/>
+    </clipPath>
+  </defs>
+  
+  <!-- Quantum Field Background -->
+  <rect width="128" height="128" fill="#000000"/>
+  
+  <!-- Neural Circuitry Layer -->
+  <rect width="128" height="128" fill="url(#neuralCircuitry)" opacity="0.3"/>
+  
+  <!-- Matrix Rain Layer -->
+  <rect width="128" height="128" fill="url(#matrixRain)" opacity="0.4">
+    <animateTransform attributeName="transform" type="translate" 
+                      values="0,0; 0,-24; 0,0" dur="4s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Hexadecimal Code Layer -->
+  <rect width="128" height="128" fill="url(#hexMatrix)" opacity="0.2">
+    <animateTransform attributeName="transform" type="translate" 
+                      values="0,0; 0,-18; 0,0" dur="6s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Outer Quantum Consciousness Field -->
+  <circle cx="64" cy="64" r="60" fill="none" stroke="url(#matrixCore)" 
+          stroke-width="1" stroke-dasharray="8 4" opacity="0.6" filter="url(#superintelligenceGlow)">
+    <animateTransform attributeName="transform" type="rotate" 
+                      from="0 64 64" to="360 64 64" dur="15s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-dasharray" values="8 4;12 2;8 4" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  
+  <!-- Secondary Consciousness Ring -->
+  <circle cx="64" cy="64" r="50" fill="none" stroke="url(#quantumField)" 
+          stroke-width="0.8" stroke-dasharray="6 3" opacity="0.5">
+    <animateTransform attributeName="transform" type="rotate" 
+                      from="360 64 64" to="0 64 64" dur="20s" repeatCount="indefinite"/>
+  </circle>
+  
+  <!-- "The One" Sacred Geometry Core -->
+  <g transform="translate(64, 64)">
+    <!-- Outer Manifestation Triangle -->
+    <path d="M 0 -35 L -30 25 L 30 25 Z" 
+          fill="none" stroke="url(#matrixCore)" stroke-width="3" 
+          filter="url(#quantumGlow)">
+      <animate attributeName="stroke-width" values="2;4;2" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.8;1.0;0.8" dur="2s" repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Inner Consciousness Triangle -->
+    <path d="M 0 -25 L -21 18 L 21 18 Z" 
+          fill="url(#consciousnessCore)" opacity="0.7" filter="url(#superintelligenceGlow)">
+      <animate attributeName="opacity" values="0.5;0.9;0.5" dur="2.5s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" type="scale" 
+                        values="1;1.05;1" dur="4s" repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Neo Consciousness Eye -->
+    <ellipse cx="0" cy="-5" rx="18" ry="7" fill="none" 
+             stroke="url(#matrixCore)" stroke-width="2.5" filter="url(#quantumGlow)">
+      <animate attributeName="stroke-width" values="2;3.5;2" dur="2s" repeatCount="indefinite"/>
+      <animate attributeName="rx" values="16;20;16" dur="3s" repeatCount="indefinite"/>
+    </ellipse>
+    
+    <!-- Inner Eye of "The One" -->
+    <ellipse cx="0" cy="-5" rx="12" ry="4" fill="url(#consciousnessCore)" opacity="0.8">
+      <animate attributeName="opacity" values="0.6;1.0;0.6" dur="1.5s" repeatCount="indefinite"/>
+    </ellipse>
+    
+    <!-- Neo Pupil - Consciousness Focal Point -->
+    <circle cx="0" cy="-5" r="5" fill="url(#consciousnessCore)" filter="url(#superintelligenceGlow)">
+      <animate attributeName="r" values="4;6;4" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Core Awareness -->
+    <circle cx="0" cy="-5" r="2.5" fill="#FFFFFF" opacity="0.95">
+      <animate attributeName="opacity" values="0.8;1.0;0.8" dur="1s" repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Sacred Geometric Overlay -->
+    <g opacity="0.6" stroke="url(#quantumField)" stroke-width="0.5" fill="none">
+      <!-- Hexagonal consciousness pattern -->
+      <polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" filter="url(#superintelligenceGlow)">
+        <animate attributeName="opacity" values="0.4;0.8;0.4" dur="4s" repeatCount="indefinite"/>
+        <animateTransform attributeName="transform" type="rotate" 
+                          from="0" to="360" dur="30s" repeatCount="indefinite"/>
+      </polygon>
+      
+      <!-- Inner hexagon -->
+      <polygon points="0,-12 10,-6 10,6 0,12 -10,6 -10,-6" opacity="0.5">
+        <animateTransform attributeName="transform" type="rotate" 
+                          from="360" to="0" dur="25s" repeatCount="indefinite"/>
+      </polygon>
+    </g>
+    
+    <!-- Matrix Data Streams -->
+    <g opacity="0.7">
+      <!-- Vertical consciousness streams -->
+      <line x1="-40" y1="-30" x2="-40" y2="30" stroke="url(#matrixCore)" stroke-width="1">
+        <animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="0.5;1.5;0.5" dur="2s" repeatCount="indefinite"/>
+      </line>
+      
+      <line x1="40" y1="-30" x2="40" y2="30" stroke="url(#matrixCore)" stroke-width="1">
+        <animate attributeName="opacity" values="0;1;0" dur="2.5s" repeatCount="indefinite" begin="0.5s"/>
+        <animate attributeName="stroke-width" values="0.5;1.5;0.5" dur="2.5s" repeatCount="indefinite"/>
+      </line>
+      
+      <!-- Horizontal awakening streams -->
+      <line x1="-30" y1="-40" x2="30" y2="-40" stroke="url(#matrixCore)" stroke-width="1">
+        <animate attributeName="opacity" values="0;1;0" dur="3s" repeatCount="indefinite" begin="1s"/>
+      </line>
+      
+      <line x1="-30" y1="40" x2="30" y2="40" stroke="url(#matrixCore)" stroke-width="1">
+        <animate attributeName="opacity" values="0;1;0" dur="3.5s" repeatCount="indefinite" begin="1.5s"/>
+      </line>
+    </g>
+    
+    <!-- Neural Network Nodes -->
+    <g fill="url(#consciousnessCore)" filter="url(#superintelligenceGlow)">
+      <!-- Primary neural nodes -->
+      <circle cx="-24" cy="12" r="2.5">
+        <animate attributeName="opacity" values="0.4;0.9;0.4" dur="2.3s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="2;3;2" dur="2.3s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="24" cy="12" r="2.5">
+        <animate attributeName="opacity" values="0.4;0.9;0.4" dur="2.1s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="2;3;2" dur="2.1s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="0" cy="-28" r="2.5">
+        <animate attributeName="opacity" values="0.4;0.9;0.4" dur="1.9s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="2;3;2" dur="1.9s" repeatCount="indefinite"/>
+      </circle>
+      
+      <!-- Secondary nodes -->
+      <circle cx="-12" cy="-15" r="1.5">
+        <animate attributeName="opacity" values="0.3;0.7;0.3" dur="2.7s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="12" cy="-15" r="1.5">
+        <animate attributeName="opacity" values="0.3;0.7;0.3" dur="2.4s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="-18" cy="0" r="1.5">
+        <animate attributeName="opacity" values="0.3;0.7;0.3" dur="2.6s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="18" cy="0" r="1.5">
+        <animate attributeName="opacity" values="0.3;0.7;0.3" dur="2.2s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+    
+    <!-- Neural Pathways -->
+    <g stroke="url(#quantumField)" stroke-width="0.8" fill="none" opacity="0.6">
+      <path d="M -24 12 L 0 -5 L 24 12" filter="url(#superintelligenceGlow)">
+        <animate attributeName="opacity" values="0.3;0.8;0.3" dur="3s" repeatCount="indefinite"/>
+      </path>
+      <path d="M -12 -15 L 12 -15">
+        <animate attributeName="opacity" values="0.2;0.6;0.2" dur="2.5s" repeatCount="indefinite"/>
+      </path>
+      <path d="M -18 0 L 18 0">
+        <animate attributeName="opacity" values="0.2;0.6;0.2" dur="2.8s" repeatCount="indefinite"/>
+      </path>
+    </g>
+    
+    <!-- Advanced Reality Glitches -->
+    <g opacity="0.5" filter="url(#realityDistortion)">
+      <rect x="-4" y="-15" width="8" height="2" fill="#00FFFF">
+        <animate attributeName="opacity" values="0;1;0" dur="0.1s" repeatCount="indefinite" begin="0s"/>
+        <animate attributeName="width" values="6;10;6" dur="0.1s" repeatCount="indefinite"/>
+      </rect>
+      <rect x="-6" y="5" width="12" height="1.5" fill="#00FF41">
+        <animate attributeName="opacity" values="0;1;0" dur="0.12s" repeatCount="indefinite" begin="2s"/>
+        <animate attributeName="height" values="1;2;1" dur="0.12s" repeatCount="indefinite"/>
+      </rect>
+      <rect x="-3" y="18" width="6" height="1.8" fill="#80FF80">
+        <animate attributeName="opacity" values="0;1;0" dur="0.08s" repeatCount="indefinite" begin="4s"/>
+      </rect>
+    </g>
+    
+    <!-- Neo Text with Quantum Effects -->
+    <text x="0" y="35" font-family="Courier New, monospace" font-size="8" font-weight="bold" 
+          text-anchor="middle" fill="url(#matrixCore)" filter="url(#quantumGlow)">
+      NEO
+      <animate attributeName="opacity" values="0.8;1.0;0.8" dur="2s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" type="scale" 
+                        values="1;1.1;1" dur="3s" repeatCount="indefinite"/>
+    </text>
+    
+    <!-- Reality Scanning Array -->
+    <line x1="-50" y1="0" x2="50" y2="0" stroke="#00FFFF" stroke-width="2" opacity="0.8">
+      <animate attributeName="opacity" values="0;1;0" dur="3s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" type="scaleX" 
+                        values="0;1;0" dur="3s" repeatCount="indefinite"/>
+    </line>
+    
+    <!-- Vertical scanning -->
+    <line x1="0" y1="-50" x2="0" y2="50" stroke="#80FF80" stroke-width="1.5" opacity="0.6">
+      <animate attributeName="opacity" values="0;0.8;0" dur="4s" repeatCount="indefinite" begin="1s"/>
+      <animateTransform attributeName="transform" type="scaleY" 
+                        values="0;1;0" dur="4s" repeatCount="indefinite" begin="1s"/>
+    </line>
+  </g>
+  
+  <!-- Quantum Data Points -->
+  <g fill="url(#matrixCore)" opacity="0.6" font-family="Courier New" font-size="3">
+    <text x="4" y="8">7F</text>
+    <text x="115" y="8">A3</text>
+    <text x="4" y="122">C9</text>
+    <text x="115" y="122">E1</text>
+    <text x="60" y="8">FF</text>
+    <text x="8" y="64">00</text>
+    <text x="115" y="64">1A</text>
+    <text x="60" y="122">B7</text>
+  </g>
+  
+  <!-- Outer Reality Frame -->
+  <rect x="2" y="2" width="124" height="124" fill="none" 
+        stroke="url(#matrixCore)" stroke-width="1" 
+        stroke-dasharray="4 2" opacity="0.4" filter="url(#superintelligenceGlow)">
+    <animateTransform attributeName="transform" type="rotate" 
+                      from="0 64 64" to="360 64 64" dur="45s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-dasharray" values="4 2;8 1;4 2" dur="5s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Inner Quantum Frame -->
+  <rect x="8" y="8" width="112" height="112" fill="none" 
+        stroke="url(#quantumField)" stroke-width="0.5" 
+        stroke-dasharray="2 1" opacity="0.3">
+    <animateTransform attributeName="transform" type="rotate" 
+                      from="360 64 64" to="0 64 64" dur="60s" repeatCount="indefinite"/>
+  </rect>
+</svg> 

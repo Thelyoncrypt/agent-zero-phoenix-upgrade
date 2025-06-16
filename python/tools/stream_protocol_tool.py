@@ -37,6 +37,28 @@ class StreamEventType(Enum):
     AUDIO_CHUNK = "audio_chunk"
     TTS_STREAM_START = "tts_stream_start"
     TTS_STREAM_END = "tts_stream_end"
+    # Code execution streaming events for TASK_AUI_012
+    CODE_EXECUTION_OUTPUT = "code_execution_output"
+    # LLM Context Window events for TASK_AUI_003
+    REQUEST_LLM_CONTEXT_WINDOW = "request_llm_context_window"  # Client to Server
+    LLM_CONTEXT_WINDOW_DATA = "llm_context_window_data"       # Server to Client
+    # File Browser events for TASK_AUI_005
+    REQUEST_WORK_DIR_FILES = "request_work_dir_files"          # Client to Server
+    WORK_DIR_FILES_DATA = "work_dir_files_data"               # Server to Client
+    # Agent Actions events for TASK_AUI_006
+    NUDGE_AGENT_REQUEST = "nudge_agent_request"               # Client to Server
+    PAUSE_AGENT_REQUEST = "pause_agent_request"               # Client to Server
+    RESUME_AGENT_REQUEST = "resume_agent_request"             # Client to Server
+    RESTART_AGENT_REQUEST = "restart_agent_request"           # Client to Server
+    AGENT_NUDGED = "agent_nudged"                             # Server to Client
+    AGENT_PAUSED = "agent_paused"                             # Server to Client
+    AGENT_RESUMED = "agent_resumed"                           # Server to Client
+    AGENT_RESTARTED = "agent_restarted"                       # Server to Client
+    # Settings events for TASK_AUI_007 and TASK_AUI_009
+    REQUEST_SETTINGS = "request_settings"                     # Client to Server
+    SETTINGS_DATA = "settings_data"                           # Server to Client
+    UPDATE_SETTINGS_REQUEST = "update_settings_request"       # Client to Server
+    SETTINGS_UPDATED_CONFIRMATION = "settings_updated_confirmation"  # Server to Client
 
 @dataclass
 class RunAgentInput:

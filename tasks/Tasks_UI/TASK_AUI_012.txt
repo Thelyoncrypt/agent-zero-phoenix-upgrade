@@ -1,0 +1,759 @@
+## TASK_AUI_012: Phoenix & Svelte - `GeneralCodeExecutionTool` Integration with Real-time UI Output
+
+**Goal:**
+1.  **Phoenix Backend (`GeneralCodeExecutionTool.py`):**
+    *   Verify and refine the `_execute_process` method to reliably stream `stdout` and `stderr` by emitting `CODE_EXECUTION_OUTPUT` events for each chunk of output received from the subprocess.
+    *   Ensure the final `TOOL_RESULT` for `code_execution` includes the complete `stdout`, `stderr`, and `exit_code`.
+2.  **Svelte UI (`chatStore.js`):**
+    *   Modify `handleStreamEvent` to accumulate `CODE_EXECUTION_OUTPUT` for an active `code_execution` tool call. This streamed output should be stored, perhaps in the `activeToolCall` object or directly within the `tool_call` item in `messagesAndEvents`.
+3.  **Svelte UI (`ToolCallCard.svelte`):**
+    *   Enhance `ToolCallCard.svelte` to display the live-streamed `stdout`/`stderr` as it arrives for `code_execution` tool calls.
+    *   Clearly display the final `exit_code`, full `stdout`, and full `stderr` when the `TOOL_RESULT` event is processed.
+    *   Style the output display (e.g., in a `<pre>` block with appropriate theming for code/terminal output).
+
+**Prerequisites:**
+*   Original Task 078 (Phoenix Backend - `GeneralCodeExecutionTool` with local execution) implemented.
+*   `StreamEventType.CODE_EXECUTION_OUTPUT` defined, and `ToolCallCard.svelte` can display basic tool results.
+*   Phoenix environment has Python and Node.js accessible for testing the respective runtimes.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Refinements (`GeneralCodeExecutionTool.py`):**
+
+**1. Refine `_execute_process` for Chunked Streaming:**
+    *   Action: Modify `_execute_process` in `python/tools/general_code_execution_tool.py` to read stdout/stderr in chunks and emit events more frequently.
+        ```python
+# In python/tools/general_code_execution_tool.py - within GeneralCodeExecutionTool class
+        import asyncio
+
+        async def _read_stream(self, stream: asyncio.StreamReader, stream_name: str, tool_call_id: str):
+            """Helper to read a stream and emit events for each line/chunk."""
+            output_buffer = ""
+            while True:
+                try:
+                    # Read a line or a chunk of data
+                    # For line-by-line:
+                    # line_bytes = await asyncio.wait_for(stream.readline(), timeout=0.1)
+                    # For chunk-based (might be better for binary or non-newline terminated output):
+                    chunk_bytes = await asyncio.wait_for(stream.read(4096), timeout=0.1) # Read up to 4KB
+                    if not chunk_bytes: # EOF
+                        break
+                    
+                    output_chunk = chunk_bytes.decode(errors='replace')
+                    output_buffer += output_chunk
+                    
+                    payload = {"source": stream_name}
+                    if stream_name == "stdout":
+                        payload["stdout"] = output_chunk
+                    else: # stderr
+                        payload["stderr"] = output_chunk
+                    
+                    # Add tool_call_id to help UI associate chunks with the correct tool call
+                    # This assumes the _emit_stream_event can take a specific 'context_id' or similar for routing
+                    # or that the current agent context is already set correctly for this scheduled task.
+                    # Let's assume the StreamProtocolTool (or agent._emit_stream_event) handles the current thread_id.
+                    await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, payload)
+
+                except asyncio.TimeoutError:
+                    # No new data on this stream for a short while, continue trying
+                    pass 
+                except Exception as e:
+                    print(f"Error reading stream {stream_name}: {e}")
+                    break # Stop reading on other errors
+            return output_buffer
+
+        async def _execute_process_streaming(
+            self, cmd_args: List[str], work_dir: str, timeout: int, 
+            input_data: Optional[bytes] = None, tool_call_id: str = "default_exec_id" # Pass a unique ID for this execution
+        ) -> Tuple[str, str, Optional[int]]:
+            """Runs a process, captures output, and streams stdout/stderr."""
+            full_stdout = ""
+            full_stderr = ""
+            exit_code = None
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE if input_data else None,
+                    cwd=work_dir
+                )
+
+                if input_data and process.stdin:
+                    process.stdin.write(input_data)
+                    await process.stdin.drain()
+                    process.stdin.close()
+
+                # Concurrently read stdout and stderr
+                stdout_task = asyncio.create_task(self._read_stream(process.stdout, "stdout", tool_call_id))
+                stderr_task = asyncio.create_task(self._read_stream(process.stderr, "stderr", tool_call_id))
+
+                # Wait for process to complete OR timeout
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=timeout)
+                    exit_code = process.returncode
+                except asyncio.TimeoutError:
+                    process.terminate() # Try to terminate gracefully
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5.0) # Wait a bit for termination
+                    except asyncio.TimeoutError:
+                        process.kill() # Force kill if terminate doesn't work
+                        await process.wait()
+                    exit_code = -99 # Custom timeout exit code
+                    timeout_msg = f"Execution timed out after {timeout} seconds."
+                    await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": timeout_msg, "source": "timeout"})
+                    full_stderr += f"\n[SYSTEM: {timeout_msg}]\n"
+
+                # Ensure streams are fully read after process exit
+                full_stdout = await stdout_task
+                full_stderr += await stderr_task # Append to any timeout message
+
+            except FileNotFoundError:
+                fnf_msg = f"Command or runtime not found: {cmd_args[0]}"
+                await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": fnf_msg, "source": "error"})
+                return "", fnf_msg, -100 
+            except Exception as e:
+                err_msg = f"Error during code execution setup: {str(e)}"
+                await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": err_msg, "source": "error"})
+                return "", err_msg, -101
+            
+            return full_stdout, full_stderr, exit_code
+        
+        # In the `execute` method, replace calls to `_execute_process` with `_execute_process_streaming`
+        # And pass a unique ID for each execution.
+        async def execute(self, runtime: str, code: str, ..., interactive_id: Optional[str] = None):
+            # ...
+            tool_call_event_id = self.agent.context.get_custom_data('current_tool_call_event_id', str(uuid.uuid4())) # Get if set by agent, or make new
+
+            # ... (save_to_file logic) ...
+
+            if runtime == "terminal":
+                # Using create_subprocess_shell for terminal
+                # Streaming from shell is trickier with asyncio.create_subprocess_shell's communicate().
+                # For better streaming, one might need to handle shell process PTYs or more complex stream redirection.
+                # For now, the shell part might not stream as finely as python/nodejs.
+                # A quick adaptation for shell - this won't stream chunk by chunk as effectively:
+                process = await asyncio.create_subprocess_shell(
+                    code_to_run, # code or filepath
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=current_work_dir
+                )
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                    stdout, stderr, exit_code = stdout_bytes.decode(errors='replace'), stderr_bytes.decode(errors='replace'), process.returncode
+                    if stdout: await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stdout": stdout, "source": "stdout"})
+                    if stderr: await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": stderr, "source": "stderr"})
+                except asyncio.TimeoutError: # ... timeout handling for shell ...
+                     process.terminate(); await asyncio.wait_for(process.wait(), 5.0); # Basic kill
+                     stdout, stderr, exit_code = "", f"Terminal execution timed out after {timeout}s.", -99
+                     await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": stderr, "source": "timeout"})
+
+
+            elif runtime == "python":
+                # ... (determine script_to_run: filepath or temp_file) ...
+                cmd_args = [sys.executable, script_to_run]
+                stdout, stderr, exit_code = await self._execute_process_streaming(cmd_args, current_work_dir, timeout, tool_call_id=tool_call_event_id)
+                # ... (cleanup temp_file if created) ...
+            elif runtime == "nodejs":
+                # ... (determine script_to_run) ...
+                cmd_args = ["node", script_to_run]
+                stdout, stderr, exit_code = await self._execute_process_streaming(cmd_args, current_work_dir, timeout, tool_call_id=tool_call_event_id)
+                # ... (cleanup temp_file if created) ...
+            # ...
+            # The TOOL_RESULT should contain the *full* stdout and stderr
+            # result_data = { "stdout": full_stdout, "stderr": full_stderr, "exit_code": exit_code, ... }
+```
+    *   **Key Changes:**
+        *   New `_read_stream` async generator helper to read from a process's stdout/stderr stream line by line or chunk by chunk and emit `CODE_EXECUTION_OUTPUT` events.
+        *   `_execute_process` (renamed or new `_execute_process_streaming`) now uses `asyncio.create_task` to run `_read_stream` for both stdout and stderr concurrently.
+        *   It waits for the process to finish OR timeout.
+        *   `execute` method calls `_execute_process_streaming`. For "terminal", direct streaming with `create_subprocess_shell` is more complex; the current adaptation might send output in larger chunks or only at the end. Full PTY-like streaming for shell is advanced.
+    *   Verify: Backend logic for streaming output implemented.
+
+**II. Svelte UI Changes:**
+
+**2. Update `src/lib/stores/chatStore.js` to Accumulate Streamed Output:**
+    *   Action: Modify `handleStreamEvent` for `TOOL_CALL_START` and `CODE_EXECUTION_OUTPUT`.
+        ```javascript
+// src/lib/stores/chatStore.js
+        // ...
+        const handleStreamEvent = (event) => {
+            // ...
+            switch (event.type) {
+                // ...
+                case 'TOOL_CALL_START':
+                    let initialOutputBuffer = "";
+                    if (event.payload?.tool_name === 'code_execution') {
+                        initialOutputBuffer = `[Starting ${event.payload.tool_args?.runtime || 'code'} execution...]\n`;
+                    }
+                    itemId = addItemToFeed({
+                        type: 'tool_call',
+                        tool_name: event.payload.tool_name,
+                        tool_args: event.payload.tool_args,
+                        status: 'running',
+                        id: event.id || crypto.randomUUID(),
+                        sub_events: [],
+                        output_buffer: initialOutputBuffer, // Initialize buffer for code exec
+                        last_output_timestamp: new Date()
+                    });
+                    update(s => ({ ...s, 
+                        currentOperationId: itemId, 
+                        agentStatus: `Phoenix is using ${event.payload.tool_name}...` 
+                    }));
+                    break;
+
+                case 'CODE_EXECUTION_OUTPUT':
+                    update(s => {
+                        if (!s.currentOperationId) return s; // No active tool call to append to
+                        const newFeed = s.messagesAndEvents.map(item => {
+                            if (item.id === s.currentOperationId && item.type === 'tool_call' && item.tool_name === 'code_execution') {
+                                let newOutput = item.output_buffer || "";
+                                if (event.payload.stdout) newOutput += event.payload.stdout;
+                                if (event.payload.stderr) newOutput += `[STDERR] ${event.payload.stderr}`; // Distinguish stderr
+                                if (event.payload.source === 'timeout' && event.payload.stderr) newOutput += `\n[SYSTEM: ${event.payload.stderr}]\n`;
+                                
+                                // Limit buffer size to prevent UI freezing for very long outputs
+                                const MAX_BUFFER = 10000; // Chars
+                                if (newOutput.length > MAX_BUFFER) {
+                                    newOutput = newOutput.slice(-MAX_BUFFER) + "\n[...output truncated in UI...]\n";
+                                }
+                                return { ...item, output_buffer: newOutput, last_output_timestamp: new Date() };
+                            }
+                            return item;
+                        });
+                        return { ...s, messagesAndEvents: newFeed };
+                    });
+                    break;
+                
+                case 'TOOL_RESULT':
+                    update(store => {
+                        let newStatus = store.agentStatus;
+                        const newFeed = store.messagesAndEvents.map(item => {
+                            if (item.id === store.currentOperationId && item.type === 'tool_call' && item.tool_name === event.payload.tool_name) {
+                                newStatus = event.payload.success ? `Tool ${item.tool_name} finished.` : `Tool ${item.tool_name} failed.`;
+                                // For code_execution, full stdout/stderr are in result.data, output_buffer might be cleared or merged
+                                const finalResultData = event.payload.result || {};
+                                let finalOutputDisplay = item.output_buffer || ""; // Keep streamed output
+                                if (item.tool_name === 'code_execution') {
+                                     // Optionally, clear output_buffer if final stdout/stderr in result are comprehensive
+                                     // finalOutputDisplay = ""; // Or, append final if different from streamed
+                                }
+
+                                return { 
+                                    ...item, 
+                                    status: event.payload.success ? 'success' : 'error', 
+                                    result: finalResultData,
+                                    output_buffer: finalOutputDisplay, // Keep or clear based on preference
+                                    error_message: event.payload.success ? null : (event.payload.error || finalResultData.stderr || "Tool execution failed."),
+                                    timestamp: new Date(event.timestamp)
+                                };
+                            }
+                            return item;
+                        });
+                        return { ...store, messagesAndEvents: newFeed, currentOperationId: null, agentStatus: newStatus };
+                    });
+                    break;
+                // ...
+            }
+        };
+```
+    *   **Key Changes:**
+        *   `TOOL_CALL_START` for `code_execution` initializes an `output_buffer` on the tool call item.
+        *   `CODE_EXECUTION_OUTPUT` events append their `stdout` or `stderr` to this `output_buffer`.
+        *   `TOOL_RESULT` might display the final `stdout`/`stderr` from `result.data` separately or confirm the `output_buffer` is complete.
+    *   Verify: Store logic updated.
+
+**3. Enhance `src/lib/components/chat/EventDisplays/ToolCallCard.svelte`:**
+    *   Action: Display the live `output_buffer` and the final execution details.
+        ```html
+<!-- src/lib/components/chat/EventDisplays/ToolCallCard.svelte -->
+        <script>
+            // ... (existing script, MarkdownRenderer if needed for output) ...
+            import { afterUpdate } from 'svelte';
+            let outputPreElement; // For auto-scrolling
+
+            // ... formatDataForDisplay, isHybridMemoryResult ...
+
+            // Auto-scroll for live output
+            $: if (toolCall.tool_name === 'code_execution' && toolCall.output_buffer && outputPreElement) {
+                // Only scroll if it's near the bottom, to avoid jumping if user scrolled up
+                if (outputPreElement.scrollHeight - outputPreElement.scrollTop < outputPreElement.clientHeight + 100) {
+                     outputPreElement.scrollTop = outputPreElement.scrollHeight;
+                }
+            }
+        </script>
+
+        <!-- ... (existing template structure) ... -->
+        {#if toolCall.tool_name === 'code_execution'}
+            {#if toolCall.output_buffer || (toolCall.status !== 'running' && toolCall.result)}
+            <div class="tool-section execution-output-section">
+                <div class="section-title-bar">
+                    <span class="section-title">Execution Output:</span>
+                    {#if toolCall.output_buffer}
+                    <button 
+                        class="copy-code-button-tool" 
+                        on:click={(e) => copyToClipboard(toolCall.output_buffer, e.currentTarget)}
+                        title="Copy live output"
+                    >
+                        <Icon path="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" size="14" /> Copy Output
+                    </button>
+                    {/if}
+                </div>
+                <!-- Live output buffer -->
+                {#if toolCall.output_buffer}
+                    <pre bind:this={outputPreElement} class="code-block live-output"><code class="language-plaintext">{toolCall.output_buffer}</code></pre>
+                {/if}
+
+                <!-- Final results after completion -->
+                {#if toolCall.status !== 'running' && toolCall.result}
+                    {#if toolCall.result.stdout && toolCall.result.stdout !== toolCall.output_buffer && !toolCall.output_buffer?.includes(toolCall.result.stdout)}
+                        <div class="section-title-bar final-output-header">
+                            <span class="section-title">Final STDOUT:</span>
+                        </div>
+                        <pre><code class="language-plaintext">{toolCall.result.stdout}</code></pre>
+                    {/if}
+                    {#if toolCall.result.stderr && toolCall.result.stderr !== toolCall.output_buffer && !toolCall.output_buffer?.includes(toolCall.result.stderr)}
+                         <div class="section-title-bar final-output-header">
+                            <span class="section-title">Final STDERR:</span>
+                        </div>
+                        <pre><code class="language-plaintext result-error-bg">{toolCall.result.stderr}</code></pre>
+                    {/if}
+                    {#if toolCall.result.exit_code !== undefined}
+                        <p class="exit-code-display">
+                            Exit Code: <span class="code-val {toolCall.result.exit_code === 0 ? 'success' : 'error'}">{toolCall.result.exit_code}</span>
+                        </p>
+                    {/if}
+                {/if}
+            </div>
+            {/if}
+        {/if}
+
+        <!-- ... (Result/Error section for other tools OR simplified for code_execution if above covers it) ... -->
+        <!-- ... (timestamp footer) ... -->
+        <style>
+            /* ... (existing styles) ... */
+            .execution-output-section { margin-top: 12px; }
+            .live-output { 
+                max-height: 300px; /* Scrollable area for live output */
+                background-color: var(--neumorphic-shadow-dark); /* Ensure it's distinct */
+            }
+            .final-output-header { margin-top: 10px; }
+            .exit-code-display {
+                font-size: 0.8em;
+                margin-top: 8px;
+                padding: 5px 8px;
+                border-radius: 4px;
+                background-color: var(--neumorphic-shadow-dark);
+                display: inline-block;
+            }
+            .exit-code-display .code-val { font-weight: bold; }
+            .exit-code-display .code-val.success { color: var(--accent-green-primary); }
+            .exit-code-display .code-val.error { color: var(--error-color); }
+        </style>
+```
+    *   **Key Changes:**
+        *   If `toolCall.tool_name === 'code_execution'`, it displays the `toolCall.output_buffer` in a `<pre>` block. This buffer is updated by `CODE_EXECUTION_OUTPUT` events.
+        *   Auto-scrolls the live output area.
+        *   After completion (`toolCall.status !== 'running'`), it displays the final `stdout`, `stderr`, and `exit_code` from `toolCall.result.data`. (Redundant if `output_buffer` already contains everything, so logic might hide these if `output_buffer` is comprehensive).
+    *   Verify: Component updated.
+
+**4. Testing TASK_AUI_012:**
+    *   Action:
+        1.  Start Phoenix backend with the refined `GeneralCodeExecutionTool`.
+        2.  Start Svelte UI.
+        3.  Execute commands using the `code_execution` tool that produce:
+            *   Simple, quick stdout (e.g., `terminal` -> `echo "Hello"`).
+            *   Multi-line stdout (e.g., `python` -> `for i in range(5): print(f"Line {i}")`).
+            *   Stderr (e.g., `terminal` -> `ls /nonexistent_path_kjsdhfkjsdh`).
+            *   A mix of stdout and stderr.
+            *   A command that takes a few seconds to complete and prints output incrementally (e.g., a Python script with `time.sleep` between prints).
+    *   Expected Behavior:
+        *   `ToolCallCard` appears for `code_execution`.
+        *   The "Execution Output" section updates in real-time (or near real-time) as `CODE_EXECUTION_OUTPUT` events arrive.
+        *   Stdout and stderr are distinguishable (e.g., stderr prefixed or styled differently).
+        *   The live output area scrolls automatically.
+        *   Upon completion, the final exit code is displayed. The final full stdout/stderr from the `TOOL_RESULT` are also shown (can be hidden if they are identical to the accumulated `output_buffer`).
+        *   Copy button for the live output works.
+
+This will make the `code_execution` tool much more interactive and useful by showing its progress.
+
+Ready for TASK_AUI_013, which is the big one: Full End-to-End System Testing?## TASK_AUI_012: Phoenix & Svelte - `GeneralCodeExecutionTool` Integration with Real-time UI Output
+
+**Goal:**
+1.  **Phoenix Backend (`GeneralCodeExecutionTool.py`):**
+    *   Verify and refine the `_execute_process` method to reliably stream `stdout` and `stderr` by emitting `CODE_EXECUTION_OUTPUT` events for each chunk of output received from the subprocess.
+    *   Ensure the final `TOOL_RESULT` for `code_execution` includes the complete `stdout`, `stderr`, and `exit_code`.
+2.  **Svelte UI (`chatStore.js`):**
+    *   Modify `handleStreamEvent` to accumulate `CODE_EXECUTION_OUTPUT` for an active `code_execution` tool call. This streamed output should be stored, perhaps in the `activeToolCall` object or directly within the `tool_call` item in `messagesAndEvents`.
+3.  **Svelte UI (`ToolCallCard.svelte`):**
+    *   Enhance `ToolCallCard.svelte` to display the live-streamed `stdout`/`stderr` as it arrives for `code_execution` tool calls.
+    *   Clearly display the final `exit_code`, full `stdout`, and full `stderr` when the `TOOL_RESULT` event is processed.
+    *   Style the output display (e.g., in a `<pre>` block with appropriate theming for code/terminal output).
+
+**Prerequisites:**
+*   Original Task 078 (Phoenix Backend - `GeneralCodeExecutionTool` with local execution) implemented.
+*   `StreamEventType.CODE_EXECUTION_OUTPUT` defined, and `ToolCallCard.svelte` can display basic tool results.
+*   Phoenix environment has Python and Node.js accessible for testing the respective runtimes.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Refinements (`GeneralCodeExecutionTool.py`):**
+
+**1. Refine `_execute_process` for Chunked Streaming:**
+    *   Action: Modify `_execute_process` in `python/tools/general_code_execution_tool.py` to read stdout/stderr in chunks and emit events more frequently.
+        ```python
+        # In python/tools/general_code_execution_tool.py - within GeneralCodeExecutionTool class
+        import asyncio
+
+        async def _read_stream(self, stream: asyncio.StreamReader, stream_name: str, tool_call_id: str):
+            """Helper to read a stream and emit events for each line/chunk."""
+            output_buffer = ""
+            while True:
+                try:
+                    # Read a line or a chunk of data
+                    # For line-by-line:
+                    # line_bytes = await asyncio.wait_for(stream.readline(), timeout=0.1)
+                    # For chunk-based (might be better for binary or non-newline terminated output):
+                    chunk_bytes = await asyncio.wait_for(stream.read(4096), timeout=0.1) # Read up to 4KB
+                    if not chunk_bytes: # EOF
+                        break
+                    
+                    output_chunk = chunk_bytes.decode(errors='replace')
+                    output_buffer += output_chunk
+                    
+                    payload = {"source": stream_name}
+                    if stream_name == "stdout":
+                        payload["stdout"] = output_chunk
+                    else: # stderr
+                        payload["stderr"] = output_chunk
+                    
+                    # Add tool_call_id to help UI associate chunks with the correct tool call
+                    # This assumes the _emit_stream_event can take a specific 'context_id' or similar for routing
+                    # or that the current agent context is already set correctly for this scheduled task.
+                    # Let's assume the StreamProtocolTool (or agent._emit_stream_event) handles the current thread_id.
+                    await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, payload)
+
+                except asyncio.TimeoutError:
+                    # No new data on this stream for a short while, continue trying
+                    pass 
+                except Exception as e:
+                    print(f"Error reading stream {stream_name}: {e}")
+                    break # Stop reading on other errors
+            return output_buffer
+
+        async def _execute_process_streaming(
+            self, cmd_args: List[str], work_dir: str, timeout: int, 
+            input_data: Optional[bytes] = None, tool_call_id: str = "default_exec_id" # Pass a unique ID for this execution
+        ) -> Tuple[str, str, Optional[int]]:
+            """Runs a process, captures output, and streams stdout/stderr."""
+            full_stdout = ""
+            full_stderr = ""
+            exit_code = None
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE if input_data else None,
+                    cwd=work_dir
+                )
+
+                if input_data and process.stdin:
+                    process.stdin.write(input_data)
+                    await process.stdin.drain()
+                    process.stdin.close()
+
+                # Concurrently read stdout and stderr
+                stdout_task = asyncio.create_task(self._read_stream(process.stdout, "stdout", tool_call_id))
+                stderr_task = asyncio.create_task(self._read_stream(process.stderr, "stderr", tool_call_id))
+
+                # Wait for process to complete OR timeout
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=timeout)
+                    exit_code = process.returncode
+                except asyncio.TimeoutError:
+                    process.terminate() # Try to terminate gracefully
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5.0) # Wait a bit for termination
+                    except asyncio.TimeoutError:
+                        process.kill() # Force kill if terminate doesn't work
+                        await process.wait()
+                    exit_code = -99 # Custom timeout exit code
+                    timeout_msg = f"Execution timed out after {timeout} seconds."
+                    await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": timeout_msg, "source": "timeout"})
+                    full_stderr += f"\n[SYSTEM: {timeout_msg}]\n"
+
+                # Ensure streams are fully read after process exit
+                full_stdout = await stdout_task
+                full_stderr += await stderr_task # Append to any timeout message
+
+            except FileNotFoundError:
+                fnf_msg = f"Command or runtime not found: {cmd_args[0]}"
+                await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": fnf_msg, "source": "error"})
+                return "", fnf_msg, -100 
+            except Exception as e:
+                err_msg = f"Error during code execution setup: {str(e)}"
+                await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": err_msg, "source": "error"})
+                return "", err_msg, -101
+            
+            return full_stdout, full_stderr, exit_code
+        
+        # In the `execute` method, replace calls to `_execute_process` with `_execute_process_streaming`
+        # And pass a unique ID for each execution.
+        async def execute(self, runtime: str, code: str, ..., interactive_id: Optional[str] = None):
+            # ...
+            tool_call_event_id = self.agent.context.get_custom_data('current_tool_call_event_id', str(uuid.uuid4())) # Get if set by agent, or make new
+
+            # ... (save_to_file logic) ...
+
+            if runtime == "terminal":
+                # Using create_subprocess_shell for terminal
+                # Streaming from shell is trickier with asyncio.create_subprocess_shell's communicate().
+                # For better streaming, one might need to handle shell process PTYs or more complex stream redirection.
+                # For now, the shell part might not stream as finely as python/nodejs.
+                # A quick adaptation for shell - this won't stream chunk by chunk as effectively:
+                process = await asyncio.create_subprocess_shell(
+                    code_to_run, # code or filepath
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=current_work_dir
+                )
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                    stdout, stderr, exit_code = stdout_bytes.decode(errors='replace'), stderr_bytes.decode(errors='replace'), process.returncode
+                    if stdout: await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stdout": stdout, "source": "stdout"})
+                    if stderr: await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": stderr, "source": "stderr"})
+                except asyncio.TimeoutError: # ... timeout handling for shell ...
+                     process.terminate(); await asyncio.wait_for(process.wait(), 5.0); # Basic kill
+                     stdout, stderr, exit_code = "", f"Terminal execution timed out after {timeout}s.", -99
+                     await self.agent._emit_stream_event(StreamEventType.CODE_EXECUTION_OUTPUT, {"stderr": stderr, "source": "timeout"})
+
+
+            elif runtime == "python":
+                # ... (determine script_to_run: filepath or temp_file) ...
+                cmd_args = [sys.executable, script_to_run]
+                stdout, stderr, exit_code = await self._execute_process_streaming(cmd_args, current_work_dir, timeout, tool_call_id=tool_call_event_id)
+                # ... (cleanup temp_file if created) ...
+            elif runtime == "nodejs":
+                # ... (determine script_to_run) ...
+                cmd_args = ["node", script_to_run]
+                stdout, stderr, exit_code = await self._execute_process_streaming(cmd_args, current_work_dir, timeout, tool_call_id=tool_call_event_id)
+                # ... (cleanup temp_file if created) ...
+            # ...
+            # The TOOL_RESULT should contain the *full* stdout and stderr
+            # result_data = { "stdout": full_stdout, "stderr": full_stderr, "exit_code": exit_code, ... }
+        ```
+    *   **Key Changes:**
+        *   New `_read_stream` async generator helper to read from a process's stdout/stderr stream line by line or chunk by chunk and emit `CODE_EXECUTION_OUTPUT` events.
+        *   `_execute_process` (renamed or new `_execute_process_streaming`) now uses `asyncio.create_task` to run `_read_stream` for both stdout and stderr concurrently.
+        *   It waits for the process to finish OR timeout.
+        *   `execute` method calls `_execute_process_streaming`. For "terminal", direct streaming with `create_subprocess_shell` is more complex; the current adaptation might send output in larger chunks or only at the end. Full PTY-like streaming for shell is advanced.
+    *   Verify: Backend logic for streaming output implemented.
+
+**II. Svelte UI Changes:**
+
+**2. Update `src/lib/stores/chatStore.js` to Accumulate Streamed Output:**
+    *   Action: Modify `handleStreamEvent` for `TOOL_CALL_START` and `CODE_EXECUTION_OUTPUT`.
+        ```javascript
+        // src/lib/stores/chatStore.js
+        // ...
+        const handleStreamEvent = (event) => {
+            // ...
+            switch (event.type) {
+                // ...
+                case 'TOOL_CALL_START':
+                    let initialOutputBuffer = "";
+                    if (event.payload?.tool_name === 'code_execution') {
+                        initialOutputBuffer = `[Starting ${event.payload.tool_args?.runtime || 'code'} execution...]\n`;
+                    }
+                    itemId = addItemToFeed({
+                        type: 'tool_call',
+                        tool_name: event.payload.tool_name,
+                        tool_args: event.payload.tool_args,
+                        status: 'running',
+                        id: event.id || crypto.randomUUID(),
+                        sub_events: [],
+                        output_buffer: initialOutputBuffer, // Initialize buffer for code exec
+                        last_output_timestamp: new Date()
+                    });
+                    update(s => ({ ...s, 
+                        currentOperationId: itemId, 
+                        agentStatus: `Phoenix is using ${event.payload.tool_name}...` 
+                    }));
+                    break;
+
+                case 'CODE_EXECUTION_OUTPUT':
+                    update(s => {
+                        if (!s.currentOperationId) return s; // No active tool call to append to
+                        const newFeed = s.messagesAndEvents.map(item => {
+                            if (item.id === s.currentOperationId && item.type === 'tool_call' && item.tool_name === 'code_execution') {
+                                let newOutput = item.output_buffer || "";
+                                if (event.payload.stdout) newOutput += event.payload.stdout;
+                                if (event.payload.stderr) newOutput += `[STDERR] ${event.payload.stderr}`; // Distinguish stderr
+                                if (event.payload.source === 'timeout' && event.payload.stderr) newOutput += `\n[SYSTEM: ${event.payload.stderr}]\n`;
+                                
+                                // Limit buffer size to prevent UI freezing for very long outputs
+                                const MAX_BUFFER = 10000; // Chars
+                                if (newOutput.length > MAX_BUFFER) {
+                                    newOutput = newOutput.slice(-MAX_BUFFER) + "\n[...output truncated in UI...]\n";
+                                }
+                                return { ...item, output_buffer: newOutput, last_output_timestamp: new Date() };
+                            }
+                            return item;
+                        });
+                        return { ...s, messagesAndEvents: newFeed };
+                    });
+                    break;
+                
+                case 'TOOL_RESULT':
+                    update(store => {
+                        let newStatus = store.agentStatus;
+                        const newFeed = store.messagesAndEvents.map(item => {
+                            if (item.id === store.currentOperationId && item.type === 'tool_call' && item.tool_name === event.payload.tool_name) {
+                                newStatus = event.payload.success ? `Tool ${item.tool_name} finished.` : `Tool ${item.tool_name} failed.`;
+                                // For code_execution, full stdout/stderr are in result.data, output_buffer might be cleared or merged
+                                const finalResultData = event.payload.result || {};
+                                let finalOutputDisplay = item.output_buffer || ""; // Keep streamed output
+                                if (item.tool_name === 'code_execution') {
+                                     // Optionally, clear output_buffer if final stdout/stderr in result are comprehensive
+                                     // finalOutputDisplay = ""; // Or, append final if different from streamed
+                                }
+
+                                return { 
+                                    ...item, 
+                                    status: event.payload.success ? 'success' : 'error', 
+                                    result: finalResultData,
+                                    output_buffer: finalOutputDisplay, // Keep or clear based on preference
+                                    error_message: event.payload.success ? null : (event.payload.error || finalResultData.stderr || "Tool execution failed."),
+                                    timestamp: new Date(event.timestamp)
+                                };
+                            }
+                            return item;
+                        });
+                        return { ...store, messagesAndEvents: newFeed, currentOperationId: null, agentStatus: newStatus };
+                    });
+                    break;
+                // ...
+            }
+        };
+        ```
+    *   **Key Changes:**
+        *   `TOOL_CALL_START` for `code_execution` initializes an `output_buffer` on the tool call item.
+        *   `CODE_EXECUTION_OUTPUT` events append their `stdout` or `stderr` to this `output_buffer`.
+        *   `TOOL_RESULT` might display the final `stdout`/`stderr` from `result.data` separately or confirm the `output_buffer` is complete.
+    *   Verify: Store logic updated.
+
+**3. Enhance `src/lib/components/chat/EventDisplays/ToolCallCard.svelte`:**
+    *   Action: Display the live `output_buffer` and the final execution details.
+        ```html
+        <!-- src/lib/components/chat/EventDisplays/ToolCallCard.svelte -->
+        <script>
+            // ... (existing script, MarkdownRenderer if needed for output) ...
+            import { afterUpdate } from 'svelte';
+            let outputPreElement; // For auto-scrolling
+
+            // ... formatDataForDisplay, isHybridMemoryResult ...
+
+            // Auto-scroll for live output
+            $: if (toolCall.tool_name === 'code_execution' && toolCall.output_buffer && outputPreElement) {
+                // Only scroll if it's near the bottom, to avoid jumping if user scrolled up
+                if (outputPreElement.scrollHeight - outputPreElement.scrollTop < outputPreElement.clientHeight + 100) {
+                     outputPreElement.scrollTop = outputPreElement.scrollHeight;
+                }
+            }
+        </script>
+
+        <!-- ... (existing template structure) ... -->
+        {#if toolCall.tool_name === 'code_execution'}
+            {#if toolCall.output_buffer || (toolCall.status !== 'running' && toolCall.result)}
+            <div class="tool-section execution-output-section">
+                <div class="section-title-bar">
+                    <span class="section-title">Execution Output:</span>
+                    {#if toolCall.output_buffer}
+                    <button 
+                        class="copy-code-button-tool" 
+                        on:click={(e) => copyToClipboard(toolCall.output_buffer, e.currentTarget)}
+                        title="Copy live output"
+                    >
+                        <Icon path="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" size="14" /> Copy Output
+                    </button>
+                    {/if}
+                </div>
+                <!-- Live output buffer -->
+                {#if toolCall.output_buffer}
+                    <pre bind:this={outputPreElement} class="code-block live-output"><code class="language-plaintext">{toolCall.output_buffer}</code></pre>
+                {/if}
+
+                <!-- Final results after completion -->
+                {#if toolCall.status !== 'running' && toolCall.result}
+                    {#if toolCall.result.stdout && toolCall.result.stdout !== toolCall.output_buffer && !toolCall.output_buffer?.includes(toolCall.result.stdout)}
+                        <div class="section-title-bar final-output-header">
+                            <span class="section-title">Final STDOUT:</span>
+                        </div>
+                        <pre><code class="language-plaintext">{toolCall.result.stdout}</code></pre>
+                    {/if}
+                    {#if toolCall.result.stderr && toolCall.result.stderr !== toolCall.output_buffer && !toolCall.output_buffer?.includes(toolCall.result.stderr)}
+                         <div class="section-title-bar final-output-header">
+                            <span class="section-title">Final STDERR:</span>
+                        </div>
+                        <pre><code class="language-plaintext result-error-bg">{toolCall.result.stderr}</code></pre>
+                    {/if}
+                    {#if toolCall.result.exit_code !== undefined}
+                        <p class="exit-code-display">
+                            Exit Code: <span class="code-val {toolCall.result.exit_code === 0 ? 'success' : 'error'}">{toolCall.result.exit_code}</span>
+                        </p>
+                    {/if}
+                {/if}
+            </div>
+            {/if}
+        {/if}
+
+        <!-- ... (Result/Error section for other tools OR simplified for code_execution if above covers it) ... -->
+        <!-- ... (timestamp footer) ... -->
+        <style>
+            /* ... (existing styles) ... */
+            .execution-output-section { margin-top: 12px; }
+            .live-output { 
+                max-height: 300px; /* Scrollable area for live output */
+                background-color: var(--neumorphic-shadow-dark); /* Ensure it's distinct */
+            }
+            .final-output-header { margin-top: 10px; }
+            .exit-code-display {
+                font-size: 0.8em;
+                margin-top: 8px;
+                padding: 5px 8px;
+                border-radius: 4px;
+                background-color: var(--neumorphic-shadow-dark);
+                display: inline-block;
+            }
+            .exit-code-display .code-val { font-weight: bold; }
+            .exit-code-display .code-val.success { color: var(--accent-green-primary); }
+            .exit-code-display .code-val.error { color: var(--error-color); }
+        </style>
+        ```
+    *   **Key Changes:**
+        *   If `toolCall.tool_name === 'code_execution'`, it displays the `toolCall.output_buffer` in a `<pre>` block. This buffer is updated by `CODE_EXECUTION_OUTPUT` events.
+        *   Auto-scrolls the live output area.
+        *   After completion (`toolCall.status !== 'running'`), it displays the final `stdout`, `stderr`, and `exit_code` from `toolCall.result.data`. (Redundant if `output_buffer` already contains everything, so logic might hide these if `output_buffer` is comprehensive).
+    *   Verify: Component updated.
+
+**4. Testing TASK_AUI_012:**
+    *   Action:
+        1.  Start Phoenix backend with the refined `GeneralCodeExecutionTool`.
+        2.  Start Svelte UI.
+        3.  Execute commands using the `code_execution` tool that produce:
+            *   Simple, quick stdout (e.g., `terminal` -> `echo "Hello"`).
+            *   Multi-line stdout (e.g., `python` -> `for i in range(5): print(f"Line {i}")`).
+            *   Stderr (e.g., `terminal` -> `ls /nonexistent_path_kjsdhfkjsdh`).
+            *   A mix of stdout and stderr.
+            *   A command that takes a few seconds to complete and prints output incrementally (e.g., a Python script with `time.sleep` between prints).
+    *   Expected Behavior:
+        *   `ToolCallCard` appears for `code_execution`.
+        *   The "Execution Output" section updates in real-time (or near real-time) as `CODE_EXECUTION_OUTPUT` events arrive.
+        *   Stdout and stderr are distinguishable (e.g., stderr prefixed or styled differently).
+        *   The live output area scrolls automatically.
+        *   Upon completion, the final exit code is displayed. The final full stdout/stderr from the `TOOL_RESULT` are also shown (can be hidden if they are identical to the accumulated `output_buffer`).
+        *   Copy button for the live output works.
+
+This will make the `code_execution` tool much more interactive and useful by showing its progress.
+
+Ready for TASK_AUI_013, which is the big one: Full End-to-End System Testing?

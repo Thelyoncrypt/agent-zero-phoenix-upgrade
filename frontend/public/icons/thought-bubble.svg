@@ -1,0 +1,84 @@
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Dreamy gradient -->
+    <radialGradient id="thoughtGradient" cx="50%" cy="30%">
+      <stop offset="0%" style="stop-color:#00FF88;stop-opacity:0.3" />
+      <stop offset="50%" style="stop-color:#00CC6A;stop-opacity:0.5" />
+      <stop offset="100%" style="stop-color:#009951;stop-opacity:0.8" />
+    </radialGradient>
+    
+    <!-- Cloud-like gradient -->
+    <linearGradient id="cloudGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:0.2" />
+      <stop offset="100%" style="stop-color:#00FF88;stop-opacity:0.1" />
+    </linearGradient>
+    
+    <!-- Soft glow filter -->
+    <filter id="thoughtGlow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Inner shadow for depth -->
+    <filter id="innerShadow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="1"/>
+      <feOffset dx="0" dy="1" result="offsetblur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.2"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Main thought bubble -->
+  <g filter="url(#thoughtGlow)">
+    <!-- Large bubble -->
+    <ellipse cx="12" cy="10" rx="7" ry="6" fill="url(#thoughtGradient)" stroke="#00FF88" stroke-width="1.5" filter="url(#innerShadow)"/>
+    
+    <!-- Cloud-like overlay -->
+    <ellipse cx="12" cy="10" rx="6" ry="5" fill="url(#cloudGradient)"/>
+    
+    <!-- Medium bubble -->
+    <circle cx="8" cy="16" r="2.5" fill="url(#thoughtGradient)" stroke="#00CC6A" stroke-width="1.2" opacity="0.8"/>
+    
+    <!-- Small bubble -->
+    <circle cx="6" cy="20" r="1.5" fill="url(#thoughtGradient)" stroke="#009951" stroke-width="1" opacity="0.6"/>
+  </g>
+  
+  <!-- Neural activity inside -->
+  <g opacity="0.5">
+    <!-- Synaptic connections -->
+    <path d="M9,8 Q12,10 15,8" stroke="#00FF88" stroke-width="0.5" fill="none">
+      <animate attributeName="opacity" values="0.2;0.8;0.2" dur="2s" repeatCount="indefinite"/>
+    </path>
+    <path d="M10,10 Q12,12 14,10" stroke="#00CC6A" stroke-width="0.5" fill="none">
+      <animate attributeName="opacity" values="0.2;0.8;0.2" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Neural nodes -->
+    <circle cx="9" cy="8" r="0.8" fill="#00FF88">
+      <animate attributeName="r" values="0.8;1.2;0.8" dur="1.5s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="15" cy="8" r="0.8" fill="#00FF88">
+      <animate attributeName="r" values="0.8;1.2;0.8" dur="1.5s" begin="0.75s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="12" cy="10" r="1" fill="#00CC6A">
+      <animate attributeName="r" values="1;1.5;1" dur="1.5s" begin="0.375s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+  
+  <!-- Floating particles -->
+  <g opacity="0.4">
+    <circle cx="16" cy="7" r="0.3" fill="#FFFFFF">
+      <animate attributeName="cy" values="7;5;7" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="8" cy="12" r="0.3" fill="#FFFFFF">
+      <animate attributeName="cy" values="12;10;12" dur="3s" begin="1s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+</svg>

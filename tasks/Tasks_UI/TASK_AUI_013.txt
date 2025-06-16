@@ -1,0 +1,123 @@
+## TASK_AUI_013: Phoenix System - Comprehensive End-to-End (E2E) Testing
+
+**Goal:**
+Perform thorough end-to-end testing of the integrated Phoenix system, covering key user workflows that involve multiple tools, StreamProtocol events, and UI interactions. The objective is to identify integration bugs, UI/UX issues, performance bottlenecks, and ensure overall system stability and correctness.
+
+**Prerequisites:**
+*   All preceding AUI tasks (UI layout, components for chat, events, actions, settings, file browser, audio playback, code execution output) are implemented to a functional level.
+*   All corresponding Phoenix backend tools (`WebCrawlerTool`, `KnowledgeAgentTool` with RAG, `MemoryAgentTool` with Mem0, `HybridMemoryTool` with LLM synthesis, `BrowserAgentTool` with `agent_execute` and re-planning, `ChatterboxTTSTool` with streaming, `GeneralCodeExecutionTool`) are implemented and integrated.
+*   Phoenix backend (`run_ui.py`) is running, serving the WebSocket endpoint.
+*   Svelte UI is built and served, connecting to the backend.
+*   Necessary API keys (`.env`) and configurations (`default_settings.yaml`) are in place.
+*   Supabase database is set up with the schema and accessible.
+*   `mem0` is running or its data directory is correctly configured.
+*   ChatterboxTTS models are accessible.
+
+**Key E2E Scenarios to Test (as outlined previously, now with Svelte UI focus):**
+
+**Scenario 1: Full RAG Pipeline Test**
+    *   **User Action (Svelte UI):**
+        1.  Instruct Phoenix: "Crawl and index the content from the webpage at [URL of a short, simple documentation page, e.g., a specific page from `python.org` or a known blog post]."
+        2.  After confirmation of crawl/ingestion, ask a specific question whose answer is ONLY on that crawled page: "What does the [specific section/term] on that page say about [specific detail]?"
+    *   **Expected Phoenix Backend Behavior & Stream Events:**
+        *   Agent uses `WebCrawlerTool` (`crawl_single_url` or `crawl_site` with depth 0/1).
+        *   `CRAWL_PROGRESS`, `DOCUMENT_PROCESSED`, `CHUNKS_CREATED` events.
+        *   `KnowledgeAgentTool` (`ingest_chunks`) is called. `EMBEDDING_PROGRESS`, `KNOWLEDGE_STORE_SUCCESS` events. Data appears in Supabase.
+        *   For the question: `HybridMemoryTool` or `KnowledgeAgentTool` (`query`) is used.
+        *   `AGENT_THOUGHTS`, `TOOL_CALL_START/RESULT` for knowledge retrieval.
+        *   `KnowledgeRAGAgent` synthesizes the answer using an LLM.
+        *   `TEXT_MESSAGE_CONTENT` (assistant) event with the correct, sourced answer.
+    *   **Expected Svelte UI Behavior:**
+        *   `StatusFooter` and `ToolCallCard` (for WebCrawler, then KnowledgeAgent) show progress.
+        *   Final assistant message in `MessageCard` provides the correct answer.
+
+**Scenario 2: Browser Interaction, Data Extraction, and Memory Storage**
+    *   **User Action (Svelte UI):**
+        1.  "Phoenix, please use the browser to go to [a specific, simple e-commerce product page URL] and tell me the product name and price."
+        2.  After Phoenix responds: "Remember that the price of [product name] is [price]."
+        3.  Later: "What did I tell you about the price of [product name]?"
+    *   **Expected Phoenix Backend Behavior & Stream Events:**
+        *   Agent uses `BrowserAgentTool` (action `navigate`, then `extract` with a schema for name/price).
+        *   `BROWSER_ACTION_STEP` events for navigation and extraction. `AGENT_THOUGHTS`, `TOOL_CALL_START/RESULT` for BrowserAgentTool.
+        *   `TEXT_MESSAGE_CONTENT` with extracted name/price.
+        *   For "Remember": Agent uses `MemoryAgentTool` (action `add` or `add_messages` with Mem0). `MEMORY_UPDATE` (add) event.
+        *   For "What did I tell you": Agent uses `MemoryAgentTool` (action `search`) or `HybridMemoryTool`. `TOOL_CALL_START/RESULT`. `TEXT_MESSAGE_CONTENT` with the remembered price.
+    *   **Expected Svelte UI Behavior:**
+        *   Browser actions shown in `ToolCallCard` with steps.
+        *   Extracted data shown. Memory operations indicated. Correct remembered price retrieved.
+
+**Scenario 3: Multi-Step Browser Task (`agent_execute`) with Re-planning and Memory**
+    *   **User Action (Svelte UI):** "Phoenix, find the current temperature in London, UK, using a web search in the browser, and then remember what it is."
+    *   **Simulate Failure (if testing re-planning):** Temporarily modify `ActionExecutor` to make an initial sub-action fail (e.g., a click on a non-existent element in a mock plan for a weather site).
+    *   **Expected Phoenix Backend Behavior & Stream Events:**
+        *   Agent uses `BrowserAgentTool` (action `agent_execute`).
+        *   `ComputerUsePlanner` decomposes the task. `AGENT_THOUGHT` showing initial plan.
+        *   Sequence of `BROWSER_ACTION_STEP` events (navigate, type, click, extract).
+        *   If simulated failure: Plan fails, `AGENT_THOUGHT` indicating re-planning, `ComputerUsePlanner` called again with feedback. New `BROWSER_ACTION_STEP`s for the new plan.
+        *   Temperature is extracted.
+        *   Agent then calls `MemoryAgentTool` to save "Temperature in London is X°C". `MEMORY_UPDATE` event.
+        *   `TEXT_MESSAGE_CONTENT` confirming task completion.
+    *   **Expected Svelte UI Behavior:**
+        *   `ToolCallCard` for `BrowserAgentTool (agent_execute)` shows all individual `BrowserActionStepCard`s, updating their status.
+        *   If re-planning occurs, UI should ideally show this transition (e.g., "Plan failed, re-planning...").
+        *   Final confirmation message.
+
+**Scenario 4: TTS Generation and Streaming Playback with Stop Control**
+    *   **User Action (Svelte UI):**
+        1.  Ask Phoenix a question that elicits a text response (e.g., "Explain photosynthesis briefly.").
+        2.  After text response: "Phoenix, read your last answer aloud."
+    *   **Expected Phoenix Backend Behavior & Stream Events:**
+        *   Agent gives text answer (`TEXT_MESSAGE_CONTENT`).
+        *   For "read aloud": Agent uses `ChatterboxTTSTool` (action `synthesize_speech_stream`).
+        *   `TTS_STREAM_START`, multiple `AUDIO_CHUNK` (base64), `TTS_STREAM_END` events are emitted.
+    *   **Expected Svelte UI Behavior:**
+        *   Text answer appears in `MessageCard`.
+        *   `AudioPlaybackControl.svelte` appears. User clicks UI once to enable AudioContext if needed.
+        *   Status shows "Buffering..." then "Playing speech...". Audio plays.
+        *   User clicks "Stop" button in `AudioPlaybackControl`. Audio playback stops immediately. `AudioPlayerStore` state resets.
+        *   `StatusFooter` updates accordingly.
+
+**Scenario 5: `GeneralCodeExecutionTool` with Live Output**
+    *   **User Action (Svelte UI):** "Phoenix, run a Python script: `for i in range(3): import time; print(f'Count: {i}'); time.sleep(0.5)`"
+    *   **Expected Phoenix Backend Behavior & Stream Events:**
+        *   Agent uses `GeneralCodeExecutionTool`.
+        *   `TOOL_CALL_START` for `code_execution`.
+        *   Multiple `CODE_EXECUTION_OUTPUT` events stream `stdout` ("Count: 0", "Count: 1", "Count: 2").
+        *   `TOOL_RESULT` with final `stdout`, `stderr`, `exit_code`.
+    *   **Expected Svelte UI Behavior:**
+        *   `ToolCallCard` for `code_execution` appears.
+        *   The "Live Output" section within the card updates in real-time showing "Count: 0", then "Count: 1", etc.
+        *   Final exit code displayed.
+
+**Scenario 6: Settings Viewing and Chat Management**
+    *   **User Action (Svelte UI):**
+        1.  Open Settings modal: View current settings. (No editing in this E2E test focus, just display).
+        2.  Start a new chat: Interact briefly.
+        3.  Start another new chat: Interact.
+        4.  Use `ChatHistoryPanel`: Load the first chat. Rename it. Delete the second chat.
+    *   **Expected Phoenix Backend Behavior & Stream Events:**
+        *   Settings: `request_settings` -> `SETTINGS_DATA`.
+        *   Chat Mgmt: `new_chat_request` -> `NEW_CHAT_SESSION_INITIATED`, `CHAT_LOADED_DATA`. `request_chat_list` -> `CHAT_LIST_UPDATE`. `load_chat_request` -> `CHAT_LOADED_DATA`. `rename_chat_request` -> `CHAT_LIST_UPDATE`, `CURRENT_CHAT_RENAMED`. `delete_chat_request` -> `CHAT_LIST_UPDATE`.
+        *   Chat history files created/updated/deleted in `work_dir/chat_histories/{userId}/`.
+    *   **Expected Svelte UI Behavior:**
+        *   Settings modal displays (masked) settings.
+        *   `ChatHistoryPanel` updates correctly. Chat content in main view switches correctly. Renaming and deletion reflect in the list.
+
+**Testing Methodology:**
+*   **Manual Interaction:** Use the Svelte UI as an end-user would for each scenario.
+*   **Console Monitoring (Browser & Backend):** Check for JavaScript errors, WebSocket message flows, Python logs, and exceptions.
+*   **Stream Event Verification:** Observe the sequence and payload of StreamProtocol events in the browser console (via `socketStore` logging) or a dedicated event log in the UI if you build one.
+*   **Data Verification:**
+    *   Check Supabase for RAG ingested data.
+    *   Check `mem0` data directory (or its API if it has a "list all memories" feature).
+    *   Check `work_dir/chat_histories/` for saved chat files.
+    *   Check `work_dir/tmp/tts_output/` for any generated audio files (if non-streaming TTS is also tested).
+*   **Timing & Performance:** Note any significant delays or performance issues.
+
+**Expected Outcome of TASK_AUI_013:**
+*   A comprehensive list of executed E2E scenarios with pass/fail status.
+*   Detailed bug reports for any issues found (UI glitches, backend errors, incorrect event sequences, data inconsistencies, performance problems).
+*   Confirmation that core features are working together as expected.
+*   Identification of areas that need further polish or refinement before considering the "Phoenix" upgrade complete for this phase.
+
+This E2E testing phase is critical. It's where the "rubber meets the road" and you'll catch many issues that unit or integration tests for individual components might miss. Be thorough and methodical!

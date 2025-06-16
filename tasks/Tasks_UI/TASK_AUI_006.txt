@@ -1,0 +1,707 @@
+## TASK_AUI_006: Svelte UI & Phoenix Backend - "Actions" Bar (Nudge, Pause/Resume, Restart Agent)
+
+**Goal:**
+1.  **Svelte UI:**
+    *   Create a new component `src/lib/components/layout/AgentActionsBar.svelte`.
+    *   This bar will contain buttons for "Nudge," "Pause/Resume," and "Restart Agent."
+    *   Integrate this bar into the main UI, likely within `AppHeader.svelte` or as a separate bar just below it.
+    *   Button states (e.g., "Pause" vs. "Resume") should reflect the agent's current state from `chatStore`.
+2.  **Phoenix Backend (StreamProtocol & Agent Logic):**
+    *   **Nudge:**
+        *   Client sends `nudge_agent_request` (new StreamProtocol message type).
+        *   Backend: `Agent` class needs a `nudge()` method. When called, if the agent is in a long-running thought loop or waiting, it should interrupt that, potentially re-evaluate its current goal, or emit a status indicating it's ready for new input.
+    *   **Pause/Resume:**
+        *   Client sends `pause_agent_request` or `resume_agent_request`.
+        *   Backend: `AgentContext` (or `Agent`) gets an `is_paused: bool` flag.
+        *   The agent's main processing loop (e.g., before LLM calls or tool executions) must check this flag. If `is_paused`, it should `await` a "resume" signal (e.g., an `asyncio.Event`).
+        *   Backend emits `AGENT_STATE_DELTA` (e.g., `{"newState": "PAUSED"}` or `{"newState": "RUNNING"}`).
+    *   **Restart Agent:**
+        *   Client sends `restart_agent_request`.
+        *   Backend: For the current `threadId`, the `AgentContext` is reset (history cleared, internal state reset, running tools cancelled/cleaned up). The `Agent` instance might be re-initialized or its state reset.
+        *   Backend emits events to clear the UI for that `threadId` (e.g., `CHAT_CLEARED` or a series of events that result in a fresh UI state).
+
+**Prerequisites:**
+*   TASK_AUI_001 completed: Main UI layout (including `AppHeader.svelte`) is in place.
+*   `chatStore.js` and `socketStore.js` are functional.
+*   Phoenix Agent's main processing loop can be made to check a pause flag.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes:**
+
+**1. Define New StreamProtocol Message & Event Types:**
+    *   Action: In `python/tools/stream_protocol_tool.py` (or `python/agent.py`).
+        ```python
+# In StreamEventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            # Client to Server requests
+            NUDGE_AGENT_REQUEST = "nudge_agent_request"
+            PAUSE_AGENT_REQUEST = "pause_agent_request"
+            RESUME_AGENT_REQUEST = "resume_agent_request"
+            RESTART_AGENT_REQUEST = "restart_agent_request"
+            
+            # Server to Client confirmations or state changes (AGENT_STATE_DELTA can also be used)
+            AGENT_NUDGED = "agent_nudged"
+            AGENT_PAUSED = "agent_paused" # Could be part of AGENT_STATE_DELTA
+            AGENT_RESUMED = "agent_resumed" # Could be part of AGENT_STATE_DELTA
+            AGENT_RESTARTED = "agent_restarted" # Signals UI to clear and re-init
+```
+    *   Verify: Enum updated.
+
+**2. Enhance `python/agent.py` - `AgentContext` and `Agent`:**
+    *   Action: Add pause/resume logic and a nudge mechanism.
+        ```python
+# In python/agent.py
+
+        class AgentContext:
+            # ... existing ...
+            def __init__(self, ...):
+                self.is_paused = False
+                self._resume_event = asyncio.Event() # For pausing
+                if not self.is_paused: self._resume_event.set() # Start in resumed state
+                # ...
+
+            def pause_processing(self):
+                self.is_paused = True
+                self._resume_event.clear()
+                print(f"AgentContext {self.id}: Processing PAUSED.")
+
+            def resume_processing(self):
+                self.is_paused = False
+                self._resume_event.set()
+                print(f"AgentContext {self.id}: Processing RESUMED.")
+
+            async def wait_if_paused(self):
+                if self.is_paused:
+                    print(f"AgentContext {self.id}: Execution waiting due to PAUSED state...")
+                    await self._resume_event.wait()
+                    print(f"AgentContext {self.id}: Resumed execution after pause.")
+            
+            def reset_for_restart(self): # Method to clear context for restart
+                self.messages_and_events_history = [] # Assuming history is stored here
+                self.current_tool_calls = {}
+                self.agent_state = {} # Reset any custom agent state
+                self.is_paused = False
+                self._resume_event.set()
+                # Also cancel/clear any pending UI requests or interventions
+                if hasattr(self, '_pending_ui_requests'): self._pending_ui_requests.clear()
+                if hasattr(self, '_pending_interventions'): self._pending_interventions.clear()
+                print(f"AgentContext {self.id}: Context has been RESET for agent restart.")
+
+
+        class Agent:
+            # ... existing __init__ ...
+            def __init__(self, ...):
+                # ...
+                self._is_nudged = asyncio.Event() # For nudge mechanism
+
+            async def _main_processing_loop_or_llm_call(self, ...): # Conceptual name for your core logic
+                await self.context.wait_if_paused() # Check before significant operations
+
+                # Nudge check: if nudged, clear flag and potentially change behavior
+                if self._is_nudged.is_set():
+                    self._is_nudged.clear()
+                    await self._emit_stream_event(StreamEventType.AGENT_NUDGED, {"message": "Agent nudged, re-evaluating..."})
+                    await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"thought": "I've been nudged. I will re-assess my current task or await new input."})
+                    # Depending on agent's state, this might mean breaking a loop,
+                    # re-prompting the LLM with current history, or just finishing current step and stopping.
+                    # For simplicity, it might just make the current LLM call return a "waiting for input" response.
+                    # This is a complex interaction to get right.
+                    # For now, emitting an event is the main goal.
+
+                # ... rest of your LLM call or tool execution logic ...
+                pass
+
+            def nudge_agent(self):
+                """Sets the nudge event to interrupt/influence the agent's current processing loop."""
+                print(f"Agent {self.agent_id}: Nudge received.")
+                self._is_nudged.set()
+                # If agent is paused, nudging might also imply resuming it to process the nudge
+                if self.context.is_paused:
+                    self.context.resume_processing() 
+                    # Consider if nudge should clear self._is_nudged immediately or let the loop do it
+
+            def restart_agent_session(self):
+                """Resets the agent's context for the current thread."""
+                print(f"Agent {self.agent_id}: Restart request received.")
+                self.context.reset_for_restart()
+                # Tools might need to be re-initialized or their states reset if they are session-specific
+                # e.g., self.browser_manager.close_session_for_context(self.context.thread_id)
+                # For now, context reset is the primary action.
+                self._is_nudged.clear() # Clear nudge flag on restart
+```
+    *   **Important:** The `await self.context.wait_if_paused()` call must be strategically placed within your agent's main processing loop(s), especially before long-running operations like LLM calls or tool executions. The `_is_nudged.is_set()` check also needs to be in the loop.
+    *   Verify: Agent and Context updated.
+
+**3. Update WebSocket Handler (in `StreamProtocolTool` or `run_ui.py`):**
+    *   Action: Add handlers for the new request types.
+        ```python
+# In python/tools/stream_protocol_tool.py or run_ui.py WebSocket message handler
+        # ... (ensure agent_instance is correctly fetched/created for the threadId/userId)
+
+        # elif message_type == StreamEventType.NUDGE_AGENT_REQUEST.value:
+        #     if agent_instance:
+        #         agent_instance.nudge_agent()
+        #         # Agent itself will emit AGENT_NUDGED or thoughts
+        #         # No direct response payload needed from handler, client sees events
+        #     else: # error
+
+        # elif message_type == StreamEventType.PAUSE_AGENT_REQUEST.value:
+        #     if agent_instance and agent_instance.context:
+        #         agent_instance.context.pause_processing()
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_PAUSED, {"thread_id": agent_instance.context.thread_id})
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_STATE_DELTA, {"status_message": "Phoenix is paused."})
+        #     else: # error
+
+        # elif message_type == StreamEventType.RESUME_AGENT_REQUEST.value:
+        #     if agent_instance and agent_instance.context:
+        #         agent_instance.context.resume_processing()
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_RESUMED, {"thread_id": agent_instance.context.thread_id})
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_STATE_DELTA, {"status_message": "Phoenix is resuming..."})
+        #     else: # error
+
+        # elif message_type == StreamEventType.RESTART_AGENT_REQUEST.value:
+        #     if agent_instance and agent_instance.context:
+        #         original_thread_id = agent_instance.context.thread_id # Capture before reset
+        #         agent_instance.restart_agent_session()
+        #         # Signal UI to clear its state for this thread and re-initialize
+        #         await agent_instance._emit_stream_event(
+        #             StreamEventType.AGENT_RESTARTED, 
+        #             {"thread_id": original_thread_id, "message": "Agent session has been restarted."},
+        #             specific_thread_id=original_thread_id 
+        #         )
+        #         # Optionally, send a new welcome message or an empty CHAT_LOADED_DATA for the same threadId
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_STATE_DELTA, {"status_message": "Phoenix is ready (restarted)." }, specific_thread_id=original_thread_id)
+        #     else: # error
+```
+    *   Verify: Handlers added.
+
+**II. Svelte UI Changes:**
+
+**4. Update `src/lib/stores/chatStore.js` for Pause State:**
+    *   Action: Add `isAgentPaused` state.
+        ```javascript
+// src/lib/stores/chatStore.js
+        // ...
+        const initialChatState = {
+            // ... messagesAndEvents, agentStatus, etc. ...
+            isAgentPaused: false, // NEW
+        };
+
+        const createChatStore = () => {
+            // ...
+            const handleStreamEvent = (event) => {
+                // ...
+                switch (event.type) {
+                    // ...
+                    case 'AGENT_PAUSED': // Or handle via AGENT_STATE_DELTA if payload is rich enough
+                        update(s => ({ ...s, isAgentPaused: true, agentStatus: "Phoenix is Paused" }));
+                        break;
+                    case 'AGENT_RESUMED':
+                        update(s => ({ ...s, isAgentPaused: false, agentStatus: "Phoenix is Resuming..." }));
+                        break;
+                    case 'AGENT_RESTARTED':
+                        // Client needs to clear its current chat view for this threadId
+                        update(s => ({ 
+                            ...s, 
+                            messagesAndEvents: [{type: 'system_notice', content: 'Chat session restarted.', id: crypto.randomUUID(), timestamp: new Date()}], 
+                            agentStatus: "Phoenix is Ready (Restarted)",
+                            activeGenerativeUI: null,
+                            activeIntervention: null,
+                            isAgentPaused: false
+                        }));
+                        break;
+                    // AGENT_STATE_DELTA might also set agentStatus to "Paused" or "Running"
+                    // Ensure consistency between dedicated events and AGENT_STATE_DELTA
+                }
+            };
+            // ...
+            return {
+                // ...
+                requestNudgeAgent: () => { /* ... sends NUDGE_AGENT_REQUEST ... */ },
+                requestPauseAgent: () => { /* ... sends PAUSE_AGENT_REQUEST ... */ },
+                requestResumeAgent: () => { /* ... sends RESUME_AGENT_REQUEST ... */ },
+                requestRestartAgent: () => { /* ... sends RESTART_AGENT_REQUEST ... */ },
+            };
+        };
+```
+    *   Add methods in `chatStore` (e.g., `requestNudgeAgent`, `requestPauseAgent`, etc.) that call `socketStore.sendMessage` with the appropriate new message types and current `threadId`/`userId`.
+    *   Verify: Store updated.
+
+**5. Create `src/lib/components/layout/AgentActionsBar.svelte`:**
+    *   Action:
+        ```html
+<!-- src/lib/components/layout/AgentActionsBar.svelte -->
+        <script>
+            import { chatStore } from '$lib/stores/chatStore';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+
+            // Example Icon Paths
+            const nudgeIconPath = "M19 12H5M12 19l-7-7 7-7"; // Arrow with a "poke"
+            const pauseIconPath = "M6 19h4V5H6v14zm8-14v14h4V5h-4z";
+            const playIconPath = "M5 3l14 9-14 9V3z";
+            const restartIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17"; // Refresh
+
+            // These request methods will be added to chatStore in step 4 of this task
+            const { requestNudgeAgent, requestPauseAgent, requestResumeAgent, requestRestartAgent } = chatStore;
+
+            function handleRestart() {
+                if (confirm("Are you sure you want to restart the agent for this chat? Current state will be lost.")) {
+                    requestRestartAgent();
+                }
+            }
+        </script>
+
+        <div class="agent-actions-bar">
+            <Button onClick={requestNudgeAgent} customClass="action-bar-btn" title="Nudge Agent">
+                <Icon path={nudgeIconPath} size="16" /> Nudge
+            </Button>
+
+            {#if $chatStore.isAgentPaused}
+                <Button onClick={requestResumeAgent} customClass="action-bar-btn resume-btn" title="Resume Agent">
+                    <Icon path={playIconPath} size="16" /> Resume
+                </Button>
+            {:else}
+                <Button onClick={requestPauseAgent} customClass="action-bar-btn pause-btn" title="Pause Agent">
+                    <Icon path={pauseIconPath} size="16" /> Pause
+                </Button>
+            {/if}
+
+            <Button onClick={handleRestart} customClass="action-bar-btn restart-btn" title="Restart Agent Session">
+                <Icon path={restartIconPath} size="16" /> Restart
+            </Button>
+        </div>
+
+        <style>
+            .agent-actions-bar {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+            .action-bar-btn {
+                padding: 6px 10px !important; /* Override base Button if needed */
+                font-size: 0.8em !important;
+                background-color: var(--neumorphic-shadow-dark) !important;
+                color: var(--text-secondary) !important;
+                gap: 5px !important;
+            }
+            .action-bar-btn:hover:not(:disabled) {
+                color: var(--accent-green-primary) !important;
+            }
+            .pause-btn:hover:not(:disabled) { color: orange !important; }
+            .resume-btn:hover:not(:disabled) { color: var(--accent-green-primary) !important; }
+            .restart-btn:hover:not(:disabled) { color: var(--error-color) !important; }
+        </style>
+```
+    *   Verify: Component created.
+
+**6. Integrate `AgentActionsBar.svelte` into `AppHeader.svelte`:**
+    *   Action:
+        ```html
+<!-- src/lib/components/layout/AppHeader.svelte -->
+        <script>
+            // ...
+            import AgentActionsBar from './AgentActionsBar.svelte'; // NEW
+        </script>
+
+        <header class="app-header">
+            <!-- ... (logo-area, chat-name-display) ... -->
+            <div class="header-actions">
+                <AgentActionsBar /> <!-- ADDED -->
+                <!-- Settings Button, Clear Chat Button from previous tasks -->
+                 <Button type="extruded" onClick={() => showSettingsModal = true} customClass="header-button">
+                    <Icon path={settingsIconPath} size="16" /> Settings
+                </Button>
+                <Button type="extruded" onClick={handleClearChat} customClass="header-button clear-chat-button">
+                    <Icon path={trashIcon} size="16" /> Clear Chat
+                </Button>
+            </div>
+        </header>
+        <!-- ... styles ... -->
+        <style>
+            /* ... */
+            .header-actions { /* Ensure it can accommodate more buttons */
+                /* ... */
+            }
+        </style>
+```
+        *(You'll need to ensure `showSettingsModal` and `handleClearChat` are defined or passed correctly if they live in `AppHeader.svelte` vs. `+page.svelte` or `+layout.svelte`)*
+    *   Verify: Action bar integrated into header.
+
+**7. Testing TASK_AUI_006:**
+    *   Action:
+        1.  Start Phoenix backend with all updates.
+        2.  Start Svelte UI.
+    *   Expected Behavior:
+        *   **Actions Bar:** The "Nudge," "Pause/Resume," "Restart" buttons appear in the header.
+        *   **Pause/Resume:**
+            *   Clicking "Pause": UI sends `pause_agent_request`. Backend pauses. `AGENT_PAUSED` event received. Button changes to "Resume". `StatusFooter` shows "Paused". Agent processing should halt.
+            *   Clicking "Resume": UI sends `resume_agent_request`. Backend resumes. `AGENT_RESUMED` event received. Button changes to "Pause". `StatusFooter` shows "Resuming...". Agent processing continues.
+        *   **Nudge:**
+            *   While agent is "thinking" or in a loop, click "Nudge". UI sends `nudge_agent_request`.
+            *   Backend: `Agent.nudge_agent()` called. The agent's loop should detect the nudge.
+            *   UI: `AGENT_NUDGED` event received. `StatusFooter` or a thought might indicate the nudge. Agent behavior might change (e.g., it stops current sub-task and re-evaluates).
+        *   **Restart Agent:**
+            *   Click "Restart Agent". Confirmation dialog.
+            *   UI sends `restart_agent_request`.
+            *   Backend: Resets `AgentContext` for the current `threadId`.
+            *   UI: `AGENT_RESTARTED` event received. `chatStore` clears `messagesAndEvents` for the current thread, resets status to "Ready (Restarted)". Chat view becomes (mostly) empty.
+
+This task adds crucial control mechanisms for the user to manage the agent's execution flow. The "Nudge" feature is the most complex to implement effectively on the backend, as it requires the agent's internal loops to be interruptible or responsive to the nudge flag.
+
+Ready for TASK_AUI_007 (Settings Modal Styling)?## TASK_AUI_006: Svelte UI & Phoenix Backend - "Actions" Bar (Nudge, Pause/Resume, Restart Agent)
+
+**Goal:**
+1.  **Svelte UI:**
+    *   Create a new component `src/lib/components/layout/AgentActionsBar.svelte`.
+    *   This bar will contain buttons for "Nudge," "Pause/Resume," and "Restart Agent."
+    *   Integrate this bar into the main UI, likely within `AppHeader.svelte` or as a separate bar just below it.
+    *   Button states (e.g., "Pause" vs. "Resume") should reflect the agent's current state from `chatStore`.
+2.  **Phoenix Backend (StreamProtocol & Agent Logic):**
+    *   **Nudge:**
+        *   Client sends `nudge_agent_request` (new StreamProtocol message type).
+        *   Backend: `Agent` class needs a `nudge()` method. When called, if the agent is in a long-running thought loop or waiting, it should interrupt that, potentially re-evaluate its current goal, or emit a status indicating it's ready for new input.
+    *   **Pause/Resume:**
+        *   Client sends `pause_agent_request` or `resume_agent_request`.
+        *   Backend: `AgentContext` (or `Agent`) gets an `is_paused: bool` flag.
+        *   The agent's main processing loop (e.g., before LLM calls or tool executions) must check this flag. If `is_paused`, it should `await` a "resume" signal (e.g., an `asyncio.Event`).
+        *   Backend emits `AGENT_STATE_DELTA` (e.g., `{"newState": "PAUSED"}` or `{"newState": "RUNNING"}`).
+    *   **Restart Agent:**
+        *   Client sends `restart_agent_request`.
+        *   Backend: For the current `threadId`, the `AgentContext` is reset (history cleared, internal state reset, running tools cancelled/cleaned up). The `Agent` instance might be re-initialized or its state reset.
+        *   Backend emits events to clear the UI for that `threadId` (e.g., `CHAT_CLEARED` or a series of events that result in a fresh UI state).
+
+**Prerequisites:**
+*   TASK_AUI_001 completed: Main UI layout (including `AppHeader.svelte`) is in place.
+*   `chatStore.js` and `socketStore.js` are functional.
+*   Phoenix Agent's main processing loop can be made to check a pause flag.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Changes:**
+
+**1. Define New StreamProtocol Message & Event Types:**
+    *   Action: In `python/tools/stream_protocol_tool.py` (or `python/agent.py`).
+        ```python
+        # In StreamEventType Enum
+        class StreamEventType(Enum):
+            # ... existing ...
+            # Client to Server requests
+            NUDGE_AGENT_REQUEST = "nudge_agent_request"
+            PAUSE_AGENT_REQUEST = "pause_agent_request"
+            RESUME_AGENT_REQUEST = "resume_agent_request"
+            RESTART_AGENT_REQUEST = "restart_agent_request"
+            
+            # Server to Client confirmations or state changes (AGENT_STATE_DELTA can also be used)
+            AGENT_NUDGED = "agent_nudged"
+            AGENT_PAUSED = "agent_paused" # Could be part of AGENT_STATE_DELTA
+            AGENT_RESUMED = "agent_resumed" # Could be part of AGENT_STATE_DELTA
+            AGENT_RESTARTED = "agent_restarted" # Signals UI to clear and re-init
+        ```
+    *   Verify: Enum updated.
+
+**2. Enhance `python/agent.py` - `AgentContext` and `Agent`:**
+    *   Action: Add pause/resume logic and a nudge mechanism.
+        ```python
+        # In python/agent.py
+
+        class AgentContext:
+            # ... existing ...
+            def __init__(self, ...):
+                self.is_paused = False
+                self._resume_event = asyncio.Event() # For pausing
+                if not self.is_paused: self._resume_event.set() # Start in resumed state
+                # ...
+
+            def pause_processing(self):
+                self.is_paused = True
+                self._resume_event.clear()
+                print(f"AgentContext {self.id}: Processing PAUSED.")
+
+            def resume_processing(self):
+                self.is_paused = False
+                self._resume_event.set()
+                print(f"AgentContext {self.id}: Processing RESUMED.")
+
+            async def wait_if_paused(self):
+                if self.is_paused:
+                    print(f"AgentContext {self.id}: Execution waiting due to PAUSED state...")
+                    await self._resume_event.wait()
+                    print(f"AgentContext {self.id}: Resumed execution after pause.")
+            
+            def reset_for_restart(self): # Method to clear context for restart
+                self.messages_and_events_history = [] # Assuming history is stored here
+                self.current_tool_calls = {}
+                self.agent_state = {} # Reset any custom agent state
+                self.is_paused = False
+                self._resume_event.set()
+                # Also cancel/clear any pending UI requests or interventions
+                if hasattr(self, '_pending_ui_requests'): self._pending_ui_requests.clear()
+                if hasattr(self, '_pending_interventions'): self._pending_interventions.clear()
+                print(f"AgentContext {self.id}: Context has been RESET for agent restart.")
+
+
+        class Agent:
+            # ... existing __init__ ...
+            def __init__(self, ...):
+                # ...
+                self._is_nudged = asyncio.Event() # For nudge mechanism
+
+            async def _main_processing_loop_or_llm_call(self, ...): # Conceptual name for your core logic
+                await self.context.wait_if_paused() # Check before significant operations
+
+                # Nudge check: if nudged, clear flag and potentially change behavior
+                if self._is_nudged.is_set():
+                    self._is_nudged.clear()
+                    await self._emit_stream_event(StreamEventType.AGENT_NUDGED, {"message": "Agent nudged, re-evaluating..."})
+                    await self._emit_stream_event(StreamEventType.AGENT_THOUGHT, {"thought": "I've been nudged. I will re-assess my current task or await new input."})
+                    # Depending on agent's state, this might mean breaking a loop,
+                    # re-prompting the LLM with current history, or just finishing current step and stopping.
+                    # For simplicity, it might just make the current LLM call return a "waiting for input" response.
+                    # This is a complex interaction to get right.
+                    # For now, emitting an event is the main goal.
+
+                # ... rest of your LLM call or tool execution logic ...
+                pass
+
+            def nudge_agent(self):
+                """Sets the nudge event to interrupt/influence the agent's current processing loop."""
+                print(f"Agent {self.agent_id}: Nudge received.")
+                self._is_nudged.set()
+                # If agent is paused, nudging might also imply resuming it to process the nudge
+                if self.context.is_paused:
+                    self.context.resume_processing() 
+                    # Consider if nudge should clear self._is_nudged immediately or let the loop do it
+
+            def restart_agent_session(self):
+                """Resets the agent's context for the current thread."""
+                print(f"Agent {self.agent_id}: Restart request received.")
+                self.context.reset_for_restart()
+                # Tools might need to be re-initialized or their states reset if they are session-specific
+                # e.g., self.browser_manager.close_session_for_context(self.context.thread_id)
+                # For now, context reset is the primary action.
+                self._is_nudged.clear() # Clear nudge flag on restart
+        ```
+    *   **Important:** The `await self.context.wait_if_paused()` call must be strategically placed within your agent's main processing loop(s), especially before long-running operations like LLM calls or tool executions. The `_is_nudged.is_set()` check also needs to be in the loop.
+    *   Verify: Agent and Context updated.
+
+**3. Update WebSocket Handler (in `StreamProtocolTool` or `run_ui.py`):**
+    *   Action: Add handlers for the new request types.
+        ```python
+        # In python/tools/stream_protocol_tool.py or run_ui.py WebSocket message handler
+        # ... (ensure agent_instance is correctly fetched/created for the threadId/userId)
+
+        # elif message_type == StreamEventType.NUDGE_AGENT_REQUEST.value:
+        #     if agent_instance:
+        #         agent_instance.nudge_agent()
+        #         # Agent itself will emit AGENT_NUDGED or thoughts
+        #         # No direct response payload needed from handler, client sees events
+        #     else: # error
+
+        # elif message_type == StreamEventType.PAUSE_AGENT_REQUEST.value:
+        #     if agent_instance and agent_instance.context:
+        #         agent_instance.context.pause_processing()
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_PAUSED, {"thread_id": agent_instance.context.thread_id})
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_STATE_DELTA, {"status_message": "Phoenix is paused."})
+        #     else: # error
+
+        # elif message_type == StreamEventType.RESUME_AGENT_REQUEST.value:
+        #     if agent_instance and agent_instance.context:
+        #         agent_instance.context.resume_processing()
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_RESUMED, {"thread_id": agent_instance.context.thread_id})
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_STATE_DELTA, {"status_message": "Phoenix is resuming..."})
+        #     else: # error
+
+        # elif message_type == StreamEventType.RESTART_AGENT_REQUEST.value:
+        #     if agent_instance and agent_instance.context:
+        #         original_thread_id = agent_instance.context.thread_id # Capture before reset
+        #         agent_instance.restart_agent_session()
+        #         # Signal UI to clear its state for this thread and re-initialize
+        #         await agent_instance._emit_stream_event(
+        #             StreamEventType.AGENT_RESTARTED, 
+        #             {"thread_id": original_thread_id, "message": "Agent session has been restarted."},
+        #             specific_thread_id=original_thread_id 
+        #         )
+        #         # Optionally, send a new welcome message or an empty CHAT_LOADED_DATA for the same threadId
+        #         await agent_instance._emit_stream_event(StreamEventType.AGENT_STATE_DELTA, {"status_message": "Phoenix is ready (restarted)." }, specific_thread_id=original_thread_id)
+        #     else: # error
+        ```
+    *   Verify: Handlers added.
+
+**II. Svelte UI Changes:**
+
+**4. Update `src/lib/stores/chatStore.js` for Pause State:**
+    *   Action: Add `isAgentPaused` state.
+        ```javascript
+        // src/lib/stores/chatStore.js
+        // ...
+        const initialChatState = {
+            // ... messagesAndEvents, agentStatus, etc. ...
+            isAgentPaused: false, // NEW
+        };
+
+        const createChatStore = () => {
+            // ...
+            const handleStreamEvent = (event) => {
+                // ...
+                switch (event.type) {
+                    // ...
+                    case 'AGENT_PAUSED': // Or handle via AGENT_STATE_DELTA if payload is rich enough
+                        update(s => ({ ...s, isAgentPaused: true, agentStatus: "Phoenix is Paused" }));
+                        break;
+                    case 'AGENT_RESUMED':
+                        update(s => ({ ...s, isAgentPaused: false, agentStatus: "Phoenix is Resuming..." }));
+                        break;
+                    case 'AGENT_RESTARTED':
+                        // Client needs to clear its current chat view for this threadId
+                        update(s => ({ 
+                            ...s, 
+                            messagesAndEvents: [{type: 'system_notice', content: 'Chat session restarted.', id: crypto.randomUUID(), timestamp: new Date()}], 
+                            agentStatus: "Phoenix is Ready (Restarted)",
+                            activeGenerativeUI: null,
+                            activeIntervention: null,
+                            isAgentPaused: false
+                        }));
+                        break;
+                    // AGENT_STATE_DELTA might also set agentStatus to "Paused" or "Running"
+                    // Ensure consistency between dedicated events and AGENT_STATE_DELTA
+                }
+            };
+            // ...
+            return {
+                // ...
+                requestNudgeAgent: () => { /* ... sends NUDGE_AGENT_REQUEST ... */ },
+                requestPauseAgent: () => { /* ... sends PAUSE_AGENT_REQUEST ... */ },
+                requestResumeAgent: () => { /* ... sends RESUME_AGENT_REQUEST ... */ },
+                requestRestartAgent: () => { /* ... sends RESTART_AGENT_REQUEST ... */ },
+            };
+        };
+        ```
+    *   Add methods in `chatStore` (e.g., `requestNudgeAgent`, `requestPauseAgent`, etc.) that call `socketStore.sendMessage` with the appropriate new message types and current `threadId`/`userId`.
+    *   Verify: Store updated.
+
+**5. Create `src/lib/components/layout/AgentActionsBar.svelte`:**
+    *   Action:
+        ```html
+        <!-- src/lib/components/layout/AgentActionsBar.svelte -->
+        <script>
+            import { chatStore } from '$lib/stores/chatStore';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+
+            // Example Icon Paths
+            const nudgeIconPath = "M19 12H5M12 19l-7-7 7-7"; // Arrow with a "poke"
+            const pauseIconPath = "M6 19h4V5H6v14zm8-14v14h4V5h-4z";
+            const playIconPath = "M5 3l14 9-14 9V3z";
+            const restartIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17"; // Refresh
+
+            // These request methods will be added to chatStore in step 4 of this task
+            const { requestNudgeAgent, requestPauseAgent, requestResumeAgent, requestRestartAgent } = chatStore;
+
+            function handleRestart() {
+                if (confirm("Are you sure you want to restart the agent for this chat? Current state will be lost.")) {
+                    requestRestartAgent();
+                }
+            }
+        </script>
+
+        <div class="agent-actions-bar">
+            <Button onClick={requestNudgeAgent} customClass="action-bar-btn" title="Nudge Agent">
+                <Icon path={nudgeIconPath} size="16" /> Nudge
+            </Button>
+
+            {#if $chatStore.isAgentPaused}
+                <Button onClick={requestResumeAgent} customClass="action-bar-btn resume-btn" title="Resume Agent">
+                    <Icon path={playIconPath} size="16" /> Resume
+                </Button>
+            {:else}
+                <Button onClick={requestPauseAgent} customClass="action-bar-btn pause-btn" title="Pause Agent">
+                    <Icon path={pauseIconPath} size="16" /> Pause
+                </Button>
+            {/if}
+
+            <Button onClick={handleRestart} customClass="action-bar-btn restart-btn" title="Restart Agent Session">
+                <Icon path={restartIconPath} size="16" /> Restart
+            </Button>
+        </div>
+
+        <style>
+            .agent-actions-bar {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+            .action-bar-btn {
+                padding: 6px 10px !important; /* Override base Button if needed */
+                font-size: 0.8em !important;
+                background-color: var(--neumorphic-shadow-dark) !important;
+                color: var(--text-secondary) !important;
+                gap: 5px !important;
+            }
+            .action-bar-btn:hover:not(:disabled) {
+                color: var(--accent-green-primary) !important;
+            }
+            .pause-btn:hover:not(:disabled) { color: orange !important; }
+            .resume-btn:hover:not(:disabled) { color: var(--accent-green-primary) !important; }
+            .restart-btn:hover:not(:disabled) { color: var(--error-color) !important; }
+        </style>
+        ```
+    *   Verify: Component created.
+
+**6. Integrate `AgentActionsBar.svelte` into `AppHeader.svelte`:**
+    *   Action:
+        ```html
+        <!-- src/lib/components/layout/AppHeader.svelte -->
+        <script>
+            // ...
+            import AgentActionsBar from './AgentActionsBar.svelte'; // NEW
+        </script>
+
+        <header class="app-header">
+            <!-- ... (logo-area, chat-name-display) ... -->
+            <div class="header-actions">
+                <AgentActionsBar /> <!-- ADDED -->
+                <!-- Settings Button, Clear Chat Button from previous tasks -->
+                 <Button type="extruded" onClick={() => showSettingsModal = true} customClass="header-button">
+                    <Icon path={settingsIconPath} size="16" /> Settings
+                </Button>
+                <Button type="extruded" onClick={handleClearChat} customClass="header-button clear-chat-button">
+                    <Icon path={trashIcon} size="16" /> Clear Chat
+                </Button>
+            </div>
+        </header>
+        <!-- ... styles ... -->
+        <style>
+            /* ... */
+            .header-actions { /* Ensure it can accommodate more buttons */
+                /* ... */
+            }
+        </style>
+        ```
+        *(You'll need to ensure `showSettingsModal` and `handleClearChat` are defined or passed correctly if they live in `AppHeader.svelte` vs. `+page.svelte` or `+layout.svelte`)*
+    *   Verify: Action bar integrated into header.
+
+**7. Testing TASK_AUI_006:**
+    *   Action:
+        1.  Start Phoenix backend with all updates.
+        2.  Start Svelte UI.
+    *   Expected Behavior:
+        *   **Actions Bar:** The "Nudge," "Pause/Resume," "Restart" buttons appear in the header.
+        *   **Pause/Resume:**
+            *   Clicking "Pause": UI sends `pause_agent_request`. Backend pauses. `AGENT_PAUSED` event received. Button changes to "Resume". `StatusFooter` shows "Paused". Agent processing should halt.
+            *   Clicking "Resume": UI sends `resume_agent_request`. Backend resumes. `AGENT_RESUMED` event received. Button changes to "Pause". `StatusFooter` shows "Resuming...". Agent processing continues.
+        *   **Nudge:**
+            *   While agent is "thinking" or in a loop, click "Nudge". UI sends `nudge_agent_request`.
+            *   Backend: `Agent.nudge_agent()` called. The agent's loop should detect the nudge.
+            *   UI: `AGENT_NUDGED` event received. `StatusFooter` or a thought might indicate the nudge. Agent behavior might change (e.g., it stops current sub-task and re-evaluates).
+        *   **Restart Agent:**
+            *   Click "Restart Agent". Confirmation dialog.
+            *   UI sends `restart_agent_request`.
+            *   Backend: Resets `AgentContext` for the current `threadId`.
+            *   UI: `AGENT_RESTARTED` event received. `chatStore` clears `messagesAndEvents` for the current thread, resets status to "Ready (Restarted)". Chat view becomes (mostly) empty.
+
+This task adds crucial control mechanisms for the user to manage the agent's execution flow. The "Nudge" feature is the most complex to implement effectively on the backend, as it requires the agent's internal loops to be interruptible or responsive to the nudge flag.
+
+Ready for TASK_AUI_007 (Settings Modal Styling)?

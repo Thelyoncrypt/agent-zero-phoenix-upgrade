@@ -1,0 +1,841 @@
+## TASK_AUI_011: Svelte UI & Phoenix Backend - `ChatterboxTTSTool` - Full Audio Streaming with UI Controls
+
+**Goal:**
+1.  **Phoenix Backend (`ChatterboxTTSHandler.py` & `ChatterboxTTSTool.py`):**
+    *   Ensure `ChatterboxTTSHandler.synthesize_speech_stream` reliably yields audio chunks in the chosen format (e.g., "wav_chunk" or raw "pcm_chunk"). If using "pcm_chunk", ensure `TTS_STREAM_START` includes necessary format details (sample rate, channels, bit depth).
+    *   Confirm `ChatterboxTTSTool` correctly iterates the stream, base64 encodes chunks, and emits `TTS_STREAM_START`, `AUDIO_CHUNK`, and `TTS_STREAM_END` (with `stream_id`, `success`, `total_chunks`) events via StreamProtocol.
+2.  **Svelte UI (`AudioPlayerStore.js`):**
+    *   Refine `AudioPlayerStore` to robustly handle buffering and playback of incoming audio chunks using Web Audio API.
+    *   Handle potential race conditions or out-of-order chunks (if possible, though TCP/WebSocket should largely prevent this).
+    *   Manage playback state (`isPlaying`, `isBuffering`, `error`).
+    *   Properly stop and clean up `AudioBufferSourceNode`s and `AudioContext`.
+3.  **Svelte UI (`AudioPlaybackControl.svelte`):**
+    *   Provide clear visual feedback: "Playing," "Buffering," "Finished," "Error."
+    *   Implement a functional "Stop" button.
+    *   (Stretch Goal) Implement a "Replay" button for the last TTS stream (would require agent to re-trigger TTS for the same text).
+    *   (Stretch Goal) Volume control.
+4.  **Svelte UI Integration:**
+    *   The `AudioPlaybackControl` should appear when a TTS stream starts and disappear or reset when it ends or is stopped.
+    *   Ensure AudioContext is resumed on user interaction to comply with autoplay policies.
+
+**Prerequisites:**
+*   Task 077 (initial TTS streaming backend and basic Svelte `AudioPlayerStore`) largely completed.
+*   `ChatterboxTTSHandler` can produce audio.
+*   StreamProtocol events `TTS_STREAM_START`, `AUDIO_CHUNK`, `TTS_STREAM_END`, `ERROR_EVENT` are defined.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Refinements (Verify & Solidify Task 077 implementation):**
+
+**1. Review `python/agents/tts_agent/chatterbox_handler.py` - `synthesize_speech_stream`:**
+    *   Action: Confirm that the chosen `output_format` (e.g., "wav_chunk") is consistently produced. If using "pcm_chunk", ensure all necessary format details (sample rate, channels, sample width/bit depth) are accurate and available to be sent in the `TTS_STREAM_START` event.
+    *   Test its behavior with short and slightly longer text inputs to see how chunks are yielded.
+    *   Ensure robust error handling within the generator (e.g., if the underlying TTS library fails mid-stream).
+    *   Verify: Streaming generation is stable.
+
+**2. Review `python/tools/chatterbox_tts_tool.py` - `execute` action "synthesize_speech_stream":**
+    *   Action:
+        *   Confirm `stream_id` is unique for each streaming session.
+        *   Ensure `TTS_STREAM_START` payload includes `stream_id` and `format_hint` (e.g., "audio/wav"). If PCM, add `format_details: {"sampleRate": ..., "channels": ..., "bitDepth": ...}`.
+        *   Ensure `AUDIO_CHUNK` payload includes `stream_id`, `chunk_index`, and `data_b64`.
+        *   Ensure `TTS_STREAM_END` payload includes `stream_id`, `success: bool`, and `total_chunks`.
+    *   Verify: Event emission is correct and complete.
+
+**II. Svelte UI Enhancements:**
+
+**3. Refine `src/lib/stores/AudioPlayerStore.js`:**
+    *   Action: Make the audio buffering and playback more robust.
+        ```javascript
+// src/lib/stores/AudioPlayerStore.js
+        import { writable, get } from 'svelte/store'; // Import get
+
+        const initialAudioState = {
+            audioContext: null,
+            gainNode: null,
+            activeSourceNode: null, // The currently playing AudioBufferSourceNode
+            
+            currentStreamId: null,
+            isPlaying: false,
+            isBuffering: false, // True if stream started but no chunks playing yet, or buffer empty mid-stream
+            isStreamEnded: true, // True if TTS_STREAM_END received
+            
+            chunkQueue: [], // Holds { streamId, chunkIndex, arrayBuffer }
+            processedChunkIndices: new Set(), // To handle potential duplicate chunk events
+
+            error: null,
+            totalChunksExpected: 0, // From TTS_STREAM_END
+            chunksReceived: 0,
+
+            // For UI display (optional, can be derived)
+            // bufferedDurationEstimate: 0, 
+            // playedDurationEstimate: 0,
+        };
+
+        const createAudioPlayerStore = () => {
+            const { subscribe, update, set } = writable({...initialAudioState});
+
+            const _getAudioContext = () => {
+                let s = get(audioPlayerStore); // Get current store state
+                if (!s.audioContext || s.audioContext.state === 'closed') {
+                    const newCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const newGainNode = newCtx.createGain();
+                    newGainNode.connect(newCtx.destination);
+                    update(st => ({...st, audioContext: newCtx, gainNode: newGainNode }));
+                    s = get(audioPlayerStore); // Update s with new context
+                }
+                if (s.audioContext && s.audioContext.state === 'suspended') {
+                    s.audioContext.resume().catch(e => console.error("Error resuming AudioContext:", e));
+                }
+                return s.audioContext;
+            };
+
+            const _playNextChunkFromQueue = async () => {
+                let storeState = get(audioPlayerStore);
+                if (storeState.activeSourceNode || storeState.chunkQueue.length === 0) {
+                    // Already playing or nothing to play
+                    if(storeState.chunkQueue.length === 0 && !storeState.isPlaying && storeState.isStreamEnded && storeState.currentStreamId){
+                        // Stream ended and all played
+                        console.log("AudioPlayerStore: Playback queue empty and stream ended.");
+                        stopPlayback(false); // Soft stop, don't clear currentStreamId if user might replay
+                    }
+                    return;
+                }
+
+                const audioContext = _getAudioContext();
+                if (!audioContext) {
+                    update(s => ({...s, error: "AudioContext not available.", isPlaying: false, isBuffering: false }));
+                    return;
+                }
+
+                const chunkToPlay = storeState.chunkQueue.shift(); // FIFO
+                update(s => ({...s, chunkQueue: [...s.chunkQueue]})); // Trigger reactivity
+
+                try {
+                    update(s => ({ ...s, isPlaying: true, isBuffering: false, error: null }));
+                    const audioBuffer = await audioContext.decodeAudioData(chunkToPlay.arrayBuffer.slice(0)); // Use slice(0) to work with a copy
+                    
+                    storeState = get(audioPlayerStore); // Re-get state in case it changed during await
+                    if (storeState.currentStreamId !== chunkToPlay.streamId) { // Stream was stopped/changed during decode
+                        console.warn("AudioPlayerStore: Stream changed during chunk decoding. Aborting playback of this chunk.");
+                        return;
+                    }
+
+                    const sourceNode = audioContext.createBufferSource();
+                    sourceNode.buffer = audioBuffer;
+                    sourceNode.connect(storeState.gainNode);
+                    
+                    sourceNode.onended = () => {
+                        update(s => {
+                            if (s.activeSourceNode === sourceNode) { // If this was the node that just finished
+                                return {...s, activeSourceNode: null, isPlaying: false };
+                            }
+                            return s;
+                        });
+                        // Automatically play next if available and stream not stopped
+                        if (get(audioPlayerStore).currentStreamId === chunkToPlay.streamId) {
+                           _playNextChunkFromQueue();
+                        }
+                    };
+                    sourceNode.start();
+                    update(s => ({ ...s, activeSourceNode: sourceNode }));
+
+                } catch (e) {
+                    console.error("AudioPlayerStore: Error decoding/playing audio data:", e);
+                    update(s => ({ ...s, error: "Error playing audio chunk.", isPlaying: false, activeSourceNode: null }));
+                    // Attempt to play next chunk if any
+                    if (get(audioPlayerStore).currentStreamId === chunkToPlay.streamId && get(audioPlayerStore).chunkQueue.length > 0) {
+                        _playNextChunkFromQueue();
+                    }
+                }
+            };
+
+            const startStream = (streamId, formatHint, formatDetails) => {
+                console.log("AudioPlayerStore: Start stream request", streamId);
+                stopPlayback(true); // Hard stop any previous stream and clear ID
+                
+                update(s => ({
+                    ...initialAudioState, // Reset most state
+                    audioContext: s.audioContext, // Preserve existing AudioContext if any
+                    gainNode: s.gainNode,         // Preserve existing GainNode
+                    currentStreamId: streamId,
+                    isBuffering: true, // Initially buffering
+                    isStreamEnded: false,
+                    processedChunkIndices: new Set(),
+                }));
+                _getAudioContext(); // Ensure context is active
+            };
+
+            const addAudioChunk = async (streamId, chunkIndex, dataB64) => {
+                let s = get(audioPlayerStore);
+                if (streamId !== s.currentStreamId) {
+                    console.warn(`AudioPlayerStore: Chunk for inactive stream ${streamId}. Current: ${s.currentStreamId}`);
+                    return;
+                }
+                if (s.processedChunkIndices.has(chunkIndex)) {
+                    console.warn(`AudioPlayerStore: Duplicate chunk ${chunkIndex} for stream ${streamId}. Ignoring.`);
+                    return;
+                }
+
+                try {
+                    const binaryString = atob(dataB64);
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
+                    
+                    update(s_update => {
+                        s_update.chunkQueue.push({ streamId, chunkIndex, arrayBuffer: bytes.buffer });
+                        s_update.processedChunkIndices.add(chunkIndex);
+                        s_update.chunksReceived = s_update.processedChunkIndices.size;
+                        s_update.isBuffering = false; // Received at least one chunk
+                        return s_update;
+                    });
+
+                    s = get(audioPlayerStore); // Get updated state
+                    if (!s.isPlaying && !s.activeSourceNode) { // If not currently playing anything, kick off playback
+                        _playNextChunkFromQueue();
+                    }
+                } catch (e) {
+                    console.error("AudioPlayerStore: Error processing base64 audio chunk:", e);
+                    update(s_update => ({...s_update, error: "Error processing audio chunk."}));
+                }
+            };
+
+            const endStream = (streamId, totalChunks) => {
+                console.log("AudioPlayerStore: End stream notification received", streamId);
+                update(s => {
+                    if (s.currentStreamId === streamId) {
+                        return { ...s, isStreamEnded: true, totalChunksExpected: totalChunks || s.chunksReceived };
+                    }
+                    return s;
+                });
+                // If not playing and queue is empty, it means we already finished or never started.
+                let s = get(audioPlayerStore);
+                if (!s.isPlaying && s.chunkQueue.length === 0 && s.currentStreamId === streamId) {
+                    console.log("AudioPlayerStore: Stream ended and queue empty, soft stopping.");
+                    stopPlayback(false); // Soft stop, keeps currentStreamId for potential replay
+                }
+            };
+
+            const stopPlayback = (hardStop = true) => {
+                console.log("AudioPlayerStore: stopPlayback called, hardStop:", hardStop);
+                let s = get(audioPlayerStore);
+                if (s.activeSourceNode) {
+                    try {
+                        s.activeSourceNode.onended = null;
+                        s.activeSourceNode.stop();
+                    } catch (e) { console.warn("AudioPlayerStore: Error stopping source node:", e); }
+                }
+                update(st => ({ 
+                    ...st, 
+                    isPlaying: false, 
+                    isBuffering: false,
+                    activeSourceNode: null, 
+                    chunkQueue: [], // Always clear queue on stop
+                    processedChunkIndices: new Set(),
+                    currentStreamId: hardStop ? null : st.currentStreamId, // Clear streamId only on hard stop
+                    isStreamEnded: hardStop ? true : st.isStreamEnded,
+                }));
+                 if (hardStop) {
+                    activeStreamIdInternal = null; // Deprecated, use store state
+                }
+            };
+            
+            const resumeContextOnUserGesture = () => {
+                const ctx = _getAudioContext(); // This also resumes if suspended
+                if (ctx) console.log("AudioContext state:", ctx.state);
+            };
+
+            return { subscribe, startStream, addAudioChunk, endStream, stopPlayback, resumeContextOnUserGesture };
+        };
+
+        export const audioPlayerStore = createAudioPlayerStore();
+```
+    *   **Key Changes:**
+        *   More robust state management (`isBuffering`, `isStreamEnded`, `currentStreamId`).
+        *   `chunkQueue` stores ArrayBuffers.
+        *   `_playNextChunkFromQueue` manages decoding and playing chunks sequentially using `AudioBufferSourceNode.onended`.
+        *   Careful handling of state updates to trigger Svelte reactivity (`update(s => ({...s, ...}))`).
+        *   `resumeContextOnUserGesture` to be called on a user interaction.
+    *   Verify: Store logic refined.
+
+**4. Refine `src/lib/components/chat/AudioPlaybackControl.svelte`:**
+    *   Action: Update to reflect new store state and provide better feedback.
+        ```html
+<!-- src/lib/components/chat/AudioPlaybackControl.svelte -->
+        <script>
+            import { audioPlayerStore } from '$lib/stores/audioPlayerStore';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import Loader from '../shared/Loader.svelte';
+
+            const stopIconPath = "M6 6h12v12H6z"; // Square stop
+            // const replayIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17"; // Refresh/Replay
+            
+            // No explicit play/pause, only stop for streaming. Replay is a TODO.
+            function handleStop() {
+                audioPlayerStore.stopPlayback(true); // Hard stop
+            }
+
+            // Call this on a main UI element's on:click or on:pointerdown
+            // function ensureAudioContextResumed() {
+            //     audioPlayerStore.resumeContextOnUserGesture();
+            // }
+        </script>
+
+        {#if $audioPlayerStore.currentStreamId || $audioPlayerStore.isPlaying || $audioPlayerStore.isBuffering}
+            <div class="audio-controls-bar card-base neumorphic neumorphic-inset">
+                <div class="status-section">
+                    {#if $audioPlayerStore.error}
+                        <Icon path="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14l-6-6zM12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z" size="16" color="var(--error-color)" />
+                        <span class="status-text error">{$audioPlayerStore.error}</span>
+                    {:else if $audioPlayerStore.isPlaying}
+                        <Loader size="small" color="var(--accent-green-primary)" />
+                        <span class="status-text playing">Playing speech...</span>
+                    {:else if $audioPlayerStore.isBuffering || ($audioPlayerStore.currentStreamId && !$audioPlayerStore.isStreamEnded && $audioPlayerStore.chunkQueue.length > 0)}
+                        <Loader size="small" color="var(--text-secondary)" />
+                        <span class="status-text buffering">Buffering audio... ({$audioPlayerStore.chunksReceived}/{$audioPlayerStore.totalChunksExpected || '?'})</span>
+                    {:else if $audioPlayerStore.currentStreamId && $audioPlayerStore.isStreamEnded && $audioPlayerStore.chunkQueue.length === 0}
+                        <Icon path="M20 6L9 17l-5-5" size="16" color="var(--accent-green-secondary)" />
+                        <span class="status-text">Speech finished.</span>
+                    {:else if $audioPlayerStore.currentStreamId}
+                         <span class="status-text">TTS ready.</span> <!-- Waiting for first chunk after START -->
+                    {/if}
+                </div>
+                {#if $audioPlayerStore.isPlaying || $audioPlayerStore.isBuffering || ($audioPlayerStore.currentStreamId && !$audioPlayerStore.isStreamEnded)}
+                    <Button onClick={handleStop} customClass="control-btn stop-btn" title="Stop Speech Playback">
+                        <Icon path={stopIconPath} size="16" /> Stop
+                    </Button>
+                {/if}
+            </div>
+        {/if}
+
+        <style>
+            .audio-controls-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 8px 12px;
+                margin: 8px 15%; /* Centered and not full width */
+                border-radius: 8px;
+                /* Neumorphic inset from Card.svelte */
+                min-height: 38px; /* Consistent height */
+            }
+            .status-section {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-grow: 1;
+            }
+            .status-text {
+                font-size: 0.8em;
+                color: var(--text-secondary);
+            }
+            .status-text.playing { color: var(--accent-green-primary); }
+            .status-text.error { color: var(--error-color); }
+            
+            .control-btn {
+                padding: 5px 10px !important;
+                font-size: 0.8em !important;
+                flex-shrink: 0;
+                gap: 5px !important;
+            }
+            .stop-btn {
+                background-color: var(--error-color) !important;
+                color: white !important;
+                box-shadow: -2px -2px 4px rgba(255,255,255,0.1), 2px 2px 4px rgba(0,0,0,0.4);
+            }
+            .stop-btn:hover {
+                 background-color: darken(var(--error-color), 10%) !important;
+            }
+            .stop-btn:active {
+                box-shadow: inset -2px -2px 4px rgba(255,255,255,0.1), inset 2px 2px 4px rgba(0,0,0,0.4) !important;
+            }
+        </style>
+```
+    *   Verify: Component updated with more detailed status and only a "Stop" button.
+
+**5. Ensure AudioContext Resuming in `+layout.svelte` or `App.svelte`:**
+    *   Action: The `onMount` in `+layout.svelte` (from Task 077) should call `audioPlayerStore.resumeContextOnUserGesture()` on a global user interaction (like a click). This is crucial for browsers that block autoplay.
+        ```html
+<!-- src/routes/+layout.svelte (or App.svelte) -->
+        <script>
+            // ...
+            import { audioPlayerStore } from '$lib/stores/audioPlayerStore';
+
+            function handleFirstUserInteraction() {
+                audioPlayerStore.resumeContextOnUserGesture();
+                // Remove listeners after first interaction
+                window.removeEventListener('click', handleFirstUserInteraction);
+                window.removeEventListener('touchstart', handleFirstUserInteraction);
+            }
+
+            onMount(() => {
+                // ... existing socketStore.connect ...
+                window.addEventListener('click', handleFirstUserInteraction, { once: true });
+                window.addEventListener('touchstart', handleFirstUserInteraction, { once: true });
+            });
+            // ...
+        </script>
+        <!-- ... rest of the layout ... -->
+```
+    *   Verify: `resumeContextOnUserGesture` is called.
+
+**6. Integrate `AudioPlaybackControl.svelte` into UI (e.g., `+page.svelte`):**
+    *   Action: Place it where it's visible when TTS is active. It could be near the `StatusFooter` or dynamically appear near the message being spoken. For now, placing it below the chat messages container is fine.
+        ```html
+<!-- src/routes/+page.svelte -->
+        <script>
+            // ...
+            import AudioPlaybackControl from '$lib/components/chat/AudioPlaybackControl.svelte';
+        </script>
+        
+        <div class="chat-layout-phoenix">
+            <!-- ... chat messages container ... -->
+            <AudioPlaybackControl /> {/* Add it here */}
+            {#if $chatStore.activeGenerativeUI} ... {:else} <MessageInputBar ... /> {/if}
+            <StatusFooter />
+        </div>
+```
+    *   Verify: Component placed.
+
+**7. Testing TASK_AUI_011:**
+    *   Action:
+        1.  Start Phoenix backend with fully functional streaming TTS.
+        2.  Start Svelte UI.
+        3.  **Trigger TTS Streaming:** Send a message to the agent that causes it to call `ChatterboxTTSTool` with the "synthesize_speech_stream" action. For example, "Read this aloud: Hello Phoenix users!"
+    *   Expected Behavior:
+        *   **Backend:** `TTS_STREAM_START`, multiple `AUDIO_CHUNK` (base64 encoded), and `TTS_STREAM_END` events are sent over WebSocket.
+        *   **Svelte UI:**
+            *   User performs an interaction (e.g., clicks anywhere) to ensure `AudioContext` is resumed.
+            *   `AudioPlaybackControl` appears.
+            *   Status in `AudioPlaybackControl` shows "Buffering audio..." then "Playing speech...".
+            *   Audio plays smoothly as chunks arrive.
+            *   Clicking the "Stop" button immediately halts audio playback and resets the `AudioPlayerStore` state for the current stream.
+            *   When the stream finishes naturally, the status updates to "Speech finished." or similar, and playback controls might hide or disable.
+            *   Test with short and slightly longer text to see how streaming behaves.
+            *   If there's an error during TTS generation or playback, it should be reflected in the `AudioPlaybackControl` status.
+        *   Check browser console for Web Audio API errors or `AudioPlayerStore` logs.
+
+This task completes the core TTS streaming feature, making voice output much more dynamic.
+
+Let me know how this extensive test goes!## TASK_AUI_011: Svelte UI & Phoenix Backend - `ChatterboxTTSTool` - Full Audio Streaming with UI Controls
+
+**Goal:**
+1.  **Phoenix Backend (`ChatterboxTTSHandler.py` & `ChatterboxTTSTool.py`):**
+    *   Ensure `ChatterboxTTSHandler.synthesize_speech_stream` reliably yields audio chunks in the chosen format (e.g., "wav_chunk" or raw "pcm_chunk"). If using "pcm_chunk", ensure `TTS_STREAM_START` includes necessary format details (sample rate, channels, bit depth).
+    *   Confirm `ChatterboxTTSTool` correctly iterates the stream, base64 encodes chunks, and emits `TTS_STREAM_START`, `AUDIO_CHUNK`, and `TTS_STREAM_END` (with `stream_id`, `success`, `total_chunks`) events via StreamProtocol.
+2.  **Svelte UI (`AudioPlayerStore.js`):**
+    *   Refine `AudioPlayerStore` to robustly handle buffering and playback of incoming audio chunks using Web Audio API.
+    *   Handle potential race conditions or out-of-order chunks (if possible, though TCP/WebSocket should largely prevent this).
+    *   Manage playback state (`isPlaying`, `isBuffering`, `error`).
+    *   Properly stop and clean up `AudioBufferSourceNode`s and `AudioContext`.
+3.  **Svelte UI (`AudioPlaybackControl.svelte`):**
+    *   Provide clear visual feedback: "Playing," "Buffering," "Finished," "Error."
+    *   Implement a functional "Stop" button.
+    *   (Stretch Goal) Implement a "Replay" button for the last TTS stream (would require agent to re-trigger TTS for the same text).
+    *   (Stretch Goal) Volume control.
+4.  **Svelte UI Integration:**
+    *   The `AudioPlaybackControl` should appear when a TTS stream starts and disappear or reset when it ends or is stopped.
+    *   Ensure AudioContext is resumed on user interaction to comply with autoplay policies.
+
+**Prerequisites:**
+*   Task 077 (initial TTS streaming backend and basic Svelte `AudioPlayerStore`) largely completed.
+*   `ChatterboxTTSHandler` can produce audio.
+*   StreamProtocol events `TTS_STREAM_START`, `AUDIO_CHUNK`, `TTS_STREAM_END`, `ERROR_EVENT` are defined.
+
+**Detailed Steps:**
+
+**I. Phoenix Backend Refinements (Verify & Solidify Task 077 implementation):**
+
+**1. Review `python/agents/tts_agent/chatterbox_handler.py` - `synthesize_speech_stream`:**
+    *   Action: Confirm that the chosen `output_format` (e.g., "wav_chunk") is consistently produced. If using "pcm_chunk", ensure all necessary format details (sample rate, channels, sample width/bit depth) are accurate and available to be sent in the `TTS_STREAM_START` event.
+    *   Test its behavior with short and slightly longer text inputs to see how chunks are yielded.
+    *   Ensure robust error handling within the generator (e.g., if the underlying TTS library fails mid-stream).
+    *   Verify: Streaming generation is stable.
+
+**2. Review `python/tools/chatterbox_tts_tool.py` - `execute` action "synthesize_speech_stream":**
+    *   Action:
+        *   Confirm `stream_id` is unique for each streaming session.
+        *   Ensure `TTS_STREAM_START` payload includes `stream_id` and `format_hint` (e.g., "audio/wav"). If PCM, add `format_details: {"sampleRate": ..., "channels": ..., "bitDepth": ...}`.
+        *   Ensure `AUDIO_CHUNK` payload includes `stream_id`, `chunk_index`, and `data_b64`.
+        *   Ensure `TTS_STREAM_END` payload includes `stream_id`, `success: bool`, and `total_chunks`.
+    *   Verify: Event emission is correct and complete.
+
+**II. Svelte UI Enhancements:**
+
+**3. Refine `src/lib/stores/AudioPlayerStore.js`:**
+    *   Action: Make the audio buffering and playback more robust.
+        ```javascript
+        // src/lib/stores/AudioPlayerStore.js
+        import { writable, get } from 'svelte/store'; // Import get
+
+        const initialAudioState = {
+            audioContext: null,
+            gainNode: null,
+            activeSourceNode: null, // The currently playing AudioBufferSourceNode
+            
+            currentStreamId: null,
+            isPlaying: false,
+            isBuffering: false, // True if stream started but no chunks playing yet, or buffer empty mid-stream
+            isStreamEnded: true, // True if TTS_STREAM_END received
+            
+            chunkQueue: [], // Holds { streamId, chunkIndex, arrayBuffer }
+            processedChunkIndices: new Set(), // To handle potential duplicate chunk events
+
+            error: null,
+            totalChunksExpected: 0, // From TTS_STREAM_END
+            chunksReceived: 0,
+
+            // For UI display (optional, can be derived)
+            // bufferedDurationEstimate: 0, 
+            // playedDurationEstimate: 0,
+        };
+
+        const createAudioPlayerStore = () => {
+            const { subscribe, update, set } = writable({...initialAudioState});
+
+            const _getAudioContext = () => {
+                let s = get(audioPlayerStore); // Get current store state
+                if (!s.audioContext || s.audioContext.state === 'closed') {
+                    const newCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const newGainNode = newCtx.createGain();
+                    newGainNode.connect(newCtx.destination);
+                    update(st => ({...st, audioContext: newCtx, gainNode: newGainNode }));
+                    s = get(audioPlayerStore); // Update s with new context
+                }
+                if (s.audioContext && s.audioContext.state === 'suspended') {
+                    s.audioContext.resume().catch(e => console.error("Error resuming AudioContext:", e));
+                }
+                return s.audioContext;
+            };
+
+            const _playNextChunkFromQueue = async () => {
+                let storeState = get(audioPlayerStore);
+                if (storeState.activeSourceNode || storeState.chunkQueue.length === 0) {
+                    // Already playing or nothing to play
+                    if(storeState.chunkQueue.length === 0 && !storeState.isPlaying && storeState.isStreamEnded && storeState.currentStreamId){
+                        // Stream ended and all played
+                        console.log("AudioPlayerStore: Playback queue empty and stream ended.");
+                        stopPlayback(false); // Soft stop, don't clear currentStreamId if user might replay
+                    }
+                    return;
+                }
+
+                const audioContext = _getAudioContext();
+                if (!audioContext) {
+                    update(s => ({...s, error: "AudioContext not available.", isPlaying: false, isBuffering: false }));
+                    return;
+                }
+
+                const chunkToPlay = storeState.chunkQueue.shift(); // FIFO
+                update(s => ({...s, chunkQueue: [...s.chunkQueue]})); // Trigger reactivity
+
+                try {
+                    update(s => ({ ...s, isPlaying: true, isBuffering: false, error: null }));
+                    const audioBuffer = await audioContext.decodeAudioData(chunkToPlay.arrayBuffer.slice(0)); // Use slice(0) to work with a copy
+                    
+                    storeState = get(audioPlayerStore); // Re-get state in case it changed during await
+                    if (storeState.currentStreamId !== chunkToPlay.streamId) { // Stream was stopped/changed during decode
+                        console.warn("AudioPlayerStore: Stream changed during chunk decoding. Aborting playback of this chunk.");
+                        return;
+                    }
+
+                    const sourceNode = audioContext.createBufferSource();
+                    sourceNode.buffer = audioBuffer;
+                    sourceNode.connect(storeState.gainNode);
+                    
+                    sourceNode.onended = () => {
+                        update(s => {
+                            if (s.activeSourceNode === sourceNode) { // If this was the node that just finished
+                                return {...s, activeSourceNode: null, isPlaying: false };
+                            }
+                            return s;
+                        });
+                        // Automatically play next if available and stream not stopped
+                        if (get(audioPlayerStore).currentStreamId === chunkToPlay.streamId) {
+                           _playNextChunkFromQueue();
+                        }
+                    };
+                    sourceNode.start();
+                    update(s => ({ ...s, activeSourceNode: sourceNode }));
+
+                } catch (e) {
+                    console.error("AudioPlayerStore: Error decoding/playing audio data:", e);
+                    update(s => ({ ...s, error: "Error playing audio chunk.", isPlaying: false, activeSourceNode: null }));
+                    // Attempt to play next chunk if any
+                    if (get(audioPlayerStore).currentStreamId === chunkToPlay.streamId && get(audioPlayerStore).chunkQueue.length > 0) {
+                        _playNextChunkFromQueue();
+                    }
+                }
+            };
+
+            const startStream = (streamId, formatHint, formatDetails) => {
+                console.log("AudioPlayerStore: Start stream request", streamId);
+                stopPlayback(true); // Hard stop any previous stream and clear ID
+                
+                update(s => ({
+                    ...initialAudioState, // Reset most state
+                    audioContext: s.audioContext, // Preserve existing AudioContext if any
+                    gainNode: s.gainNode,         // Preserve existing GainNode
+                    currentStreamId: streamId,
+                    isBuffering: true, // Initially buffering
+                    isStreamEnded: false,
+                    processedChunkIndices: new Set(),
+                }));
+                _getAudioContext(); // Ensure context is active
+            };
+
+            const addAudioChunk = async (streamId, chunkIndex, dataB64) => {
+                let s = get(audioPlayerStore);
+                if (streamId !== s.currentStreamId) {
+                    console.warn(`AudioPlayerStore: Chunk for inactive stream ${streamId}. Current: ${s.currentStreamId}`);
+                    return;
+                }
+                if (s.processedChunkIndices.has(chunkIndex)) {
+                    console.warn(`AudioPlayerStore: Duplicate chunk ${chunkIndex} for stream ${streamId}. Ignoring.`);
+                    return;
+                }
+
+                try {
+                    const binaryString = atob(dataB64);
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
+                    
+                    update(s_update => {
+                        s_update.chunkQueue.push({ streamId, chunkIndex, arrayBuffer: bytes.buffer });
+                        s_update.processedChunkIndices.add(chunkIndex);
+                        s_update.chunksReceived = s_update.processedChunkIndices.size;
+                        s_update.isBuffering = false; // Received at least one chunk
+                        return s_update;
+                    });
+
+                    s = get(audioPlayerStore); // Get updated state
+                    if (!s.isPlaying && !s.activeSourceNode) { // If not currently playing anything, kick off playback
+                        _playNextChunkFromQueue();
+                    }
+                } catch (e) {
+                    console.error("AudioPlayerStore: Error processing base64 audio chunk:", e);
+                    update(s_update => ({...s_update, error: "Error processing audio chunk."}));
+                }
+            };
+
+            const endStream = (streamId, totalChunks) => {
+                console.log("AudioPlayerStore: End stream notification received", streamId);
+                update(s => {
+                    if (s.currentStreamId === streamId) {
+                        return { ...s, isStreamEnded: true, totalChunksExpected: totalChunks || s.chunksReceived };
+                    }
+                    return s;
+                });
+                // If not playing and queue is empty, it means we already finished or never started.
+                let s = get(audioPlayerStore);
+                if (!s.isPlaying && s.chunkQueue.length === 0 && s.currentStreamId === streamId) {
+                    console.log("AudioPlayerStore: Stream ended and queue empty, soft stopping.");
+                    stopPlayback(false); // Soft stop, keeps currentStreamId for potential replay
+                }
+            };
+
+            const stopPlayback = (hardStop = true) => {
+                console.log("AudioPlayerStore: stopPlayback called, hardStop:", hardStop);
+                let s = get(audioPlayerStore);
+                if (s.activeSourceNode) {
+                    try {
+                        s.activeSourceNode.onended = null;
+                        s.activeSourceNode.stop();
+                    } catch (e) { console.warn("AudioPlayerStore: Error stopping source node:", e); }
+                }
+                update(st => ({ 
+                    ...st, 
+                    isPlaying: false, 
+                    isBuffering: false,
+                    activeSourceNode: null, 
+                    chunkQueue: [], // Always clear queue on stop
+                    processedChunkIndices: new Set(),
+                    currentStreamId: hardStop ? null : st.currentStreamId, // Clear streamId only on hard stop
+                    isStreamEnded: hardStop ? true : st.isStreamEnded,
+                }));
+                 if (hardStop) {
+                    activeStreamIdInternal = null; // Deprecated, use store state
+                }
+            };
+            
+            const resumeContextOnUserGesture = () => {
+                const ctx = _getAudioContext(); // This also resumes if suspended
+                if (ctx) console.log("AudioContext state:", ctx.state);
+            };
+
+            return { subscribe, startStream, addAudioChunk, endStream, stopPlayback, resumeContextOnUserGesture };
+        };
+
+        export const audioPlayerStore = createAudioPlayerStore();
+        ```
+    *   **Key Changes:**
+        *   More robust state management (`isBuffering`, `isStreamEnded`, `currentStreamId`).
+        *   `chunkQueue` stores ArrayBuffers.
+        *   `_playNextChunkFromQueue` manages decoding and playing chunks sequentially using `AudioBufferSourceNode.onended`.
+        *   Careful handling of state updates to trigger Svelte reactivity (`update(s => ({...s, ...}))`).
+        *   `resumeContextOnUserGesture` to be called on a user interaction.
+    *   Verify: Store logic refined.
+
+**4. Refine `src/lib/components/chat/AudioPlaybackControl.svelte`:**
+    *   Action: Update to reflect new store state and provide better feedback.
+        ```html
+        <!-- src/lib/components/chat/AudioPlaybackControl.svelte -->
+        <script>
+            import { audioPlayerStore } from '$lib/stores/audioPlayerStore';
+            import Button from '../shared/Button.svelte';
+            import Icon from '../shared/Icon.svelte';
+            import Loader from '../shared/Loader.svelte';
+
+            const stopIconPath = "M6 6h12v12H6z"; // Square stop
+            // const replayIconPath = "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L20.5 2M3.5 22a9 9 0 0 1 14.85-3.36L1 17"; // Refresh/Replay
+            
+            // No explicit play/pause, only stop for streaming. Replay is a TODO.
+            function handleStop() {
+                audioPlayerStore.stopPlayback(true); // Hard stop
+            }
+
+            // Call this on a main UI element's on:click or on:pointerdown
+            // function ensureAudioContextResumed() {
+            //     audioPlayerStore.resumeContextOnUserGesture();
+            // }
+        </script>
+
+        {#if $audioPlayerStore.currentStreamId || $audioPlayerStore.isPlaying || $audioPlayerStore.isBuffering}
+            <div class="audio-controls-bar card-base neumorphic neumorphic-inset">
+                <div class="status-section">
+                    {#if $audioPlayerStore.error}
+                        <Icon path="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14l-6-6zM12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z" size="16" color="var(--error-color)" />
+                        <span class="status-text error">{$audioPlayerStore.error}</span>
+                    {:else if $audioPlayerStore.isPlaying}
+                        <Loader size="small" color="var(--accent-green-primary)" />
+                        <span class="status-text playing">Playing speech...</span>
+                    {:else if $audioPlayerStore.isBuffering || ($audioPlayerStore.currentStreamId && !$audioPlayerStore.isStreamEnded && $audioPlayerStore.chunkQueue.length > 0)}
+                        <Loader size="small" color="var(--text-secondary)" />
+                        <span class="status-text buffering">Buffering audio... ({$audioPlayerStore.chunksReceived}/{$audioPlayerStore.totalChunksExpected || '?'})</span>
+                    {:else if $audioPlayerStore.currentStreamId && $audioPlayerStore.isStreamEnded && $audioPlayerStore.chunkQueue.length === 0}
+                        <Icon path="M20 6L9 17l-5-5" size="16" color="var(--accent-green-secondary)" />
+                        <span class="status-text">Speech finished.</span>
+                    {:else if $audioPlayerStore.currentStreamId}
+                         <span class="status-text">TTS ready.</span> <!-- Waiting for first chunk after START -->
+                    {/if}
+                </div>
+                {#if $audioPlayerStore.isPlaying || $audioPlayerStore.isBuffering || ($audioPlayerStore.currentStreamId && !$audioPlayerStore.isStreamEnded)}
+                    <Button onClick={handleStop} customClass="control-btn stop-btn" title="Stop Speech Playback">
+                        <Icon path={stopIconPath} size="16" /> Stop
+                    </Button>
+                {/if}
+            </div>
+        {/if}
+
+        <style>
+            .audio-controls-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 8px 12px;
+                margin: 8px 15%; /* Centered and not full width */
+                border-radius: 8px;
+                /* Neumorphic inset from Card.svelte */
+                min-height: 38px; /* Consistent height */
+            }
+            .status-section {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex-grow: 1;
+            }
+            .status-text {
+                font-size: 0.8em;
+                color: var(--text-secondary);
+            }
+            .status-text.playing { color: var(--accent-green-primary); }
+            .status-text.error { color: var(--error-color); }
+            
+            .control-btn {
+                padding: 5px 10px !important;
+                font-size: 0.8em !important;
+                flex-shrink: 0;
+                gap: 5px !important;
+            }
+            .stop-btn {
+                background-color: var(--error-color) !important;
+                color: white !important;
+                box-shadow: -2px -2px 4px rgba(255,255,255,0.1), 2px 2px 4px rgba(0,0,0,0.4);
+            }
+            .stop-btn:hover {
+                 background-color: darken(var(--error-color), 10%) !important;
+            }
+            .stop-btn:active {
+                box-shadow: inset -2px -2px 4px rgba(255,255,255,0.1), inset 2px 2px 4px rgba(0,0,0,0.4) !important;
+            }
+        </style>
+        ```
+    *   Verify: Component updated with more detailed status and only a "Stop" button.
+
+**5. Ensure AudioContext Resuming in `+layout.svelte` or `App.svelte`:**
+    *   Action: The `onMount` in `+layout.svelte` (from Task 077) should call `audioPlayerStore.resumeContextOnUserGesture()` on a global user interaction (like a click). This is crucial for browsers that block autoplay.
+        ```html
+        <!-- src/routes/+layout.svelte (or App.svelte) -->
+        <script>
+            // ...
+            import { audioPlayerStore } from '$lib/stores/audioPlayerStore';
+
+            function handleFirstUserInteraction() {
+                audioPlayerStore.resumeContextOnUserGesture();
+                // Remove listeners after first interaction
+                window.removeEventListener('click', handleFirstUserInteraction);
+                window.removeEventListener('touchstart', handleFirstUserInteraction);
+            }
+
+            onMount(() => {
+                // ... existing socketStore.connect ...
+                window.addEventListener('click', handleFirstUserInteraction, { once: true });
+                window.addEventListener('touchstart', handleFirstUserInteraction, { once: true });
+            });
+            // ...
+        </script>
+        <!-- ... rest of the layout ... -->
+        ```
+    *   Verify: `resumeContextOnUserGesture` is called.
+
+**6. Integrate `AudioPlaybackControl.svelte` into UI (e.g., `+page.svelte`):**
+    *   Action: Place it where it's visible when TTS is active. It could be near the `StatusFooter` or dynamically appear near the message being spoken. For now, placing it below the chat messages container is fine.
+        ```html
+        <!-- src/routes/+page.svelte -->
+        <script>
+            // ...
+            import AudioPlaybackControl from '$lib/components/chat/AudioPlaybackControl.svelte';
+        </script>
+        
+        <div class="chat-layout-phoenix">
+            <!-- ... chat messages container ... -->
+            <AudioPlaybackControl /> {/* Add it here */}
+            {#if $chatStore.activeGenerativeUI} ... {:else} <MessageInputBar ... /> {/if}
+            <StatusFooter />
+        </div>
+        ```
+    *   Verify: Component placed.
+
+**7. Testing TASK_AUI_011:**
+    *   Action:
+        1.  Start Phoenix backend with fully functional streaming TTS.
+        2.  Start Svelte UI.
+        3.  **Trigger TTS Streaming:** Send a message to the agent that causes it to call `ChatterboxTTSTool` with the "synthesize_speech_stream" action. For example, "Read this aloud: Hello Phoenix users!"
+    *   Expected Behavior:
+        *   **Backend:** `TTS_STREAM_START`, multiple `AUDIO_CHUNK` (base64 encoded), and `TTS_STREAM_END` events are sent over WebSocket.
+        *   **Svelte UI:**
+            *   User performs an interaction (e.g., clicks anywhere) to ensure `AudioContext` is resumed.
+            *   `AudioPlaybackControl` appears.
+            *   Status in `AudioPlaybackControl` shows "Buffering audio..." then "Playing speech...".
+            *   Audio plays smoothly as chunks arrive.
+            *   Clicking the "Stop" button immediately halts audio playback and resets the `AudioPlayerStore` state for the current stream.
+            *   When the stream finishes naturally, the status updates to "Speech finished." or similar, and playback controls might hide or disable.
+            *   Test with short and slightly longer text to see how streaming behaves.
+            *   If there's an error during TTS generation or playback, it should be reflected in the `AudioPlaybackControl` status.
+        *   Check browser console for Web Audio API errors or `AudioPlayerStore` logs.
+
+This task completes the core TTS streaming feature, making voice output much more dynamic.
+
+Let me know how this extensive test goes!

@@ -84,6 +84,7 @@ class api:
 # Import StreamProtocol components
 from python.tools.stream_protocol_tool import StreamEvent, StreamEventType, RunAgentInput, StreamProtocolTool
 from python.agent import AgentContext, Agent
+from python.helpers.settings_manager import get_settings_manager
 import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
@@ -255,6 +256,182 @@ async def agui_websocket(ws, thread_id: str):
                         # Handle RunAgentInput directly over WebSocket
                         stream_tool = StreamProtocolTool(context.agent0)
                         await stream_tool.execute(action="handle_input", input_data=data.get("payload", {}))
+                    elif data.get("type") == "request_llm_context_window":
+                        # Handle LLM context window request (TASK_AUI_003)
+                        thread_id_from_msg = data.get("threadId")
+                        user_id_from_msg = data.get("userId")
+
+                        if context.agent0:
+                            context_window_data = context.agent0.get_last_llm_prompt_for_display()
+                            # Send response back via transport
+                            response_event = StreamEvent(
+                                type=StreamEventType.LLM_CONTEXT_WINDOW_DATA,
+                                payload={"context_data": context_window_data},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(response_event)
+                        else:
+                            # Error: agent not found
+                            error_event = StreamEvent(
+                                type=StreamEventType.ERROR_EVENT,
+                                payload={"message": "Agent instance not found for context window request."},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(error_event)
+                    elif data.get("type") == "request_work_dir_files":
+                        # Handle file browser request (TASK_AUI_005)
+                        from python.helpers.file_system_manager import list_directory_contents
+
+                        thread_id_from_msg = data.get("threadId")
+                        user_id_from_msg = data.get("userId")
+                        requested_path = data.get("path", "")
+
+                        # Get directory listing
+                        dir_listing_result = list_directory_contents(requested_path)
+
+                        # Send response back via transport
+                        response_event = StreamEvent(
+                            type=StreamEventType.WORK_DIR_FILES_DATA,
+                            payload=dir_listing_result,
+                            thread_id=thread_id,
+                            user_id=user_id
+                        )
+                        await transport.emit_event_to_thread(response_event)
+                    elif data.get("type") == "nudge_agent_request":
+                        # Handle nudge agent request (TASK_AUI_006)
+                        if context.agent0:
+                            context.agent0.nudge_agent()
+                            # Agent will emit AGENT_NUDGED event itself
+                        else:
+                            error_event = StreamEvent(
+                                type=StreamEventType.ERROR,
+                                payload={"error": "No agent instance found for nudge request"},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(error_event)
+                    elif data.get("type") == "pause_agent_request":
+                        # Handle pause agent request (TASK_AUI_006)
+                        if context.agent0 and context.agent0.context:
+                            context.agent0.context.pause_processing()
+                            await context.agent0._emit_stream_event(
+                                StreamEventType.AGENT_PAUSED,
+                                {"thread_id": context.agent0.context.thread_id}
+                            )
+                            await context.agent0._emit_stream_event(
+                                StreamEventType.AGENT_STATE_DELTA,
+                                {"status_message": "Phoenix is paused."}
+                            )
+                        else:
+                            error_event = StreamEvent(
+                                type=StreamEventType.ERROR,
+                                payload={"error": "No agent instance found for pause request"},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(error_event)
+                    elif data.get("type") == "resume_agent_request":
+                        # Handle resume agent request (TASK_AUI_006)
+                        if context.agent0 and context.agent0.context:
+                            context.agent0.context.resume_processing()
+                            await context.agent0._emit_stream_event(
+                                StreamEventType.AGENT_RESUMED,
+                                {"thread_id": context.agent0.context.thread_id}
+                            )
+                            await context.agent0._emit_stream_event(
+                                StreamEventType.AGENT_STATE_DELTA,
+                                {"status_message": "Phoenix is resuming..."}
+                            )
+                        else:
+                            error_event = StreamEvent(
+                                type=StreamEventType.ERROR,
+                                payload={"error": "No agent instance found for resume request"},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(error_event)
+                    elif data.get("type") == "restart_agent_request":
+                        # Handle restart agent request (TASK_AUI_006)
+                        if context.agent0 and context.agent0.context:
+                            original_thread_id = context.agent0.context.thread_id
+                            context.agent0.restart_agent_session()
+                            # Signal UI to clear its state for this thread
+                            await context.agent0._emit_stream_event(
+                                StreamEventType.AGENT_RESTARTED,
+                                {
+                                    "thread_id": original_thread_id,
+                                    "message": "Agent session has been restarted."
+                                }
+                            )
+                            await context.agent0._emit_stream_event(
+                                StreamEventType.AGENT_STATE_DELTA,
+                                {"status_message": "Phoenix is ready (restarted)."}
+                            )
+                        else:
+                            error_event = StreamEvent(
+                                type=StreamEventType.ERROR,
+                                payload={"error": "No agent instance found for restart request"},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(error_event)
+                    elif data.get("type") == "request_settings":
+                        # Handle settings request (TASK_AUI_007)
+                        manager = get_settings_manager()
+                        settings_data = manager.get_displayable_settings()
+
+                        # Send settings data back
+                        response_event = StreamEvent(
+                            type=StreamEventType.SETTINGS_DATA,
+                            payload=settings_data,
+                            thread_id=thread_id,
+                            user_id=user_id
+                        )
+                        await transport.emit_event_to_thread(response_event)
+                    elif data.get("type") == "update_settings_request":
+                        # Handle settings update request (TASK_AUI_009)
+                        settings_data_to_update = data.get("settings_data")
+
+                        if settings_data_to_update is None:
+                            error_event = StreamEvent(
+                                type=StreamEventType.ERROR,
+                                payload={"error": "No settings data provided in update request."},
+                                thread_id=thread_id,
+                                user_id=user_id
+                            )
+                            await transport.emit_event_to_thread(error_event)
+                        else:
+                            manager = get_settings_manager()
+                            success = manager.update_settings(settings_data_to_update)
+
+                            if success:
+                                # Send confirmation
+                                await transport.emit_event_to_thread(StreamEvent(
+                                    type=StreamEventType.SETTINGS_UPDATED_CONFIRMATION,
+                                    payload={
+                                        "success": True,
+                                        "message": "Settings updated successfully. Changes may require an agent restart or new session to take full effect."
+                                    },
+                                    thread_id=thread_id,
+                                    user_id=user_id
+                                ))
+                                # Optionally, resend the full displayable (masked) settings
+                                await transport.emit_event_to_thread(StreamEvent(
+                                    type=StreamEventType.SETTINGS_DATA,
+                                    payload=manager.get_displayable_settings(),
+                                    thread_id=thread_id,
+                                    user_id=user_id
+                                ))
+                            else:
+                                error_event = StreamEvent(
+                                    type=StreamEventType.ERROR,
+                                    payload={"error": "Failed to update settings on the server."},
+                                    thread_id=thread_id,
+                                    user_id=user_id
+                                )
+                                await transport.emit_event_to_thread(error_event)
 
                 except json.JSONDecodeError:
                     print(f"WebSocket (thread {thread_id}, conn: {connection_id}) received invalid JSON: {message_str[:200]}")
